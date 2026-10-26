@@ -5,7 +5,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Game language](#game-language), [Picture](#picture), [Picture shape](#picture-shape), [Frame-rate counter](#frame-rate-counter)
 - [Resolution](#resolution): [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Output resolution](#output-resolution), [Render resolution](#render-resolution), [Dynamic resolution](#dynamic-resolution), [Softest](#softest)
-- [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size)
+- [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Anisotropic filtering](#anisotropic-filtering), [Trilinear filtering](#trilinear-filtering)
 - [Frame rate (Mac)](#frame-rate-mac): [Frame rate mode](#frame-rate-mode), [Frame interpolation](#frame-interpolation)
 - [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
@@ -189,6 +189,25 @@ Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advan
 Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: shadows may be cut off, or the game may crash, most likely when the map opens. If that happens, set it back to **Game default**. It changes the game's code when the game starts.
 
 The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
+
+### Anisotropic filtering
+
+How sharp a texture stays when you look along it rather than at it: the ground ahead of you, a wall seen edge on, a road running to the horizon. The games were built for a handheld and nearly all ask for none, so those surfaces blur a short way from the camera.
+
+**Off**, the default, keeps what the game asked for. **2x** to **16x** raise every texture to at least that, leaving a game that already asks for more alone.
+
+- **When to change it:** any game with ground or walls stretching away from the camera. It works in games that have no render scale.
+- **Cost:** a little more GPU time where it applies. Nothing is allocated and no render target changes, so memory is unaffected.
+- **Note:** a texture with no mipmaps is unaffected, as is one the game filters with nearest neighbour. **Trilinear filtering** below turns it on for a texture whose mips the game picked nearest.
+
+### Trilinear filtering
+
+Blends between a texture's mipmap levels instead of switching at the level boundary, which removes the seam that runs across ground and walls at a fixed distance from the camera.
+
+Only a texture the game already filters smoothly is raised, so menus, fonts and lookup tables keep the sharp mip steps they were drawn with.
+
+- **When to change it:** a visible line across the floor that moves with the camera.
+- **Cost:** one more texture read where it applies.
 
 ## Frame rate (Mac)
 
@@ -407,6 +426,8 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
 | Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |
 | Frame rate mode (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
+| Anisotropic filtering | `DM_ANISO` | `0` off, `2` to `16` |
+| Trilinear filtering | `DM_TRILINEAR` | `1`, `0` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |

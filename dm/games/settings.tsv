@@ -40,6 +40,8 @@ DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game|Resolutio
 DM_EFFECTS_RES	choice	patches	game	patches:DM_EFFECTS_RES&platform:mac	Effects	Effects resolution	Full draws ambient occlusion, refraction and soft particles at the render size instead of half: sharper, for more GPU time and memory. Untested.
 DM_SHADOW_RES	choice	patches	game	patches:DM_SHADOW_RES&platform:mac	Effects	Shadow resolution	Full keeps shadows sharp when the game lowers its resolution, for a little more GPU time.
 DM_SHADOW_MAP_SIZE	choice	patches	game	patches:DM_SHADOW_MAP_SIZE&platform:mac	Effects	Shadow map size	Sharper shadows for more GPU time and memory. Larger sizes are untested: the game may crash, most likely when the map opens.
+DM_ANISO	choice	0=Off,2=2x,4=4x,8=8x,16=16x	0	gfxapi:nvn	Game|Effects	Anisotropic filtering	Uses a little more GPU time.
+DM_TRILINEAR	toggle	-	0	gfxapi:nvn	Game|Effects	Trilinear filtering
 DM_FPS_LOCK	choice	patches	game	patches:DM_FPS_LOCK&platform:mac	Frame rate	Frame rate mode	Prefer 60 drops to 30 only while frames are too slow for 60 and tries 60 again every few seconds, so the game keeps its real speed; a scene that cannot hold 60 stutters briefly at each try. Hold 30 stays at 30.
 DM_MFX_INTERP	toggle	-	0	DM_GAME_MFX_FRAMES!=0&platform:mac	Frame rate	Frame interpolation	Shows a picture MetalFX makes between two game frames: smoother motion on a 120 Hz screen, about half a frame more latency and more GPU time.
 DM_HDR	toggle	-	0	gfxapi:nvn&platform:mac	HDR	HDR	The game's own HDR picture, on a screen with HDR (an XDR screen, or a monitor with High Dynamic Range on in System Settings › Displays).
