@@ -142,6 +142,8 @@ SWITCH_BINDING = [
      'why': "the engine's own block and member offsets (gsys's Context, from agl's shader reflection); no NVN state names the camera"}),
     ('res_chain', '', {'what': 'the resolution chain logged at launch', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's own output sizes and upscale rates, for one log line; it changes nothing"}),
+    ('camera_jitter', '', {'what': "the uniform blocks holding the scene camera's clip matrices, which DM_MFX_JITTER offsets", 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the engine's own blocks and the matrices its shaders read (gsys's Context, the effect system's view block); no NVN state names them"}),
     ('op_mode', '', {'what': 'the operation mode at start', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the game's controls (handheld: the touch screen instead of a gyro pointer)"}),
 ]
 

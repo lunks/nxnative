@@ -53,3 +53,7 @@ camera_mats	vertex 0 0x0 0x30
 # the controller also runs at 1.0, no upscaler, until a frame is over its budget). The scene is the output / the rate; DM_UPSCALE_RATIO and DM_UPSCALE_SOFTEST set it (setting_patches.tsv),
 # and the settings window shows each rate's render size from these outputs (settings.py rate_base)
 res_chain	2304x1296 2880x1620 1920x1080 1.375 2.0
+# The camera jitter for the temporal scaler (DM_MFX_JITTER; nvn_mfx.inc): the blocks holding the main camera's clip matrices that the scene and effect shaders read, found in the
+# captured frames F2724-F2726: the Context block (2432 bytes bound) with its view-projection at +0x30 and projection at +0x70 (its previous-frame copies at +0x180 / +0x1c0 stay), and the
+# effect system's view block (592 bytes, vertex uniform 5 of the particle passes) with its projection at +0x40 and view-projection at +0x80
+camera_jitter	2432@0x30,0x70 592@0x80,0x40

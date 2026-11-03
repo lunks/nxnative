@@ -89,6 +89,20 @@ class CameraMats(unittest.TestCase):   # camera_mats: the scene camera for Metal
             self.assertIn('camera_mats takes', header_with(f'camera_mats\t{bad}\n'), bad)
 
 
+class CameraJitter(unittest.TestCase):   # camera_jitter: the blocks holding the camera, which DM_MFX_JITTER offsets (nvn_mfx.inc)
+    def test_macros(self):
+        self.assertIn('#define DM_GAME_CAM_JITTER_N 0', header_with(''))
+        h = header_with('camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t2432@0x30,0x70 592@128,0x40\n')
+        for m in ('DM_GAME_CAM_JITTER_N 2', 'DM_GAME_MFX_JITTER 0', 'DM_GAME_CAM_JITTER {{2432, 2, {0x30, 0x70, 0x0, 0x0}}, {592, 2, {0x80, 0x40, 0x0, 0x0}}}'): self.assertIn('#define ' + m, h)
+
+    def test_refused(self):
+        for rows in ('camera_jitter\t2432@0x30\n',   # without camera_mats
+                     'camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t2432@0x38\n', 'camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t64@0x10\n',
+                     'camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t2432\n', 'camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t2432@0x0,0x10,0x20,0x30,0x40\n',
+                     'camera_mats\tvertex 0 0x0 0x30\ncamera_jitter\t256@0 256@0 256@0 256@0 256@0\n'):
+            self.assertIn('camera_jitter takes', header_with(rows), rows)
+
+
 BID = '0123456789abcdef0123456789abcdef'
 
 

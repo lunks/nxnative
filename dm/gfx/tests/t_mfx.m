@@ -3,8 +3,10 @@
 // (DM_UPSCALER=metalfx-temporal), and with DM_MFX_INTERP=1 the interpolated pictures. Each frame is the game's: the upscale, a bright and a dark UI element drawn into its output, then its
 // window pass, which the test draws as Bananza's last passes do (e9c6f339b7550c71: the output sampled into an RGBA8 window texture through an sRGB view; with HDR output
 // 359ddaa5bb1e298e: BT.2020, paper white 203 nits, ST 2084 PQ into RGB10A2). The scene is static, so every interpolated picture must be the window texture itself within a code,
-// in SDR and in HDR (hdr_vi_stub.c answers as hle_vi.c does with DM_HDR=1). Built for Bananza's profile (GAME=040074A01BF12000: its upscaler keys and camera_mats). Without the
-// switches the dispatches are left to the shader
+// in SDR and in HDR (hdr_vi_stub.c answers as hle_vi.c does with DM_HDR=1). With the temporal scaler, the camera jitter (DM_MFX_JITTER): its phases and units, the jittered copies of
+// the blocks holding the camera (the profile's camera_jitter) with the game's memory untouched, and a static scene with edges and a thin line drawn as a jittered projection draws
+// it, through the temporal scaler without jitter, with it and with the other sign, against the scene supersampled at the output. Built for Bananza's profile (GAME=040074A01BF12000:
+// its upscaler keys, camera_mats and camera_jitter). Without the switches the dispatches are left to the shader
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -79,6 +81,180 @@ static NvShader *upscaler(const char *key) {
     s->rf.b[1] = (nvn_rbind){.kind = NVN_RB_IMG, .dtt = MTLTextureType2D, .dpf = NVN_DPF_FLOAT, .reg = 1, .rw = 1};
     return s;
 }
+// ---- The camera jitter (DM_MFX_JITTER) ----
+// The F2724 camera's projection (gsys Context +0x70), and a point in front of it (world)
+static const float k_proj[16] = {1.35800f, 0, 0, 0, 0, 2.41421f, 0, 0, 0, 0, -1.00020f, -2.00020f, 0, 0, -1, 0};
+static void ndc_of(const float m[16], const double p[3], double out[2]) {
+    double c[4]; for (int r = 0; r < 4; r++) c[r] = m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
+    out[0] = c[0] / c[3]; out[1] = c[1] / c[3];
+}
+// The test scene, in pixels of the input (y down the rows): a dark ground, a bright plane behind a nearly horizontal edge, a nearly vertical one, and a thin bright line (0.6 px wide)
+static float scene_at(double x, double y, double w, double h) {
+    const double t4 = tan(4 * M_PI / 180), t3 = tan(3 * M_PI / 180), a = 25 * M_PI / 180;
+    float v = 0.05f;
+    if (y > h * 0.55 + (x - w * 0.5) * t4) v = 1.0f;
+    if (x > w * 0.8 + (y - h * 0.5) * t3) v = 0.6f;
+    double d = fabs(-(x - w * 0.15) * sin(a) + (y - h * 0.15) * cos(a));
+    if (d < 0.3 && y < h * 0.5) v = 1.0f;
+    return v;
+}
+static const char *k_scene_src =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct V { float4 p [[position]]; };\n"
+    "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
+    "struct P { float2 shift, size; };\n"
+    "fragment float4 fs(V in [[stage_in]], constant P &q [[buffer(0)]]) {\n"
+    "  float x = in.p.x - q.shift.x, y = in.p.y - q.shift.y, w = q.size.x, h = q.size.y; const float t4 = tan(4 * M_PI_F / 180), t3 = tan(3 * M_PI_F / 180), a = 25 * M_PI_F / 180;\n"
+    "  float v = 0.05; if (y > h * 0.55 + (x - w * 0.5) * t4) v = 1.0; if (x > w * 0.8 + (y - h * 0.5) * t3) v = 0.6;\n"
+    "  float d = abs(-(x - w * 0.15) * sin(a) + (y - h * 0.15) * cos(a)); if (d < 0.3 && y < h * 0.5) v = 1.0;\n"
+    "  return float4(v, v, v, 1); }\n";
+// The scene drawn as a GPU with a jittered projection draws it: the picture moved by shift (pixels, y down), so each pixel centre shows the scene at centre - shift
+static void draw_scene(id<MTLTexture> t, double sx, double sy) {
+    static id<MTLRenderPipelineState> ps;
+    if (!ps) {
+        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_scene_src) options:nil error:&e];
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = t.pixelFormat; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!ps) { fprintf(stderr, "scene: %s\n", e.localizedDescription.UTF8String); exit(1); }
+    }
+    float q[4] = {(float)sx, (float)sy, (float)t.width, (float)t.height};
+    id<MTLCommandBuffer> cb = q_cb(); MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = t; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
+    [en setRenderPipelineState:ps]; [en setFragmentBytes:q length:sizeof q atIndex:0];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; [cb commit]; [cb waitUntilCompleted];
+}
+static float *read_rgba16f(id<MTLTexture> t) {   // its red channel, as floats
+    NSUInteger n = t.width * t.height; id<MTLBuffer> b = [g_dev newBufferWithLength:n * 8 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(t.width, t.height, 1) toBuffer:b destinationOffset:0 destinationBytesPerRow:t.width * 8 destinationBytesPerImage:n * 8];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    float *r = malloc(n * sizeof *r); const _Float16 *h = b.contents; for (NSUInteger i = 0; i < n; i++) r[i] = (float)h[i * 4]; return r;
+}
+// The jitter's arithmetic, and the blocks a frame's bindings read (a gsys Context and an effect view block holding the camera, a shadow camera's Context, another block)
+static void jitter_blocks(id<MTLTexture> depth, const float *view, const float *vp, const mfx_cam *cam) {
+    CHECK(mfx_jit_phases(1.375) == 15 && mfx_jit_phases(2.0) == 32 && mfx_jit_phases(1.0) == 8, "8 x (output / input)^2 phases (15 at Bananza's 2304 / 1676, 32 at 2)");
+    double px, py, sx = 0, sy = 0; int in = 1;
+    mfx_jit_phase(0, &px, &py); CHECK(fabs(px) < 1e-12 && fabs(py + 1.0 / 6) < 1e-12, "phase 0: Halton (2, 3) of 1, centred: 0, -1/6");
+    mfx_jit_phase(1, &px, &py); CHECK(fabs(px + 0.25) < 1e-12 && fabs(py - 1.0 / 6) < 1e-12, "phase 1: -1/4, 1/6");
+    for (uint32_t k = 0; k < 32; k++) { mfx_jit_phase(k, &px, &py); sx += px; sy += py; in &= px >= -0.5 && px < 0.5 && py >= -0.5 && py < 0.5; }
+    CHECK(in && fabs(sx / 32) < 0.02 && fabs(sy / 32) < 0.02, "32 phases inside the pixel, centred on it");
+    { float m[16]; memcpy(m, vp, sizeof m); const double p[3] = {300, 40, 90}; double a[2], b[2]; ndc_of(m, p, a); mfx_jit_apply(m, 0.001, -0.002); ndc_of(m, p, b);
+      CHECK(fabs(b[0] - a[0] - 0.001) < 1e-5 && fabs(b[1] - a[1] + 0.002) < 1e-5, "the offset moves a projected point by (jx, jy) in normalized device units"); }
+    // Guest memory: the blocks as the game wrote them
+    uint8_t *mem; if (posix_memalign((void **)&mem, getpagesize(), 65536)) abort(); memset(mem, 0, 65536); mtl_pool_add(mem, 65536);
+    uint8_t *ctx = mem + 0x1000, *eft = mem + 0x2000, *shd = mem + 0x3000, *ui = mem + 0x4000;
+    memcpy(ctx, view, 48); memcpy(ctx + 0x30, vp, 64); memcpy(ctx + 0x70, k_proj, 64); memcpy(ctx + 0x150, view, 48); memcpy(ctx + 0x180, vp, 64); memcpy(ctx + 0x1c0, k_proj, 64);   // and its previous-frame copies
+    memcpy(eft, view, 48); memcpy(eft + 0x40, k_proj, 64); memcpy(eft + 0x80, vp, 64);
+    const float ortho[16] = {0.01f, 0, 0, 0, 0, 0.01f, 0, 0, 0, 0, -0.001f, 0, 0, 0, 0, 1}; memcpy(shd, view, 48); memcpy(shd + 0x30, ortho, 64);
+    for (int i = 0; i < 140; i++) ((float *)ui)[i] = (float)i;
+    uint8_t *orig = malloc(0x5000); memcpy(orig, mem, 0x5000);
+    const p_bind_buf bctx = {.addr = (uint64_t)(uintptr_t)ctx, .size = 2432}, beft = {.addr = (uint64_t)(uintptr_t)eft, .size = 592}, bshd = {.addr = (uint64_t)(uintptr_t)shd, .size = 2432}, bui = {.addr = (uint64_t)(uintptr_t)ui, .size = 560};
+    g_jit.on = 1; g_jit.last = *cam; g_jit.last_ok = 1; g_jit.ratio = 2; g_jit.idx = 0;
+    uint64_t f0 = 5000; g_jit.last_frame = f0 - 1;   // the temporal scaler drew the frame before
+    float jx0 = 0, jy0 = 0;
+    for (uint64_t f = f0; f < f0 + 2; f++) {
+        mtl_set_frame(f); mtl_sub_begin();
+        memset(&S, 0, sizeof S); S.has_vp = 1; S.vp[0][2] = 960; S.vp[0][3] = 540;
+        mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++;
+        S.ubo[0][0] = bctx;   // the scene pass's first draw: the camera at camera_mats (vertex uniform 0)
+        mfx_note_pass(); mfx_jit_note();
+        CHECK(g_jit.act && g_mfx_jit_frame == f + 1, "the frame's main camera is found at camera_mats in the scene-sized depth pass");
+        CHECK(g_jit.phase == f - f0 && fabs(g_jit.jx - 2 * g_jit.px / 960) < 1e-12 && fabs(g_jit.jy - 2 * g_jit.py / 540) < 1e-12, "the frame's phase, in pixels of the pass's viewport");
+        if (f > f0) CHECK(g_jit.jx != jx0 || g_jit.jy != jy0, "the next frame's offset differs");
+        jx0 = (float)g_jit.jx; jy0 = (float)g_jit.jy;
+        int ci = -1; for (int i = 0; i < g_mc.n; i++) if (g_mc.c[i].depth == depth) ci = i;
+        CHECK(ci >= 0 && g_mc.c[ci].cam.ok && !memcmp(g_mc.c[ci].cam.vpr, vp, 64) && fabs(g_mc.c[ci].cam.jx) < 1e-4 && fabs(g_mc.c[ci].cam.jy) < 1e-4,
+              "the camera for the motion vectors is read unjittered from the game's memory");
+        id<MTLBuffer> b0 = nil, b1 = nil, b2 = nil, b3 = nil, b4 = nil;
+        S.ubo[0][0] = bctx; S.ubo[1][0] = bctx; S.ubo[0][5] = beft;
+        uint64_t g0 = mfx_jit_bind(0, 0, &S.ubo[0][0], &b0), g1 = mfx_jit_bind(1, 0, &S.ubo[1][0], &b1), g2 = mfx_jit_bind(0, 5, &S.ubo[0][5], &b2);
+        CHECK(g0 && b0 && g1 == g0, "the Context block reads a jittered copy, the same one at every stage of the pass");
+        CHECK(g2 && b2 && g2 != g0, "the effect view block holding the same camera reads a jittered copy");
+        if (g0 && g2) {
+            const uint8_t *c = (const uint8_t *)b0.contents + (g0 - b0.gpuAddress), *e = (const uint8_t *)b2.contents + (g2 - b2.gpuAddress);
+            float want[16], wp[16]; memcpy(want, vp, 64); mfx_jit_apply(want, g_jit.jx, g_jit.jy); memcpy(wp, k_proj, 64); mfx_jit_apply(wp, g_jit.jx, g_jit.jy);
+            CHECK(!memcmp(c + 0x30, want, 64) && !memcmp(c + 0x70, wp, 64), "Context: view-projection and projection offset");
+            CHECK(!memcmp(c, ctx, 0x30) && !memcmp(c + 0xb0, ctx + 0xb0, 2432 - 0xb0), "Context: the rest as the game wrote it (view, its previous-frame copies, the rest)");
+            CHECK(!memcmp(e + 0x80, want, 64) && !memcmp(e + 0x40, wp, 64) && !memcmp(e, eft, 0x40) && !memcmp(e + 0xc0, eft + 0xc0, 592 - 0xc0), "effect view block: its projection and view-projection offset, the rest as it is");
+            double p[3] = {300, 40, 90}, a[2], j[2]; ndc_of(vp, p, a); ndc_of((const float *)(c + 0x30), p, j);
+            double dx = (j[0] - a[0]) * 960 / 2, dy = (j[1] - a[1]) * 540 / 2;
+            CHECK(fabs(dx - g_jit.px) < 1e-3 && fabs(dy - g_jit.py) < 1e-3 && fabs(dx) <= 0.5 && fabs(dy) <= 0.5, "a projected point moves by the phase's offset, under half a pixel");
+        }
+        S.ubo[0][0] = bshd; S.ubo[2][3] = bui;
+        CHECK(!mfx_jit_bind(0, 0, &S.ubo[0][0], &b3) && !b3, "a shadow camera's Context block is read as it is");
+        CHECK(!mfx_jit_bind(2, 3, &S.ubo[2][3], &b4) && !b4, "a block of another size is read as it is");
+        CHECK(!memcmp(mem, orig, 0x5000), "the game's memory is not written");
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the submission completes");
+        g_jit.last_frame = f;   // as the temporal scaler would
+    }
+    // A frame long after the temporal scaler's last one (a menu, another upscaler): no jitter
+    mtl_set_frame(f0 + 10); mtl_sub_begin(); memset(&S, 0, sizeof S); S.has_vp = 1; S.vp[0][2] = 960; S.vp[0][3] = 540;
+    mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++; S.ubo[0][0] = bctx; mfx_note_pass(); mfx_jit_note();
+    id<MTLBuffer> bx = nil;
+    CHECK(!g_jit.act && !g_mfx_jit_frame && !mfx_jit_bind(0, 0, &S.ubo[0][0], &bx), "no temporal frame just before: no jitter");
+    // A camera of another lens (a 90-degree cube map face's) at camera_mats in a scene-sized pass: not the main camera
+    g_jit.last_frame = f0 + 10; mtl_set_frame(f0 + 11); g_pass.serial += 10; g_stat_pass++;
+    float cube[16]; memcpy(cube, vp, 64); for (int c = 0; c < 4; c++) { cube[c] *= 1.358f; cube[4 + c] *= 2.4142f / 1.0f; }   // a wider field of view and another aspect
+    uint8_t *ctx2 = mem + 0x5000; memcpy(ctx2, view, 48); memcpy(ctx2 + 0x30, cube, 64);
+    S.ubo[0][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)ctx2, .size = 2432}; uint64_t miss = g_jit.lens_miss; mfx_jit_note();
+    CHECK(!g_jit.act && g_jit.lens_miss == miss + 1, "a camera of another lens is not taken for the main one");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the submission completes");
+    mtl_drain(); mtl_pool_del(mem); free(orig);
+}
+// A static scene through the temporal scaler for 48 frames, drawn with the frames' jitter as a jittered projection would (with=0: none), MetalFX told the offset with the given
+// sign; the mean absolute difference of the last 4 outputs from the scene supersampled at the output's pixels, over the picture less a margin
+static double jitter_run(NvShader *named, int with, double sign, const float *view, const float *vp, uint64_t f0, double *mv_max) {
+    enum { IW = 480, IH = 270, OW = 960, OH = 540 };
+    static tex_t in, out; static id<MTLTexture> depth; static float *truth; static uint8_t *mem;
+    if (!truth) {
+        in = texture(91, IW, IH, NVN_FORMAT_RGBA16F); out = texture(92, OW, OH, NVN_FORMAT_RGBA16F); out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+        mtl_reg_tex(711, &in, NULL); mtl_reg_image(712, &out, NULL);
+        MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:IW height:IH mipmapped:NO];
+        dd.storageMode = MTLStorageModePrivate; dd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        depth = [g_dev newTextureWithDescriptor:dd]; res_add(depth); res_commit(); fill(depth, MTLClearColorMake(0, 0, 0, 0), 0.99);
+        truth = malloc(sizeof(float) * OW * OH);
+        for (int y = 0; y < OH; y++) for (int x = 0; x < OW; x++) { double s = 0; for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) s += scene_at((x + (i + 0.5) / 8) * IW / OW, (y + (j + 0.5) / 8) * IH / OH, IW, IH); truth[y * OW + x] = (float)(s / 64); }
+        if (posix_memalign((void **)&mem, getpagesize(), 16384)) abort(); memset(mem, 0, 16384); mtl_pool_add(mem, 16384);
+        memcpy(mem, view, 48); memcpy(mem + 0x30, vp, 64); memcpy(mem + 0x70, k_proj, 64);
+    }
+    g_jit.on = with; g_mfx_jit_sign = sign; g_jit.last_ok = 0; g_jit.idx = 0; g_mts.fresh = 1; g_mm.prev_ok = 0;   // the scaler's history starts again
+    double err = 0; int n = 0; *mv_max = 0;
+    for (int f = 0; f < 48; f++) {
+        mtl_set_frame(f0 + f);
+        memset(&S, 0, sizeof S); S.tex[5][0] = 711; S.img[5][1] = 712; S.has_vp = 1; S.vp[0][2] = IW; S.vp[0][3] = IH;
+        { const uint32_t rects[8] = {0, 0, IW - 1, IH - 1, 0, 0, OW - 1, OH - 1}; memcpy(S.push[1], rects, sizeof rects); }
+        mfx_cand_clear(); mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++;
+        S.ubo[0][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)mem, .size = 2432};   // the scene pass: its depth and camera, and the frame's jitter
+        mfx_note_pass(); if (mfx_jit_on()) mfx_jit_note();
+        double ox = 0, oy = 0; if (with) CHECK(f == 0 || g_jit.act, "every frame after the first is jittered");
+        if (g_jit.act) { ox = g_jit.jx * IW / 2; oy = -g_jit.jy * IH / 2; }   // the picture's move in pixels, y down the rows (upper-left window origin)
+        draw_scene(tex_mtl(&in), ox, oy);
+        mtl_sub_begin();
+        int drawn = up_mfx_wanted(named) && up_mfx_encode(named);
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
+        CHECK(drawn && g_mm.ok, "the temporal scaler draws the frame, with motion vectors");
+        if (with && g_jit.act)   // (with the game's own offset, which the camera read from these matrices puts at a few thousandths of a pixel: float rounding)
+            CHECK(fabs(g_mts.jx - sign * (g_jit.px + g_mm.cam.jx * IW / 2)) < 1e-4 && fabs(g_mts.jy + sign * (g_jit.py + g_mm.cam.jy * IH / 2)) < 1e-4 && fabs(g_mm.cam.jx * IW / 2) < 0.01,
+                  "MetalFX is given the frame's offset in pixels of the content, y down the rows");
+        if (with && g_jit.act && f >= 40) {   // the motion vectors of the static camera: none, jitter or not
+            uint8_t *m = read_all(g_mm.mv[g_mm.cur]); NSUInteger w = g_mm.mv[g_mm.cur].width;
+            for (int y = 0; y < IH; y++) for (int x = 0; x < IW; x++) { _Float16 v[2]; memcpy(v, m + (y * w + x) * 4, 4); *mv_max = fmax(*mv_max, fmax(fabs((double)v[0]), fabs((double)v[1]))); }
+            free(m);
+        }
+        if (f >= 44) {
+            float *o = read_rgba16f(tex_mtl(&out)); double s = 0; int c = 0;
+            for (int y = 8; y < OH - 8; y++) for (int x = 8; x < OW - 8; x++) { s += fabs(o[y * OW + x] - truth[y * OW + x]); c++; }
+            if (f == 47) { double r[3] = {0}; int rc[3] = {0};   // by feature: the near-horizontal edge (the vertical jitter's), the near-vertical one, the thin line
+                for (int y = 8; y < OH - 8; y++) for (int x = 8; x < OW - 8; x++) { double d = fabs(o[y * OW + x] - truth[y * OW + x]);
+                    int k = fabs(y - OH * 0.55) < 25 && x < OW * 0.75 ? 0 : fabs(x - OW * 0.8) < 25 ? 1 : y < OH * 0.5 ? 2 : -1; if (k >= 0) { r[k] += d; rc[k]++; } }
+                fprintf(stderr, "%s: mean difference at the near-horizontal edge %.5f, the near-vertical edge %.5f, the thin line %.5f\n", !with ? "no jitter" : sign > 0 ? "jitter" : "jitter, the other sign",
+                        r[0] / rc[0], r[1] / rc[1], r[2] / rc[2]); }
+            free(o); err += s / c; n++;
+        }
+    }
+    return err / n;
+}
 int main(void) { @autoreleasepool {
     mtl_init();
     const char *ups = getenv("DM_UPSCALER"); int temporal = ups && !strcmp(ups, "metalfx-temporal"), interp = mfx_interp_on();
@@ -149,6 +325,16 @@ int main(void) { @autoreleasepool {
         if (interp) CHECK(slots == 2, "two interpolated pictures");
     }
     CHECK(g_mm.made == (uint64_t)frame && g_mm.no_depth == 0 && g_mm.no_cam == 0, "motion vectors every frame");
+    if (temporal && DM_GAME_CAM_JITTER_N) {   // the camera jitter (DM_MFX_JITTER): its blocks, then a static scene through the temporal scaler without it, with it, and with the other sign
+        int keep = g_mfi_on; g_mfi_on = 0;
+        jitter_blocks(depth, view, vp, &cam);
+        double mv[3], e[3] = {jitter_run(named, 0, 1, view, vp, 10000, &mv[0]), jitter_run(named, 1, 1, view, vp, 20000, &mv[1]), jitter_run(named, 1, -1, view, vp, 30000, &mv[2])};
+        fprintf(stderr, "a static scene through the temporal scaler, mean difference from the supersampled scene: no jitter %.5f, jitter %.5f, jitter with the other sign %.5f; largest motion vector with jitter %g px\n", e[0], e[1], e[2], mv[1]);
+        CHECK(e[1] < 0.8 * e[0], "with the jitter the edges converge toward the supersampled scene (a fifth closer than without)");
+        CHECK(e[2] > e[1] * 1.2, "the other sign is further off: MetalFX takes the picture's move (in pixels, y down the rows)");
+        CHECK(mv[1] < 1e-3, "the static camera's motion vectors are zero with the jitter (they come from the unjittered matrices)");
+        g_mfx_jit_sign = 1; g_jit.on = 0; g_mfi_on = keep;
+    }
     printf("t_mfx (%s%s): %d checks, %d failed\n", temporal ? "temporal" : "spatial / game", interp ? ", interpolation in SDR and HDR" : "", checks, failed);
     return failed != 0;
 }}

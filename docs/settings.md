@@ -94,7 +94,7 @@ Breath of the Wild renders 1280x720 in handheld mode. Docked it renders its worl
 
 ### Game's upscaler
 
-Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's. **MetalFX temporal** uses MetalFX's temporal scaler instead, which also takes the scene's depth and the camera's movement and blends each frame with the ones before: steadier edges and less shimmer, for about 2 ms of GPU time a frame on an M5 Pro. The game does not jitter its camera, so it smooths rather than adds detail. It needs the game's camera in its profile (Donkey Kong Bananza has it); a frame without it, or another game, gets the spatial scaler.
+Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's. **MetalFX temporal** uses MetalFX's temporal scaler instead, which also takes the scene's depth and the camera's movement and blends each frame with the ones before: steadier edges and less shimmer, for about 2 ms of GPU time a frame on an M5 Pro. The game does not jitter its camera, so on its own it smooths rather than adds detail; [Anti-aliasing (jitter)](#anti-aliasing-jitter) adds the jitter. It needs the game's camera in its profile (Donkey Kong Bananza has it); a frame without it, or another game, gets the spatial scaler.
 
 ```mermaid
 flowchart LR
@@ -110,6 +110,14 @@ flowchart LR
 - **When to change it:** when the game falls short of its frame rate in busy scenes because of GPU time: Donkey Kong Bananza's upscaler is the largest single piece of a heavy frame on an M1 (3.5-5 ms of about 24 in handheld mode). Compare the look side by side before keeping it.
 - **Cost:** none in GPU time (it saves 2.5-4 ms a frame in that case); the picture is Apple's scaler's rather than the game's. Frames where the game renders at its output size are not upscaled and keep the game's shader either way. Devices without MetalFX keep the game's upscaler.
 - **Not the same as [Upscaling](#upscaling):** that one scales the finished picture, HUD included, to the screen; this one replaces the game's own step inside the frame. Both can be on.
+
+### Anti-aliasing (jitter)
+
+Experimental, shown under **Game's upscaler** while it is **MetalFX temporal**, for games whose profile names the blocks that hold their camera (Donkey Kong Bananza). **On** moves the game's 3D camera by a different fraction of a pixel each frame, in the GPU's copy of its matrices only, and tells MetalFX by how much. The temporal scaler then gathers samples from inside each pixel: edges such as crystals and the bright rims of gold lose their stair steps, and fine detail comes back over a few frames. Off by default.
+
+- **Risks:** not played yet. Some screen-space effects work from the game's unjittered camera and may shimmer slightly at their edges: shadows on the ground, ambient occlusion and fog. Particles drawn without the game's camera blocks are not jittered and look a little softer. Turn it off if the picture shimmers more than without it.
+- **Cost:** a copy of two small uniform blocks per pass; no measurable GPU time.
+- In `env.txt`: `DM_MFX_JITTER=1` (with `DM_UPSCALER=metalfx-temporal`). The game log then says `[mfx] camera jitter on from frame …` once the scaler has drawn a frame.
 
 ### Output resolution
 
@@ -384,6 +392,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
 | [Softest](#softest) (Mac) | `DM_UPSCALE_SOFTEST` | `1.0`, `1.5`, `1.6875`, `2.0` (default), `3.0`; not below `DM_UPSCALE_RATIO` |
 | [Effects resolution](#effects-resolution) (Mac) | `DM_EFFECTS_RES` | `game` (default), `full` |
+| [Anti-aliasing (jitter)](#anti-aliasing-jitter) | `DM_MFX_JITTER` | `1`, `0` (default); with `DM_UPSCALER=metalfx-temporal` |
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
 | Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |

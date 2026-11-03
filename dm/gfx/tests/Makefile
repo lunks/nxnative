@@ -424,7 +424,8 @@ check_t_upscaler_mfx: t_upscaler_mfx
 	MTL_DEBUG_LAYER=1 ./t_upscaler_mfx
 # MetalFX temporal upscaling and frame interpolation at the game's own upscaler (nvn_mfx.inc): built for Donkey Kong Bananza's profile (its upscaler shaders and camera_mats); the camera
 # alone, then the temporal scaler and the interpolated pictures of a static scene against the window texture, in SDR and in HDR (hdr_vi_stub.c answers as hle_vi.c with DM_HDR=1),
-# with the encoding thread off and on, and the interpolation after the spatial scaler (no Metal validation, as above)
+# and the camera jitter (DM_MFX_JITTER: the blocks of camera_jitter, a static scene converging with it), with the encoding thread off and on, and the interpolation after the spatial
+# scaler (no Metal validation, as above)
 t_mfx: t_mfx.m hdr_vi_stub.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_mfx.m hdr_vi_stub.c $(MTL_T_SRC) $(FW)
 .PHONY: check_t_mfx

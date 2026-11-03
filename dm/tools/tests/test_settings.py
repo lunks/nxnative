@@ -46,6 +46,13 @@ class UpscalerSetting(unittest.TestCase):
                     fi=[s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_MFX_INTERP']
                 self.assertEqual(bool(fi),shown,(gid,platform))
                 if fi:self.assertEqual((fi[0]['kind'],fi[0]['default']),('toggle','0'))
+    def test_camera_jitter_needs_the_profile_and_the_temporal_scaler(self):   # DM_MFX_JITTER: the profile's camera_jitter and an upscaler of the game's own (DM_GAME_MFX_JITTER), drawn under MetalFX temporal
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
+            (Path(tmp)/'main.fixups.tsv').write_text('')
+            for gid,shown in [('040074A01BF12000',True),('010056B015FE8000',False)]:
+                jt=[s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_MFX_JITTER']
+                self.assertEqual(bool(jt),shown,gid)
+                if jt:self.assertEqual((jt[0]['kind'],jt[0]['default'],jt[0]['needs']),('toggle','0','DM_UPSCALER=metalfx-temporal'))
     def test_single_upscale_needs_the_stub_and_the_mac(self):   # DM_SINGLE_UPSCALE: main's rewriter table has SINGLE_UPSCALE (Bananza's patches.py CAPABILITIES), on the Mac only
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
             p=Path(tmp)/'main.fixups.tsv'

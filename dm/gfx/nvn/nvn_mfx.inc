@@ -3,7 +3,7 @@
 // output-resolution picture, after which the game draws its UI into that picture):
 //  - DM_UPSCALER=metalfx-temporal: the dispatch is drawn by MetalFX's Metal 4 temporal scaler instead of its spatial one (up_mfx_encode), fed with the scene colour, the scene's depth and
 //    motion vectors of the camera's movement, with a history reset at camera cuts. The game does not jitter its projection (Donkey Kong Bananza: the projection's x / y offsets are 0 in
-//    the captured frames), so the gain is temporal anti-aliasing and stability, not detail the jitter would add.
+//    the captured frames), so without more the gain is stability, not detail; DM_MFX_JITTER=1 jitters the main camera's matrices on the GPU (the camera jitter, below).
 //  - DM_MFX_INTERP=1: MetalFX's Metal 4 frame interpolator makes one picture between two game frames, shown on the display link's 120 Hz tick before the game frame (60 + 60 on a fixed
 //    120 Hz screen). It works on the game's finished frames: each presented window texture decoded to linear light as the present decodes it (sRGB; PQ or linear for HDR output). MetalFX
 //    interpolates the scene under the UI, which is the frame less what the UI added to the upscaler's output (copies of it after the upscale and when the game starts drawing its window
@@ -65,10 +65,11 @@ static int mfx_inv4(const double a_[16], double r[16]) {
 static void mfx_mul4(const double a[16], const double b[16], double r[16]) { for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) { double s = 0; for (int k = 0; k < 4; k++) s += a[i * 4 + k] * b[k * 4 + j]; r[i * 4 + j] = s; } }
 // p: the projection (view-projection times the inverse view); vp0: the view-projection without the projection's x / y offsets (the jitter, jx / jy in normalized device units);
 // pos / fwd: the camera's place and view direction (from the inverse view), for cut detection; near / far / fov (degrees) / aspect for the interpolator; rev: depth grows toward the camera
-typedef struct { double vp0[16], p[16], pos[3], fwd[3], jx, jy, near, far, fov, aspect; int ok, rev; } mfx_cam;
+// vpr: the view-projection as the block holds it (which blocks hold this camera, for the jitter)
+typedef struct { double vp0[16], p[16], pos[3], fwd[3], jx, jy, near, far, fov, aspect; float vpr[16]; int ok, rev; } mfx_cam;
 // Reads the camera from the matrices as the uniform block holds them (rows); 0 with the reason when they are not a perspective camera (a shadow map's orthographic one, an empty block)
 int mfx_cam_from(const float view[12], const float vp[16], int glz, mfx_cam *c, char *why, size_t n) {
-    memset(c, 0, sizeof *c);
+    memset(c, 0, sizeof *c); memcpy(c->vpr, vp, sizeof c->vpr);
     double v[16] = {0}, w[16], iv[16], P[16];
     for (int i = 0; i < 12; i++) v[i] = view[i];
     v[15] = 1; for (int i = 0; i < 16; i++) w[i] = vp[i];
@@ -129,11 +130,15 @@ static int mfx_cam_on(void) {
     return v;
 }
 static void mfx_pass_begin(id<MTLTexture> dt, NSUInteger level) { g_mc.pass_depth = dt && level == 0 ? dt : nil; }
+// A depth attachment a scene camera can go with: 2D, one sample, 32-bit, at least 256x144 (a cube map face or a small probe is not the scene)
+static int mfx_depth_ok(id<MTLTexture> d) {
+    return d && d.textureType == MTLTextureType2D && d.sampleCount == 1 && (d.pixelFormat == MTLPixelFormatDepth32Float || d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) && d.width >= 256 && d.height >= 144;
+}
 static void mfx_note_pass(void) {   // every draw: only a pass's first one reads
     if (g_mc.pass_seen == g_pass.serial) return;
     g_mc.pass_seen = g_pass.serial;
     id<MTLTexture> d = g_mc.pass_depth;
-    if (!d || d.textureType != MTLTextureType2D || d.sampleCount != 1 || (d.pixelFormat != MTLPixelFormatDepth32Float && d.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) || d.width < 256 || d.height < 144) return;
+    if (!mfx_depth_ok(d)) return;
     int i = 0; while (i < g_mc.n && g_mc.c[i].depth != d) i++;
     if (i == g_mc.n) {   // a new one; when all are taken, in place of the one used longest ago (a frame without the upscaler, a menu, leaves its passes)
         if (g_mc.n < MFX_CAND) g_mc.n++; else { i = 0; for (int k = 1; k < MFX_CAND; k++) if (g_mc.c[k].last < g_mc.c[i].last) i = k; }
@@ -153,13 +158,141 @@ static void mfx_note_pass(void) {   // every draw: only a pass's first one reads
     }
 }
 
+// ---- The camera jitter (DM_MFX_JITTER) ----
+// The game does not jitter its projection, so the temporal scaler sees every edge at the same pixel centres each frame and has no sub-pixel detail to gather: edges stay stair-stepped.
+// With DM_MFX_JITTER=1 and the temporal scaler (DM_UPSCALER=metalfx-temporal), each frame's main camera is offset by a sub-pixel amount on the GPU only. A binding of a uniform block that
+// holds it (the profile's camera_jitter: the block's size, the offset of its view-projection, the clip matrices to offset; Bananza: gsys's Context and the effect system's view block)
+// reads a copy in the submission's arena whose listed 4x4 matrices (rows) have the offset added: row 0 += jx row 3, row 1 += jy row 3, so the clip position moves by (jx, jy) w and the
+// picture by (jx, jy) in normalized device units, whatever the projection. The game's memory, which its CPU reads and the camera for the motion vectors is read from (mfx_note_pass), keeps
+// the unjittered matrices: the motion vectors carry no jitter, and MetalFX is told the offset (mfx_temporal). The frame's main camera is the first one at camera_mats, in a pass with a
+// scene-sized 32-bit depth (as mfx_note_pass takes it), with the lens of the camera the temporal scaler took in the frame before (aspect, near plane, field of view); every block of
+// the frame whose view-projection equals it gets the same offset, at any stage and in any pass after it (a shadow, cube map or other camera's block differs and is left as is). The
+// offset: a Halton (2, 3) sequence, 8 x (output / input)^2 phases (FSR 2's count, from the last temporal frame's sizes), in pixels of the viewport of that first pass, so a pass at half
+// the size gets the same picture offset. No temporal frame just before (another upscaler, a menu, a frame without depth or camera) or no matching camera: no jitter that frame
+typedef struct { uint32_t size, n, off[4]; } mfx_jit_kind;   // a block of size bytes whose 4x4 at off[0] is the main view-projection: off[0..n) are offset
+#if DM_GAME_CAM_JITTER_N
+static const mfx_jit_kind k_mfx_jit[DM_GAME_CAM_JITTER_N] = DM_GAME_CAM_JITTER;
+#else
+static const mfx_jit_kind k_mfx_jit[1] = {{0, 0, {0}}};
+#endif
+// The sign MetalFX takes the offset with: its jitterOffset is the picture's move, in pixels of the input with y down the rows (where a point of the unjittered frame is found in the
+// input). t_mfx, a static scene with edges and a thin line through the scaler: with this sign the edges come about twice as close to the supersampled scene as without jitter, with the
+// other one twice as far. A variable so that the test can try the other one
+static double g_mfx_jit_sign = 1;
+enum { MFX_JIT_CACHE = 16 };
+static struct {
+    int on;   // -1: not decided yet
+    // this frame's (frame: g_cur_frame + 1; g_mfx_jit_frame equals it once the main camera is found)
+    uint64_t frame; int can, act;
+    float vp[16]; double jx, jy, px, py, vw, vh; uint32_t phase, phases;   // the main view-projection (unjittered); the offset in normalized device units, in pixels of the viewport vw x vh
+    uint64_t seen_addr, seen_pass;   // the camera_mats binding last looked at
+    struct { uint64_t addr, size, pass, fence, frame, gpu; __unsafe_unretained id<MTLBuffer> buf; } c[MFX_JIT_CACHE]; int nc;   // this pass's bindings looked at: their copy (gpu 0: not the camera)
+    // across frames
+    mfx_cam last; uint64_t last_frame; int last_ok; double ratio;   // the camera the temporal scaler took last (unjittered), its frame, and its output / input width
+    uint64_t idx, frames, copies, lens_miss; int state, said, probe;
+} g_jit = {.on = -1, .state = -1};
+static double mfx_halton(uint32_t i, uint32_t b) { double f = 1, r = 0; while (i) { f /= b; r += f * (i % b); i /= b; } return r; }
+static uint32_t mfx_jit_phases(double ratio) { double r = ratio >= 1 ? ratio : 1; uint32_t n = (uint32_t)(8 * r * r); return n < 8 ? 8 : n > 64 ? 64 : n; }
+// Phase k (0-based) of the sequence, in pixels: Halton (2, 3) of k + 1, centred on 0 (each in [-0.5, 0.5))
+static void mfx_jit_phase(uint32_t k, double *px, double *py) { *px = mfx_halton(k + 1, 2) - 0.5; *py = mfx_halton(k + 1, 3) - 0.5; }
+// The offset added to a clip matrix as a uniform block holds it (rows): clip x += jx w, clip y += jy w
+static void mfx_jit_apply(float m[16], double jx, double jy) { for (int c = 0; c < 4; c++) { m[c] += (float)(jx * m[12 + c]); m[4 + c] += (float)(jy * m[12 + c]); } }
+static int mfx_jit_same(const float a[16], const float b[16]) { for (int i = 0; i < 16; i++) if (!(fabsf(a[i] - b[i]) <= 1e-6f * fmaxf(1, fabsf(b[i])))) return 0; return 1; }
+static int mfx_jit_lens(const mfx_cam *c, const mfx_cam *l) {   // the same lens as the temporal scaler's last camera: not a shadow, cube map or close-up camera
+    return c->rev == l->rev && fabs(c->aspect - l->aspect) <= 0.02 * l->aspect && fabs(c->near - l->near) <= 0.1 * l->near && fabs(c->fov - l->fov) <= 0.2 * l->fov;
+}
+static int mfx_jit_on(void) {
+    if (g_jit.on >= 0) return g_jit.on;
+    const char *e = getenv("DM_MFX_JITTER"); int v = e && (!strcmp(e, "1") || !strcmp(e, "on"));
+    if (e && *e && !v && strcmp(e, "0") && strcmp(e, "off")) MLOG("[RED] DM_MFX_JITTER=%s: 1 or 0; off", e);
+    if (v && up_mfx_on() != 2) { MLOG("[mfx] DM_MFX_JITTER: the camera jitter is for MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal); off"); v = 0; }
+    if (v && !DM_GAME_CAM_JITTER_N) { MLOG("[mfx] DM_MFX_JITTER: this game's profile has no camera_jitter key (the uniform blocks holding its camera); off"); v = 0; }
+    if (v) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the frame's main camera is offset by a sub-pixel Halton (2, 3) sequence in %d kind(s) of uniform block, on the GPU only; MetalFX is given the offset", DM_GAME_CAM_JITTER_N);
+    return g_jit.on = v;
+}
+// A new frame: the frame before's outcome, logged when it changed, and whether this one may jitter
+static void mfx_jit_frame_begin(uint64_t ep) {
+    if (g_jit.frame && !g_jit.act) {
+        int st = g_jit.can ? 2 : 0;
+        if (st != g_jit.state && g_jit.state >= 0 && g_jit.said++ < 40)
+            MLOG("[mfx] camera jitter off from frame %llu: %s", (unsigned long long)(g_jit.frame - 1), st ? "no pass bound a camera with the lens of the temporal scaler's last one in a scene-sized depth pass" :
+                 "the temporal scaler did not draw the frame before (another upscaler, a menu, or a frame without the scene's depth or camera)");
+        g_jit.state = st;
+    }
+    g_jit.frame = ep + 1; g_jit.act = 0; g_mfx_jit_frame = 0; g_jit.seen_addr = 0; g_jit.seen_pass = 0; g_jit.nc = 0;
+    g_jit.can = g_jit.last_ok && ep >= g_jit.last_frame && ep - g_jit.last_frame <= 1;
+}
+// Every draw while the frame's main camera is not found: the camera at camera_mats when its binding changed
+static void mfx_jit_note(void) {
+    uint64_t ep = atomic_load(&g_cur_frame);
+    if (g_jit.frame != ep + 1) mfx_jit_frame_begin(ep);
+    if (g_jit.act || !g_jit.can) return;
+    const p_bind_buf *u = &S.ubo[DM_GAME_CAM_MATS_STAGE][DM_GAME_CAM_MATS_SLOT];
+    if (!u->addr || (u->addr == g_jit.seen_addr && g_pass.serial == g_jit.seen_pass)) return;
+    g_jit.seen_addr = u->addr; g_jit.seen_pass = g_pass.serial;
+    id<MTLTexture> d = g_mc.pass_depth;
+    if (!mfx_depth_ok(d)) return;
+    mfx_cam c; char why[160];
+    if (!mfx_cam_read(DM_GAME_CAM_MATS_STAGE, DM_GAME_CAM_MATS_SLOT, &c, why, sizeof why)) return;
+    if (!mfx_jit_lens(&c, &g_jit.last)) { g_jit.lens_miss++; return; }
+    g_jit.phases = mfx_jit_phases(g_jit.ratio); g_jit.phase = (uint32_t)(g_jit.idx++ % g_jit.phases);
+    mfx_jit_phase(g_jit.phase, &g_jit.px, &g_jit.py);
+    g_jit.vw = S.has_vp && fabsf(S.vp[0][2]) >= 1 ? fabsf(S.vp[0][2]) : (double)d.width; g_jit.vh = S.has_vp && fabsf(S.vp[0][3]) >= 1 ? fabsf(S.vp[0][3]) : (double)d.height;
+    g_jit.jx = 2 * g_jit.px / g_jit.vw; g_jit.jy = 2 * g_jit.py / g_jit.vh;
+    memcpy(g_jit.vp, c.vpr, sizeof g_jit.vp);
+    g_jit.act = 1; g_mfx_jit_frame = ep + 1; g_jit.frames++;
+    args_dirty_all();   // this pass's draws encoded before read the blocks unjittered: their arguments are encoded again
+    if (g_jit.state != 1 && g_jit.said++ < 40)
+        MLOG("[mfx] camera jitter on from frame %llu: main camera in pass %llu (depth %lux%lu, viewport %.0fx%.0f), %u phases (output / input %.3f); this frame's offset %.3f, %.3f px",
+             (unsigned long long)ep, (unsigned long long)g_stat_pass, (unsigned long)d.width, (unsigned long)d.height, g_jit.vw, g_jit.vh, g_jit.phases, g_jit.ratio, g_jit.px, g_jit.py);
+    g_jit.state = 1;
+    if (mfx_probe() && g_jit.probe < 3) { g_jit.probe++;
+        MLOG("[mfx] jitter probe, frame %llu: main camera found at pass %llu, phase %u of %u, offset %.4f, %.4f px of %.0fx%.0f = %.6f, %.6f (normalized device units)", (unsigned long long)ep,
+             (unsigned long long)g_stat_pass, g_jit.phase, g_jit.phases, g_jit.px, g_jit.py, g_jit.vw, g_jit.vh, g_jit.jx, g_jit.jy); }
+}
+// encode_args_: a uniform binding of one of the profile's block sizes whose view-projection is this frame's main camera's reads a jittered copy (its GPU address; 0: the block as it is)
+static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf) {
+    *buf = nil;
+    uint64_t fr = atomic_load(&g_cur_frame) + 1;
+    if (!g_jit.act || g_mfx_jit_frame != fr || !u->addr) return 0;
+    const mfx_jit_kind *k = NULL;
+    for (int i = 0; i < DM_GAME_CAM_JITTER_N; i++) if (u->size == k_mfx_jit[i].size) { k = &k_mfx_jit[i]; break; }
+    if (!k) return 0;
+    uint64_t fence = atomic_load(&g_fence);
+    for (int i = 0; i < g_jit.nc; i++) if (g_jit.c[i].addr == u->addr && g_jit.c[i].size == u->size && g_jit.c[i].pass == g_stat_pass && g_jit.c[i].fence == fence && g_jit.c[i].frame == fr) {
+        *buf = g_jit.c[i].gpu ? g_jit.c[i].buf : nil; return g_jit.c[i].gpu; }
+    int live = (g_nubd && ubd_hits(u->addr, u->addr + u->size)) || pend_hits(u->addr, u->size);   // GPU-side writes queued over it: read again at each binding
+    float m[16]; uint64_t gpu = 0; id<MTLBuffer> ab = nil; int cam = mfx_ubo(stage, reg, k->off[0], sizeof m, m) && mfx_jit_same(m, g_jit.vp);
+    if (cam) {
+        size_t o = arena_alloc((size_t)u->size, &ab); uint8_t *d = (uint8_t *)ab.contents + o;
+        if (mfx_ubo(stage, reg, 0, (size_t)u->size, d)) { for (uint32_t j = 0; j < k->n; j++) mfx_jit_apply((float *)(d + k->off[j]), g_jit.jx, g_jit.jy); gpu = ab.gpuAddress + o; g_jit.copies++; }
+        else { static int said; if (!said++) MLOG("[RED] [mfx] camera jitter: a %llu-byte block holding the main camera (stage %d uniform %d) cannot be read whole: left unjittered", (unsigned long long)u->size, stage, reg); }
+    }
+    if (mfx_probe() && g_jit.probe <= 3 && g_jit.probe > 0 && g_jit.frames == (uint64_t)g_jit.probe)
+        MLOG("[mfx] jitter probe   pass %llu (target %lux%lu) stage %d uniform %d: %llu-byte block at %#llx %s", (unsigned long long)g_stat_pass, (unsigned long)g_pass.tw, (unsigned long)g_pass.th, stage, reg,
+             (unsigned long long)u->size, (unsigned long long)u->addr, gpu ? "holds the main camera: read jittered" : cam ? "holds the main camera but was not copied" : "holds another camera: as it is");
+    if (!live) {
+        int i = g_jit.nc < MFX_JIT_CACHE ? g_jit.nc++ : (g_jit.nc = 1, 0);   // full: the earlier passes' entries are dropped
+        g_jit.c[i].addr = u->addr; g_jit.c[i].size = u->size; g_jit.c[i].pass = g_stat_pass; g_jit.c[i].fence = fence; g_jit.c[i].frame = fr; g_jit.c[i].gpu = gpu; g_jit.c[i].buf = ab;
+    }
+    if (gpu) *buf = ab;
+    return gpu;
+}
+// The jitter of this frame's main camera, when cam is it (the camera the upscaler's depth pass had): in normalized device units
+static int mfx_jit_used(const mfx_cam *cam, double *jx, double *jy) {
+    *jx = *jy = 0;
+    if (!g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || !mfx_jit_same(cam->vpr, g_jit.vp)) return 0;
+    *jx = g_jit.jx; *jy = g_jit.jy; return 1;
+}
+
 // ---- Motion vectors and depth at the upscaler's input ----
 typedef struct { __strong id<MTLTexture> in, out; NVNcopyRegion ir, orr; uint64_t out_ser; } mfx_io;   // the upscaler's input and output textures and rectangles (up_mfx_resolve)
 // The temporal scaler (mfx_temporal)
 static struct {
     id<MTL4FXTemporalScaler> sc; NSUInteger key[6]; int refused, fresh;
     id<MTLTexture> col, res;   // the colour input (output size; the input's rectangle at the origin) and the result when it cannot go straight into the game's texture
-    uint64_t n, fallback;
+    uint64_t n, fallback, jit;   // dispatches drawn, left to the spatial scaler, drawn with the camera jitter
+    float jx, jy;   // the last jitter offset given to MetalFX
 } g_mts;
 // The frame's motion: g_mm.mv[k] / dep[k] (k = cur) hold this frame's, at the origin, cw x ch of the textures' w x h (the upscaler's output size: the most the input can have)
 static struct {
@@ -199,9 +332,11 @@ static int mfx_motion(const mfx_io *io) {
     uint64_t ep = atomic_load(&g_cur_frame);
     if (g_mm.made_frame == ep + 1) return g_mm.ok;   // already this frame (made_frame is the frame + 1, so 0 is never a frame's)
     g_mm.made_frame = ep + 1; g_mm.ok = 0;
-    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu",
+    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu%s",
                                        (unsigned long long)g_mm.frames, (unsigned long long)g_mm.made, (unsigned long long)g_mm.no_depth, (unsigned long long)g_mm.no_cam, (unsigned long long)g_mm.cuts,
-                                       (unsigned long long)g_mm.gaps, (unsigned long long)g_mts.n, (unsigned long long)g_mts.fallback);
+                                       (unsigned long long)g_mm.gaps, (unsigned long long)g_mts.n, (unsigned long long)g_mts.fallback,
+                                       g_jit.on > 0 ? [NSString stringWithFormat:@"; camera jitter: %llu frames jittered, %llu of them drawn by the temporal scaler, %llu block copies, %llu cameras of another lens",
+                                                       (unsigned long long)g_jit.frames, (unsigned long long)g_mts.jit, (unsigned long long)g_jit.copies, (unsigned long long)g_jit.lens_miss].UTF8String : "");
     id<MTLTexture> depth = nil; mfx_cam cam;
     int picked = mfx_pick(io, &depth, &cam);
     int nocam = 0; for (int i = 0; i < g_mc.n; i++) nocam |= g_mc.c[i].depth.width == io->in.width && g_mc.c[i].depth.height == io->in.height;
@@ -308,8 +443,13 @@ static int mfx_temporal(const mfx_io *io) {
     ubd_land_compute();
     id<MTLTexture> dst = direct ? out : res, mv = g_mm.mv[g_mm.cur], dep = g_mm.dep[g_mm.cur];
     NSUInteger cw = io->ir.width, ch = io->ir.height;
-    float jx = (float)(g_mm.cam.jx * cw / 2), jy = (float)(g_mm.cam.jy * ch / 2) * (atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll ? 1 : -1);   // in pixels, y down the rows (open: the sign MetalFX wants is not checked on a jittering game)
-    int reset = g_mm.reset || g_mts.fresh, rev = g_mm.cam.rev; g_mts.fresh = 0;
+    // The projection's offset: the game's own (none in Bananza) and the camera jitter's (mfx_jit_used), in normalized device units; to MetalFX in pixels of the content, y down the rows,
+    // as MetalFX takes them (g_mfx_jit_sign: the picture's move, checked by t_mfx)
+    double ojx, ojy; int jit = mfx_jit_used(&g_mm.cam, &ojx, &ojy);
+    if (g_jit.act && g_mfx_jit_frame == atomic_load(&g_cur_frame) + 1 && !jit) { static int said; if (!said++) MLOG("[RED] [mfx] camera jitter: the frame was jittered but the upscaler's depth pass has another camera: MetalFX is given no offset for it (logged once)"); }
+    double ox = g_mm.cam.jx + ojx, oy = g_mm.cam.jy + ojy;
+    float jx = (float)(g_mfx_jit_sign * ox * cw / 2), jy = (float)(g_mfx_jit_sign * oy * ch / 2 * (atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll ? 1 : -1));
+    int reset = g_mm.reset || g_mts.fresh, rev = g_mm.cam.rev; g_mts.fresh = 0; g_mts.jx = jx; g_mts.jy = jy;
     id<MTL4ComputeCommandEncoder> ce = [g_cb computeCommandEncoder];   // as dlss_eval: MetalFX opens encoders of its own, which take no barrier
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
@@ -328,6 +468,9 @@ static int mfx_temporal(const mfx_io *io) {
         else if (!copy_t2t_draw(res, out, 0, 0, 0, 0, &at0o, &io->orr, 0, 0)) { MLOG("[RED] [mfx] the temporal scaler's result could not be drawn into format %lu", (unsigned long)out.pixelFormat); }
     }
     args_dirty_all();
+    g_jit.last = g_mm.cam; g_jit.last_ok = 1; g_jit.last_frame = atomic_load(&g_cur_frame); g_jit.ratio = (double)ow / cw;   // the camera and sizes the next frames' jitter goes by
+    if (jit && !g_mts.jit++) MLOG("[mfx] first jittered frame drawn by the temporal scaler: offset %.4f, %.4f px of the %lux%lu content (jitterOffset %.4f, %.4f)", ojx * cw / 2, ojy * ch / 2,
+                                  (unsigned long)cw, (unsigned long)ch, jx, jy);
     if (!g_mts.n++) MLOG("upscaler: first dispatch drawn by MetalFX's temporal scaler, %ux%u at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", (unsigned)cw, (unsigned)ch, io->ir.xoffset, io->ir.yoffset,
                          (unsigned long)io->in.width, (unsigned long)io->in.height, (unsigned long)io->in.pixelFormat, io->orr.width, io->orr.height, io->orr.xoffset, io->orr.yoffset,
                          (unsigned long)out.width, (unsigned long)out.height, (unsigned long)out.pixelFormat, direct ? ", straight into the game's texture" : ", through a texture of its own");

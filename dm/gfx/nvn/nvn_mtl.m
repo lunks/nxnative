@@ -940,6 +940,8 @@ void mtl_sub_begin(void) {
 static void rp_end(void);
 // MetalFX temporal upscaling and frame interpolation at a game's own upscaler (nvn_mfx.inc): the scene's depth and camera, from each pass with a depth attachment
 static int mfx_cam_on(void); static void mfx_pass_begin(id<MTLTexture> depth, NSUInteger level); static void mfx_note_pass(void);
+// ... and the camera jitter (DM_MFX_JITTER): g_mfx_jit_frame is the frame + 1 whose main camera was found (0: none), and a binding of the blocks holding it reads a jittered copy (mfx_jit_bind)
+static uint64_t g_mfx_jit_frame; static int mfx_jit_on(void); static void mfx_jit_note(void); static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf);
 // ... and frame interpolation's UI point: an upscaler frame waits (g_mfi_pend) for the first pass into one of the game's window textures (mfx_ui_point, before a pass opens)
 static int g_mfi_pend; static void mfx_ui_point(void);
 static void geo_mesh_flush_pass(void);   // a waiting run of mesh draws is drawn before its pass ends (nvn_geometry.inc)
@@ -8113,7 +8115,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) gpu = ubd_shadow(u->addr, u->addr + ul);
                 else if (ubp_get(u->addr, u->addr + ul, &g, &c)) gpu = g;
                 else RED_ONCE(92, "a uniform update deferred inside the pass covers only part of the binding (stage %d cb%d): the content before the update is read", nvn_stage, reg); }
+            id<MTLBuffer> jb = nil;   // a block holding the frame's main camera: its jittered copy (DM_MFX_JITTER, nvn_mfx.inc)
+            if (g_mfx_jit_frame) { uint64_t jg = mfx_jit_bind(nvn_stage, reg, u, &jb); if (jg) gpu = jg; else jb = nil; }
             if (bl) {
+                if (jb) PD("B %llu st%d cb reg%d addr=%#llx read through a copy with the camera jitter (nvn_mfx.inc)", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr);
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
                 // DM_NVN_CBDUMP=directory: also saves the whole uniform block to disk as-is (F<frame>_p<pass>_st<stage>_cb<slot>_<address>.bin), for the ground-truth side to compare byte by byte by guest address
@@ -8125,7 +8130,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 }
             }
             slots[aid] = gpu;
-            USE((__bridge id<MTLBuffer>)mb, MTLResourceUsageRead);
+            USE(jb ? jb : (__bridge id<MTLBuffer>)mb, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_SAMPU && b->n) {   // the samplers of an array of handles in a uniform buffer: element k = the sampler ID of the handle at the array's base + 8k (see the textures below)
             for (int k = 0; k < b->n; k++) {   // only registered IDs are looked up: most elements are other data the shader never picks as a handle
                 int sid = ubo_samp_id(ubo_handle(nvn_stage, reg, b->off + 8 * k)); if (sid >= g_nsreg || !g_sreg_ok[sid]) sid = 0;
@@ -8262,7 +8267,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         } else if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP) {   // B: storage buffers / compute-stage uniforms are device pointers; the address is taken by NVN slot
             const p_bind_buf *u = reg < 16 ? (b->kind == NVN_RB_UBOP ? &S.ubo[nvn_stage][reg] : &S.ssbo[nvn_stage][reg]) : NULL;
             void *mb; uint64_t mo, gpu;
-            if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); if (b->rw && b->kind == NVN_RB_SBUFP && !(reg < 32 && (sh->sb_ro >> reg & 1))) sbw_note(u->addr, sbw_len(u->size, mb, mo), SBW_GPU); }   // cb_extent.tsv: slots the shader never writes
+            id<MTLBuffer> jb = nil; uint64_t jg = 0;   // compute's uniform blocks: a block holding the frame's main camera reads its jittered copy (DM_MFX_JITTER, nvn_mfx.inc)
+            if (g_mfx_jit_frame && b->kind == NVN_RB_UBOP && u && u->addr && !(jg = mfx_jit_bind(nvn_stage, reg, u, &jb))) jb = nil;
+            if (jg) { slots[aid] = jg; USE(jb, MTLResourceUsageRead); }
+            else if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); if (b->rw && b->kind == NVN_RB_SBUFP && !(reg < 32 && (sh->sb_ro >> reg & 1))) sbw_note(u->addr, sbw_len(u->size, mb, mo), SBW_GPU); }   // cb_extent.tsv: slots the shader never writes
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) PD("B %llu st%d sbufp reg%d %s addr=%#llx size=%llu %s", g_stat_pass, nvn_stage, reg, u && u->addr ? "real" : "dummy", u ? (unsigned long long)u->addr : 0ull, u ? (unsigned long long)u->size : 0ull, b->rw ? "rw" : "ro");
         } else if (b->kind == NVN_RB_SBUFU) {   // B: a storage buffer whose GPU address the game keeps in its own uniform buffer (Monster Hunter Rise's compute shaders: c3 + 0x38); read like a bindless handle
@@ -10919,7 +10927,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_rp_layered = 0; g_sm_plan.on = 0;
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { PD("Z %llu draw skipped: the render pass did not begin vs=%.16s fs=%.16s", g_stat_pass, pr && pr->sh[0] ? pr->sh[0]->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-"); return; }   // Z lines: why a draw was dropped at these early returns
-    if (mfx_cam_on()) mfx_note_pass();   // the pass's first draw: its camera (nvn_mfx.inc)
+    if (mfx_cam_on()) { mfx_note_pass(); if (mfx_jit_on()) mfx_jit_note(); }   // the pass's first draw: its camera; the frame's main camera for the jitter (nvn_mfx.inc)
     if (defer_q_draw) {
         defer_replay();
         // A replayed draw may have ended Q's encoder to align a GPU-written stream. Restore this draw's streams and encoder.
