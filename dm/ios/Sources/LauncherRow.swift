@@ -35,7 +35,7 @@ struct SettingRow: View {
             switch s.kind {
             case "choice":
                 Picker(selection: m.binding(s)) {
-                    ForEach(s.options ?? [], id: \.[0]) { Text($0[1]).tag($0[0]) }
+                    ForEach(m.options(s), id: \.[0]) { Text($0[1]).tag($0[0]) }
                 } label: {
                     settingLabel
                 }

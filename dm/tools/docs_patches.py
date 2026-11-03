@@ -140,6 +140,8 @@ SWITCH_BINDING = [
     ('jit_out_code', '', {'what': 'where a nn::jit output lists the code it made', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the layout of the game's own output buffer, for the image an iPhone serves"}),
     ('camera_mats', '', {'what': "the scene camera's uniform block, for MetalFX's motion vectors", 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
      'why': "the engine's own block and member offsets (gsys's Context, from agl's shader reflection); no NVN state names the camera"}),
+    ('res_chain', '', {'what': 'the resolution chain logged at launch', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the game's own output sizes and upscale rates, for one log line; it changes nothing"}),
     ('op_mode', '', {'what': 'the operation mode at start', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the game's controls (handheld: the touch screen instead of a gyro pointer)"}),
 ]
 

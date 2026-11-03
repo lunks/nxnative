@@ -119,13 +119,16 @@ def upscaler_keys(g):
 SETTING_PATCHES = 'setting_patches.tsv'
 WHEN_QUANTITIES = ('hdr_peak',)   # what a setting patch row's condition may test, as the host knows it at launch (hle_cheats.c sp_quantity): hdr_peak = the HDR peak / paper white it reports
 WHEN = re.compile(r'(' + '|'.join(WHEN_QUANTITIES) + r')(<=|>=|<|>)(\d+(?:\.\d+)?)')
+# or a term on another setting, as the environment holds it at launch: DM_<NAME>=a|b holds when the variable is set to one of the values, DM_<NAME>!=a|b when it is
+# unset or set to none of them (so a row can depend on a second setting: Donkey Kong Bananza's fixed or dynamic upscale ratio, DM_UPSCALE_DYNAMIC)
+WHEN_ENV = re.compile(r'(DM_[A-Z0-9_]+)(!=|=)([A-Za-z0-9_.+-]+(?:\|[A-Za-z0-9_.+-]+)*)')
 
 
 def setting_patches(g):
     """The profile's setting patches (setting_patches.tsv; dm/games/README.md, Setting patches): memory writes the host makes at launch when an
     environment variable has a value, each verified against its original word on the module build it was found in. A list of dicts, in table order:
     var, value, label and, for a write row, module, build (32 hex digits, lower case), offset, orig, new (ints) and when (a condition on a quantity the
-    host knows at launch, '' for none); a label row (module "-") has no write. Every write row's build must be one of the profile's build rows for that
+    host knows at launch or on another setting's value, '' for none); a label row (module "-") has no write. Every write row's build must be one of the profile's build rows for that
     module, so no fixed address reaches a build it was not found in; one word is written by one variable only (two values of one variable may write the
     same word: only one value is ever chosen), and once per value unless each of its rows has a condition (the host refuses two that hold together)"""
     p = g.table(SETTING_PATCHES)
@@ -140,7 +143,9 @@ def setting_patches(g):
         if len(c) == 8: c.append('')
         if len(c) != 9: sys.exit(f'{where}: 8 or 9 columns expected (variable value label module build offset original new [when]), or 4 for a label row (module -): {len(c)} found')
         var, value, label, mod, build, off, orig, new, when = c
-        if when and not all(WHEN.fullmatch(t) for t in when.split('&')): sys.exit(f'{where}: when is <quantity><op><number>, joined by &, the quantities {", ".join(WHEN_QUANTITIES)}, the ops < <= > >=: {when}')
+        if when and not all(WHEN.fullmatch(t) or WHEN_ENV.fullmatch(t) for t in when.split('&')):
+            sys.exit(f'{where}: when is <quantity><op><number> (the quantities {", ".join(WHEN_QUANTITIES)}, the ops < <= > >=) or <VAR>=<value>[|<value>...] / <VAR>!=<value>[|<value>...], joined by &: {when}')
+        if when and any((m := WHEN_ENV.fullmatch(t)) and m[1] == var for t in when.split('&')): sys.exit(f'{where}: a row\'s condition names its own variable {var} (the value already chooses the row): {when}')
         if not re.fullmatch(r'DM_[A-Z0-9_]+', var): sys.exit(f'{where}: the variable is DM_<NAME>: {var}')
         if not re.fullmatch(r'[A-Za-z0-9_.+-]+', value): sys.exit(f'{where}: the value is one word of letters, digits, _ . + -: {value}')
         if not label: sys.exit(f'{where}: no label (the option\'s name in the settings window, and the host\'s log line)')
@@ -251,6 +256,10 @@ def header_one(g):
     cm = g.words('camera_mats', '')   # the scene camera's uniform block, for MetalFX's motion vectors (nvn_mfx.inc): <vertex | fragment> <slot> <view offset> <view-projection offset>
     if cm and (len(cm) != 4 or cm[0] not in ('vertex', 'fragment') or not cm[1].isdigit() or int(cm[1]) > 15 or not all(re.fullmatch(r'0x[0-9a-fA-F]+|\d+', w) for w in cm[2:]) or any(int(w, 0) % 16 for w in cm[2:])):
         sys.exit(f'{g.id}: camera_mats takes <vertex | fragment> <slot 0-15> <view offset> <view-projection offset> (offsets 16-byte aligned): {" ".join(cm)}')
+    rc = g.words('res_chain', '')   # the resolution chain the host logs at launch (loader.c res_chain_log): the upscaler's output docked, docked with single upscale, handheld, the game's own rate range
+    if rc and not (len(rc) == 5 and all(re.fullmatch(r'[1-9]\d{1,4}x[1-9]\d{1,4}', w) for w in rc[:3]) and all(re.fullmatch(r'\d+(\.\d+)?', w) for w in rc[3:])
+                   and 1.0 <= float(rc[3]) <= float(rc[4])):
+        sys.exit(f'{g.id}: res_chain takes <docked output WxH> <docked output with single upscale WxH> <handheld output WxH> <lowest rate> <highest rate> (rates from 1.0): {" ".join(rc)}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
@@ -314,6 +323,7 @@ def header_one(g):
          f'#define DM_GAME_CAM_MATS {int(bool(cm))}', f'#define DM_GAME_CAM_MATS_STAGE {int(bool(cm) and cm[0] == "fragment")}',
          f'#define DM_GAME_CAM_MATS_SLOT {int(cm[1]) if cm else 0}', f'#define DM_GAME_CAM_MATS_VIEW {int(cm[2], 0) if cm else 0:#x}', f'#define DM_GAME_CAM_MATS_VP {int(cm[3], 0) if cm else 0:#x}',
          f'#define DM_GAME_MFX_FRAMES {int(bool(cm) and bool(ups))}',   # the launcher's frame interpolation: an upscaler of the game's own to take the scene from, and the camera
+         f'#define DM_GAME_RES_CHAIN {q(" ".join(rc))}',   # res_chain: docked output, docked with single upscale, handheld output, the game's lowest / highest upscale rate ("" = none)
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          # setting patches (setting_patches.tsv): {variable, value, label, module, build ID, offset, original word, new word, condition} per write, applied at launch (hle_cheats.c)
          f'#define DM_GAME_SETTING_PATCHES_N {len(sp)}',

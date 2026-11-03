@@ -140,6 +140,31 @@ class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes 
             with self.subTest(why=why, table=table):
                 self.assertIn(why, with_patches(table))
 
+    def test_conditions_on_another_setting(self):   # DM_<NAME>=a|b / DM_<NAME>!=a|b: a second setting picks the words (Bananza's fixed or dynamic upscale ratio)
+        w = f'main\t{BID}'
+        rows = with_patches(f'DM_R\t1.5\tFixed\t{w}\t0x1000\t36081548\t140000AA\tDM_D!=1\n'
+                            f'DM_R\t1.5\tDynamic\t{w}\t0x1004\tBD406502\t1E2F1002\tDM_D=1\n'
+                            f'DM_R\t3.0\tUltra\t{w}\t0x1000\t36081548\t140000AA\tDM_U=metalfx|metalfx-temporal&hdr_peak>1\n')
+        self.assertEqual(rows[0], '#define DM_GAME_SETTING_PATCHES_N 3')
+        for c in ('"DM_D!=1"}', '"DM_D=1"}', '"DM_U=metalfx|metalfx-temporal&hdr_peak>1"}'): self.assertIn(c, rows[1])
+        for table, why in [(f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tDM_D==1\n', 'when is'),
+                           (f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tdm_d=1\n', 'when is'),
+                           (f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tDM_D=1|\n', 'when is'),
+                           (f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tDM_R=1.5\n', 'names its own variable')]:
+            with self.subTest(why=why, table=table):
+                self.assertIn(why, with_patches(table))
+        self.assertIn('written twice', with_patches(f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tDM_D=1\nDM_R\t1.5\tB\t{w}\t0x1000\t36081548\t140000AB\n'))   # still: a row without a condition shares no word
+
+
+class ResChain(unittest.TestCase):   # res_chain: the resolution chain the host logs at launch (loader.c res_chain_log)
+    def test_macro(self):
+        self.assertIn('#define DM_GAME_RES_CHAIN ""', header_with(''))
+        self.assertIn('#define DM_GAME_RES_CHAIN "2304x1296 2880x1620 1920x1080 1.375 2.0"', header_with('res_chain\t2304x1296 2880x1620 1920x1080 1.375 2.0\n'))
+
+    def test_refused(self):
+        for bad in ('2304x1296 2880x1620 1920x1080 1.375', '2304x1296 2880x1620 1920x1080 2.0 1.375', '2304x1296 2880x1620 1920x1080 0.5 2.0', '2304*1296 2880x1620 1920x1080 1.375 2.0'):
+            self.assertIn('res_chain takes', header_with(f'res_chain\t{bad}\n'), bad)
+
 
 if __name__ == '__main__':
     unittest.main()

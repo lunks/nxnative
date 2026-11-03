@@ -723,6 +723,37 @@ int main(void) {
         g_sp_nheld = 0; unsetenv("DM_T_HDR"); setenv("DM_T_OVL", "1", 1); hdr_peak_nits = 866;
         CHECK(sp_apply(hp, nh) == 0 && rd32(0x1204) == 0x11111111u, "setting patches: two rows for one word whose conditions both hold: refused");
         unsetenv("DM_T_OVL"); hdr_peak_nits = 0; g_sp_nheld = 0;
+        // rows with conditions on another setting's value (DM_<NAME>=a|b, DM_<NAME>!=a|b): a second setting picks the words; unset is "none of them"
+        static const setting_patch_t ep[] = {
+            {"DM_T_RATIO", "1.5", "Fixed", "main", B1, 0x1300, 0x11111111u, 0x22222222u, "DM_T_DYN!=1"},
+            {"DM_T_RATIO", "1.5", "Dynamic", "main", B1, 0x1304, 0x33333333u, 0x44444444u, "DM_T_DYN=1"},
+            {"DM_T_RATIO", "1.5", "Both", "main", B1, 0x1308, 0x66666666u, 0x77777777u},
+            {"DM_T_RATIO", "3.0", "Ultra", "main", B1, 0x1300, 0x11111111u, 0x55555555u, "DM_T_UP=metalfx|metalfx-temporal"},
+        };
+        const int ne = (int)(sizeof ep / sizeof ep[0]);
+        const char *val = NULL;
+        #define EP_RESET() do { wr32(0x1300, 0x11111111u); wr32(0x1304, 0x33333333u); wr32(0x1308, 0x66666666u); g_sp_nheld = 0; g_sp_napplied = 0; } while (0)
+        EP_RESET(); unsetenv("DM_T_DYN"); unsetenv("DM_T_UP"); setenv("DM_T_RATIO", "1.5", 1);
+        CHECK(sp_apply(ep, ne) == 2 && rd32(0x1300) == 0x22222222u && rd32(0x1304) == 0x33333333u && rd32(0x1308) == 0x77777777u,
+              "setting patches: the other setting unset: its != row and the unconditioned row are written, its = row not");
+        CHECK(dm_setting_patch_applied("DM_T_RATIO", &val) && !strcmp(dm_setting_patch_applied("DM_T_RATIO", &val), "Fixed") && !strcmp(val, "1.5"),
+              "setting patches: the applied value and its label (the first row written) are kept for the host's other launch lines");
+        CHECK(!dm_setting_patch_applied("DM_T_NONE", &val), "setting patches: a variable nothing was written for has no applied label");
+        EP_RESET(); setenv("DM_T_DYN", "1", 1);
+        CHECK(sp_apply(ep, ne) == 2 && rd32(0x1300) == 0x11111111u && rd32(0x1304) == 0x44444444u && !strcmp(dm_setting_patch_applied("DM_T_RATIO", NULL), "Dynamic"),
+              "setting patches: the other setting at the value: its = row is written, the != row not");
+        EP_RESET(); setenv("DM_T_DYN", "0", 1);
+        CHECK(sp_apply(ep, ne) == 2 && rd32(0x1300) == 0x22222222u && rd32(0x1304) == 0x33333333u, "setting patches: the other setting at another value: the != row");
+        EP_RESET(); unsetenv("DM_T_DYN"); setenv("DM_T_RATIO", "3.0", 1);
+        CHECK(sp_apply(ep, ne) == 0 && rd32(0x1300) == 0x11111111u && !dm_setting_patch_applied("DM_T_RATIO", NULL), "setting patches: a value list, the variable unset: no row holds, nothing written");
+        setenv("DM_T_UP", "game", 1);
+        CHECK(sp_apply(ep, ne) == 0 && rd32(0x1300) == 0x11111111u, "setting patches: a value list, the variable at a value outside it: nothing written");
+        setenv("DM_T_UP", "metal", 1);
+        CHECK(sp_apply(ep, ne) == 0 && rd32(0x1300) == 0x11111111u, "setting patches: a value list matches whole values only (metal is a prefix of both, and neither)");
+        EP_RESET(); setenv("DM_T_UP", "metalfx-temporal", 1);
+        CHECK(sp_apply(ep, ne) == 1 && rd32(0x1300) == 0x55555555u, "setting patches: a value list, the variable at its second value: written");
+        unsetenv("DM_T_UP"); unsetenv("DM_T_RATIO"); EP_RESET();
+        #undef EP_RESET
         #undef B1
     }
 

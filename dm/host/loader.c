@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
+#include <math.h>
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include "hle.h"
@@ -304,19 +305,46 @@ static void install_fps_state(module_t *m) {
 }
 // Single upscale (DM_SINGLE_UPSCALE=1; state +0x38, read by Donkey Kong Bananza's stub at main+0x539d6c, its patches.py): the game's display scales become 1.0, so its upscaler
 // writes the window's size and the final copy to the window is 1:1 instead of a second resample. Read once at the start: the game builds its display argument once, at boot
-static void single_upscale_apply(void) {
+static int single_upscale_apply(void) {   // 1 when the stub will take the window's size
     const char *e = getenv("DM_SINGLE_UPSCALE"); int on = e && (!strcmp(e, "1") || !strcmp(e, "on"));
     if (e && *e && !on && strcmp(e, "0") && strcmp(e, "off")) LOG("[RED] DM_SINGLE_UPSCALE=%s: 1 or 0; off", e);
-    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=1: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples"); return; }
-    if (!g_single_upscale_stub || !dm_fps_state) return;
+    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=1: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples"); return 0; }
+    if (!g_single_upscale_stub || !dm_fps_state) return 0;
     uint32_t v = (uint32_t)on; memcpy(dm_fps_state + 0x38, &v, sizeof v);
     if (on) LOG("%s: single upscale on (DM_SINGLE_UPSCALE=1): the game's display scales (Bananza: 0.8 docked) set to 1.0, so its upscaler writes the window's size and its "
                 "final copy is 1:1; the upscaler: output line names the sizes", g_fps_mod);
+    return on;
+}
+
+// The resolution chain at launch, for a profile with res_chain (game.py; Bananza's README.md, Resolution model): the upscaler's output for the mode (docked with or
+// without single upscale, handheld), the upscale rate the game will run (the rate the setting patch DM_UPSCALE_RATIO wrote, fixed, or from it to the game's highest
+// with DM_UPSCALE_DYNAMIC=1; else the game's own range), the scene's size (output / rate, rounded up, as the game's 2304 / 1.375 = 1676), the upscaler, and the effects'
+// and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first upscale names the sizes the game drew
+static void res_chain_log(int single) {
+    int ow[3], oh[3]; double lo, hi;
+    if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
+    int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2, w = ow[k], h = oh[k];
+    const char *val = NULL, *rl = dm_setting_patch_applied("DM_UPSCALE_RATIO", &val), *dy = getenv("DM_UPSCALE_DYNAMIC"), *up = getenv("DM_UPSCALER");
+    double r0 = rl && val ? atof(val) : 0, r1 = r0;
+    if (r0 >= 1.0 && r0 < hi && dy && !strcmp(dy, "1")) r1 = hi;   // dynamic: from the chosen rate up to the game's highest (setting_patches.tsv's dynamic rows)
+    char rate[192], scene[96];
+    if (r0 < 1.0) {   // the game's own: no upscaler at a stage's start, then its range
+        snprintf(rate, sizeof rate, "the game's own: 1.0 (no upscaler) until a frame is over budget, then %.5g to %.5g", lo, hi);
+        snprintf(scene, sizeof scene, "%dx%d, then %dx%d to %dx%d", w, h, (int)ceil(w / lo), (int)ceil(h / lo), (int)ceil(w / hi), (int)ceil(h / hi));
+    } else {
+        if (r1 > r0) snprintf(rate, sizeof rate, "%.5g to %.5g, dynamic (%s)", r0, r1, rl); else snprintf(rate, sizeof rate, "%.5g fixed (%s)", r0, rl);
+        if (r1 > r0) snprintf(scene, sizeof scene, "%dx%d to %dx%d", (int)ceil(w / r0), (int)ceil(h / r0), (int)ceil(w / r1), (int)ceil(h / r1));
+        else snprintf(scene, sizeof scene, "%dx%d", (int)ceil(w / r0), (int)ceil(h / r0));
+    }
+    const char *eff = dm_setting_patch_applied("DM_EFFECTS_RES", NULL), *shd = dm_setting_patch_applied("DM_SHADOW_RES", NULL);
+    LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
+        docked && single ? " (single upscale: the window's size)" : "", rate, scene, r0 == 1.0 && r1 == 1.0 ? "none (rate 1.0)" : up && *up ? up : "game",
+        eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)");
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 void dm_fps_state_apply(void) {
-    if (!dm_fps_state) { single_upscale_apply(); return; }   // only its [RED] line when asked for: no stub reads the page
+    if (!dm_fps_state) { res_chain_log(single_upscale_apply()); return; }   // only its [RED] line when asked for: no stub reads the page
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
@@ -360,7 +388,7 @@ void dm_fps_state_apply(void) {
             LOG("%s: screen shape %.3f: output 1920x%u, layout 1280x%u (DM_SCREEN_ASPECT; only builds with screen-shape stubs follow it)", g_fps_mod, a, oh, lh);
         }
     }
-    single_upscale_apply();
+    res_chain_log(single_upscale_apply());
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }

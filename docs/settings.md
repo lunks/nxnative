@@ -3,7 +3,7 @@
 The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
 
 - [Tested defaults](#tested-defaults)
-- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Single upscale](#single-upscale), [Frame interpolation](#frame-interpolation), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
+- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Output resolution](#output-resolution), [Game's upscaler](#games-upscaler), [Upscaler quality](#upscaler-quality), [Dynamic resolution](#dynamic-resolution), [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Frame rate lock](#frame-rate-lock), [Frame interpolation](#frame-interpolation), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -73,23 +73,32 @@ flowchart LR
 - **Cost:** none in GPU time (it saves 2.5-4 ms a frame in that case); the picture is Apple's scaler's rather than the game's. Frames where the game renders at its output size are not upscaled and keep the game's shader either way. Devices without MetalFX keep the game's upscaler.
 - **Not the same as [Upscaling](#upscaling):** that one scales the finished picture, HUD included, to the screen; this one replaces the game's own step inside the frame. Both can be on.
 
-### Single upscale
+### Output resolution
 
-Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub). As shipped, the game upscales its 3D picture to 2304x1296 (docked), draws its HUD on it, and then stretches the whole picture again to its 2880x1620 window. **On** makes the game upscale once, straight to 2880x1620, and draw its HUD at that size, so nothing is stretched a second time. Off by default.
+Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub), in Advanced settings; it was called **Single upscale**. As shipped (**Game default**), the game upscales its 3D picture to 2304x1296 (docked), draws its HUD on it, and then stretches the whole picture again to its 2880x1620 window. **Window** makes the game upscale once, straight to 2880x1620, and draw its HUD at that size, so nothing is stretched a second time.
 
 - **Cost:** the game's own resolution steps all grow by a quarter in each direction (up to about 1.56 times the pixels of its 3D picture), so it needs more GPU time and its dynamic resolution and frame rate drop sooner in busy areas. It works with every **Game's upscaler** choice.
 - **Docked only:** in handheld mode the game's picture is 1920x1080 either way.
 - **Not played yet:** the HUD's layout at the larger size and memory are unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off.
 - In `env.txt`: `DM_SINGLE_UPSCALE=1`. The game log then says `single upscale on` at start and `upscaler: output 2880x1620 … the window's size: one resample` once it upscales.
 
-### Frame interpolation
+In Advanced settings it comes first, then **Game's upscaler**, **Upscaler quality**, **Dynamic resolution**, **Effects resolution** and the shadow settings: together they work like a PC game's resolution options. The output is what the game upscales to (above); the upscaler quality says how much smaller the game renders its 3D picture; the effects and the shadows can stay at full size whatever you pick. Each changes the game's code when the game starts (Mac only, Donkey Kong Bananza). The log names the result in one line at start: `resolution: docked, output 2880x1620 …; upscale rate 1.6875 fixed (…); scene 1707x960; upscaler metalfx-temporal; effects …; shadows …`.
 
-On the Mac, for games whose profile names their own upscaler and their camera (Donkey Kong Bananza). **On** shows a picture MetalFX's frame interpolation makes between each two game frames, so a 60 fps game shows 120 pictures a second on a 120 Hz screen (the display runs its 120 Hz pacing for it). The game keeps its own frame rate and timing; its HUD comes from the newer frame. Off by default.
+### Upscaler quality
 
-- **When it pauses:** below 25 fps, and on a screen that cannot show two pictures per game frame (a 60 Hz screen with the game at 60). It also skips camera cuts, loading screens and menus without the game's 3D scene.
-- **With [HDR](#hdr):** both can be on. The interpolated pictures are made from the game's finished frames and shown the same way, so they have the same brightness and colour, in SDR and HDR.
-- **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro (measured at 2304x1296; it now works at the window's size), and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
-- In `env.txt`: `DM_MFX_INTERP=1`.
+How much smaller than its output the game renders, as a fixed ratio. **Game default** keeps the game's own dynamic resolution (between the output itself and half its width, as on a Switch). The others hold one ratio: **Native** (1.0: the output's size, no upscaler, the most GPU time and memory), **Quality** (1.5), **Balanced** (1.69: 1707x960 for the 2880x1620 window), **Performance** (2.0) and **Ultra performance** (3.0, offered only with a MetalFX **Game's upscaler**: the game's own network was never run that far).
+
+- **Cost:** GPU time and memory grow with the rendered pixels: Native at the window's size draws 2.95 times the pixels of the game's sharpest docked step. A fixed ratio does not drop when a scene gets heavy: the frame rate does instead, unless **Dynamic resolution** is on.
+- **Not played yet:** ratios other than the game's own steps (1.5, 1.69 and 3.0) are ones the game never picks itself. If the picture is wrong, misses parts, or the game crashes on entering a level, set it back to **Game default**.
+- In `env.txt`: `DM_UPSCALE_RATIO=1.6875` (`game`, `1.0`, `1.5`, `1.6875`, `2.0`, `3.0`).
+
+### Dynamic resolution
+
+Shown with **Upscaler quality** at Native, Quality or Balanced. **On** lets the game render smaller, down to Performance (2.0), when frames run late, and come back up to the chosen quality; it may also stay sharper than the chosen quality until a scene is heavy. Off by default (a fixed ratio). In `env.txt`: `DM_UPSCALE_DYNAMIC=1`.
+
+### Effects resolution
+
+**Game default** draws ambient occlusion, the refraction behind water and glass, soft particles and the blob shadows at half the 3D picture's size, as on a Switch. **Full** draws them, and the game's quarter-size effects, at its full size: sharper contact shadows and particle edges, for more GPU time and memory. Untested: if the shadows in corners cover only part of the picture, or particles get dark edges, set it back. In `env.txt`: `DM_EFFECTS_RES=full`.
 
 ### Shadow resolution
 
@@ -100,6 +109,19 @@ Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advan
 Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: shadows may be cut off, or the game may crash, most likely when the map opens. If that happens, set it back to **Game default**. It changes the game's code when the game starts.
 
 The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
+
+### Frame interpolation
+
+On the Mac, for games whose profile names their own upscaler and their camera (Donkey Kong Bananza). **On** shows a picture MetalFX's frame interpolation makes between each two game frames, so a 60 fps game shows 120 pictures a second on a 120 Hz screen (the display runs its 120 Hz pacing for it). The game keeps its own frame rate and timing; its HUD comes from the newer frame. Off by default.
+
+- **When it pauses:** below 25 fps, and on a screen that cannot show two pictures per game frame (a 60 Hz screen with the game at 60). It also skips camera cuts, loading screens and menus without the game's 3D scene.
+- **With [HDR](#hdr):** both can be on. The interpolated pictures are made from the game's finished frames and shown the same way, so they have the same brightness and colour, in SDR and HDR.
+- **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro (measured at 2304x1296; it now works at the window's size), and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
+- In `env.txt`: `DM_MFX_INTERP=1`.
+
+### Frame rate lock
+
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game (60 or 30)** lets the game halve its frame rate to 30 for a while when its frames run late, as on a Switch 2; on a Mac it can then stay at 30 longer than it needs to. **Locked 60** keeps 60: in busy scenes the game's dynamic resolution has to absorb the load, and a frame that still takes longer than 16.7 ms makes the game run slower for that moment and judder, instead of dropping to 30. **Locked 30** holds a steady 30. It changes the game's code when the game starts.
 
 ### Game language
 
@@ -306,10 +328,14 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
-| [Single upscale](#single-upscale) (Mac) | `DM_SINGLE_UPSCALE` | `1`, `0` (default) |
+| [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `0` (default) |
+| [Upscaler quality](#upscaler-quality) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `1.5`, `1.6875`, `2.0`, `3.0` |
+| [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
+| [Effects resolution](#effects-resolution) (Mac) | `DM_EFFECTS_RES` | `game` (default), `full` |
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
 | Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |
+| Frame rate lock (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |

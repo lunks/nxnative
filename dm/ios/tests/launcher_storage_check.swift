@@ -86,6 +86,30 @@ import Foundation
         launched.reset(); launched.apply()
         expect(launched.values["DM_OPMODE"] == "0" && d.string(forKey: "launcher.DM_OPMODE") == "1", "Reset then Play keeps the saved choice of a setting fixed at launch")
         unsetenv("DM_OPMODE"); setenv("DM_ENV_LAUNCH_KEYS", "", 1); d.removeObject(forKey: "launcher.DM_OPMODE")
+        // A conflict of some of a row's own values (conflicts=<VAR>=<value>:<own>|...) and a sub-setting of several values (needs=<VAR>=<a>|<b>), as Donkey Kong Bananza's
+        // upscaler quality (Ultra performance only with a MetalFX upscaler) and its dynamic resolution (only with a fixed quality)
+        let rows = try! JSONDecoder().decode(SettingsFile.self, from: Data(#"""
+            {"settings": [{"env":"DM_T_UP","kind":"choice","label":"Upscaler","note":"","default":"game","options":[["game","Game"],["metalfx","MetalFX"]]},
+                          {"env":"DM_T_Q","kind":"choice","label":"Quality","note":"","default":"game","conflicts":"DM_T_UP=game:3.0","options":[["game","Game"],["1.5","Q"],["3.0","U"]]},
+                          {"env":"DM_T_DYN","kind":"toggle","label":"Dynamic","note":"","default":"0","needs":"DM_T_Q=1.0|1.5"}]}
+            """#.utf8)).settings
+        d.set("3.0", forKey: "launcher.DM_T_Q")   // saved with MetalFX, then MetalFX unset: the saved value goes back to the default
+        let vc = LauncherModel(rows, defaults: d)
+        let q = rows[1], dyn = rows[2]
+        expect(vc.values["DM_T_Q"] == "game" && vc.blocker(q) == nil, "a saved value its conflict rules out loads as the default; the row itself stays usable")
+        expect(vc.options(q).map { $0[0] } == ["game", "1.5"], "while the other setting has the value, the conflicting values are not offered")
+        vc.set(rows[0], "metalfx"); vc.set(q, "3.0")
+        expect(vc.options(q).count == 3 && !vc.held(q), "with the other value, every value is offered and taken")
+        vc.set(rows[0], "game")
+        expect(vc.values["DM_T_Q"] == "game", "choosing the conflicting value resets a row that holds one of its values")
+        vc.set(q, "1.5"); vc.set(rows[0], "metalfx"); vc.set(rows[0], "game")
+        expect(vc.values["DM_T_Q"] == "1.5", "a value outside the conflict is kept")
+        expect(vc.visible(dyn), "a sub-setting is drawn while its setting has one of the listed values")
+        vc.set(q, "game")
+        expect(!vc.visible(dyn), "and hidden at a value outside the list")
+        vc.values["DM_T_Q"] = "3.0"; vc.apply()
+        expect(String(cString: getenv("DM_T_Q")) == "game", "Play holds a value the conflict rules out at the default")
+        for k in ["DM_T_UP", "DM_T_Q", "DM_T_DYN"] { unsetenv(k); d.removeObject(forKey: "launcher." + k) }
         failed += checkLauncherLayout(LauncherModel(mac.settings, defaults: d), defaults: d)
         print("launcher storage: \(failed) failed")
         exit(failed == 0 ? 0 : 1)

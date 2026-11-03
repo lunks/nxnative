@@ -10,6 +10,61 @@ DM_SHADOW_MAP_SIZE	3072	3072	main	e25c90c1c136638885659fd55bf8a03b	0x6edf74	5281
 DM_SHADOW_MAP_SIZE	3072	3072	main	e25c90c1c136638885659fd55bf8a03b	0x6ee01c	F2C1001A	F2C1801A
 DM_SHADOW_MAP_SIZE	4096	4096	main	e25c90c1c136638885659fd55bf8a03b	0x6edf74	5281001A	5282001A
 DM_SHADOW_MAP_SIZE	4096	4096	main	e25c90c1c136638885659fd55bf8a03b	0x6ee01c	F2C1001A	F2C2001A
+# Upscale ratio, dynamic resolution and effects resolution (static analysis of main e25c90c1… / v458752; README.md, Resolution model). The scene renders at the upscaler's
+# output / the current rate (main+0x38db98, the dynamic-resolution controller): it walks a table of rates (count <= 9) between 1.0 (no upscaler) and NdsrUpscaleMaxRate,
+# stepping toward sharper only while the rate is above NdsrUpscaleMinRate (SystemData/ProjectGraphicsParam Default: 1.375 and 2.0, which replace the code defaults 1.375 and 1.9),
+# and stores it into the rate state (+0xc of [[ctrl+0xf0]+0x270]; the only other writer is the param apply at main+0x1605320, which snaps the same way)
+# Upscaler quality (a fixed rate R, DM_UPSCALE_DYNAMIC unset or 0): every frame takes the controller's fixed-rate path (tbz w8,#1 -> b main+0x38de6c), whose rate is fmov s8,#R,
+# and the store takes R itself (ldr s0,[x9] -> fmov s0,#R at main+0x38df08, past the table snap), as does the param apply (main+0x16053a4). R <= 1.0 turns the upscaler off
+# (the controller's own flag and mip bias, as at its own 1.0). Only fmov immediates: Balanced is 1.6875 (27/16), not 1.7
+# Dynamic resolution (DM_UPSCALE_DYNAMIC=1, rates up to 1.6875): the controller runs as shipped with NdsrUpscaleMinRate R and NdsrUpscaleMaxRate 2.0 (its four reads at
+# main+0x38dd04 / 0x38dd98 / 0x38e104 / 0x38e194 become fmov), so it steps among its table's rates between R and 2.0. Ultra performance (3.0, a rate the game never
+# chooses) only with DM_UPSCALER metalfx or metalfx-temporal: agl's network was never run that far
+DM_UPSCALE_RATIO	game	Game default (dynamic)	-
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	-
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2E1008	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E2E1000	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd04	BD406502	1E2E1002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd98	BD406545	1E201005	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e104	BD406503	1E201003	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e194	BD406542	1E2E1002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E2E1000
+DM_UPSCALE_RATIO	1.5	Quality (1.5)	-
+DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2F1008	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E2F1000	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd04	BD406502	1E2F1002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd98	BD406545	1E201005	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e104	BD406503	1E201003	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e194	BD406542	1E2F1002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E2F1000
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69)	-
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2F7008	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E2F7000	DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd04	BD406502	1E2F7002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38dd98	BD406545	1E201005	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e104	BD406503	1E201003	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69), dynamic up to 2.0	main	e25c90c1c136638885659fd55bf8a03b	0x38e194	BD406542	1E2F7002	DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E2F7000
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	-
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E201008
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E201000
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E201000
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, MetalFX only)	-
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALER=metalfx|metalfx-temporal
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E211008	DM_UPSCALER=metalfx|metalfx-temporal
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E211000	DM_UPSCALER=metalfx|metalfx-temporal
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E211000	DM_UPSCALER=metalfx|metalfx-temporal
+# Effects resolution: the render buffer's size ladder (main+0x424a18: three levels, each the previous x s11, fmov s11,#0.5 at main+0x424a64) sizes the half-res effect targets
+# (the refraction scene copy, SSAO and its blur, the blob-shadow mask, half-res particles and depth); their viewports are the render viewport x 0.5 (main+0x423c74) and x 0.25 (main+0x423d64).
+# Full: the ladder's levels and both viewports at the render size, so each target is its viewport's size as in the game (its targets are made each frame at the scene's size). The shaders sample those targets by normalized coordinates with texel sizes from uniforms (README.md, Resolution model)
+DM_EFFECTS_RES	game	Game default (half)	-
+DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x424a64	1E2C100B	1E2E100B
+DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x423c74	1E2C1003	1E2E1003
+DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x423d64	1E2A1002	1E2E1002
 # HDR highlights (DM_HDR=1, the HDR setting; no row of its own; README.md, HDR highlights): agl's alHdrCompose takes each channel through a normalised logistic of steepness K before its
 # shoulder (n(c) = (s(K(c-w)) - s(-Kw)) / (s(K(1-w)) - s(-Kw)), w = DRSigmoidMid 0.5, L = 1 - exp(-luma(n)), shoulder knee 0.65, exponent 0.75, top M = peak / paper white).
 # main+0x1b9af0 ldr s1,[x11,#0x18] loads K (DRSigmoidGain, the stage environment's env+0x708: the class default 1.0 in every Env archive of v458752, written by nothing at run time),
@@ -23,3 +78,12 @@ DM_HDR	1	K 0.25 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c13663
 DM_HDR	1	K 0.21875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E299001	hdr_peak>3.31&hdr_peak<=5.98
 DM_HDR	1	K 0.1875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E291001	hdr_peak>5.98&hdr_peak<=15.6
 DM_HDR	1	K 0.15625 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E289001	hdr_peak>15.6
+# Frame rate (README.md, Frame rate lock): the frame-rate controller main+0x204a18 (called once a frame from main+0x203718 while VRR is off) turns the frame's measure (frame start to the
+# later of its submission and the GPU's end, in vsyncs v) into a target interval trunc(v + margin -0.2) + 1 at main+0x204ab0 (fcvtzs w9,s0; main+0x204ab4 add w10,w9,#1), clamps it to the
+# controller's [min, max] (main+0x204ab8-0x204ac4), steps up after 2 frames above the current interval and down, one step at a time, after 6 frames below it unless a registered listener sets
+# its veto byte (main+0x204b8c ldrb w8,[sp,#0x18]; main+0x204b90 cbnz w8 -> keep). mov w9,#(N-1) makes the target N before the same clamp, so the game's own present-interval path, its min / max
+# (cutscenes) and the frozen-interval path (main+0x204a4c) are untouched. Locked 60 also skips the veto (cbnz -> nop; the listeners are still called), so a step down to 60 is never refused
+DM_FPS_LOCK	game	Game (60 or 30)	-
+DM_FPS_LOCK	60	Locked 60	main	e25c90c1c136638885659fd55bf8a03b	0x204ab0	1E380009	52800009
+DM_FPS_LOCK	60	Locked 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b90	35FFFC28	D503201F
+DM_FPS_LOCK	30	Locked 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ab0	1E380009	52800029

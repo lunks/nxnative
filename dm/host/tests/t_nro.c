@@ -14,6 +14,8 @@ static uint64_t missing;
 uint64_t resolve_import(module_t *m, const char *name) { (void)m; (void)name; return (uint64_t)&missing; }
 int hle_implements(const char *name) { (void)name; return 0; }
 int svc_nro_deactivate(module_t *m) { m->loaded = 0; return 1; }   // no memory mappings in this fixture
+int dm_opmode(void) { return 1; }   // loader.c res_chain_log (hle_oe.c, hle_cheats.c)
+const char *dm_setting_patch_applied(const char *var, const char **value) { (void)var; (void)value; return NULL; }
 
 typedef struct {
     Elf64_Sym sym[4];

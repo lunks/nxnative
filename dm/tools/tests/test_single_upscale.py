@@ -67,7 +67,8 @@ class SingleUpscale(unittest.TestCase):
         m, _, _ = assemble()
         self.assertEqual(m.CAPABILITIES[BID], ('SINGLE_UPSCALE',))
         row = next(line.split('\t') for line in (REPO / 'dm/games/settings.tsv').read_text().splitlines() if line.startswith('DM_SINGLE_UPSCALE\t'))
-        self.assertEqual((row[1], row[3], row[4]), ('toggle', '0', 'fixups:SINGLE_UPSCALE&platform:mac'))
+        self.assertEqual((row[1], row[3], row[4]), ('choice', '0', 'fixups:SINGLE_UPSCALE&platform:mac'))   # Output resolution: 0 the game's, 1 the window's (the loader reads 1 / 0)
+        self.assertEqual([v.split('=', 1)[0] for v in row[2].split(',')], ['0', '1'])
 
 
 if __name__ == '__main__':

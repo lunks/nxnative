@@ -68,7 +68,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 13 | `build` → `game` ×2 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 51 | `build` → `game` ×2 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -290,6 +290,41 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x6ee01c` (`DM_SHADOW_MAP_SIZE=3072`, 3072): `F2C1001A` → `F2C1801A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x6edf74` (`DM_SHADOW_MAP_SIZE=4096`, 4096): `5281001A` → `5282001A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x6ee01c` (`DM_SHADOW_MAP_SIZE=4096`, 4096): `F2C1001A` → `F2C2001A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), fixed): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), fixed): `BD402E88` → `1E2E1008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), fixed): `BD400120` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd04` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic up to 2.0): `BD406502` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd98` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic up to 2.0): `BD406545` → `1E201005` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e104` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic up to 2.0): `BD406503` → `1E201003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e194` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic up to 2.0): `BD406542` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler)): `BD400120` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `BD402E88` → `1E2F1008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `BD400120` → `1E2F1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd04` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), dynamic up to 2.0): `BD406502` → `1E2F1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd98` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), dynamic up to 2.0): `BD406545` → `1E201005` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e104` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), dynamic up to 2.0): `BD406503` → `1E201003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e194` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), dynamic up to 2.0): `BD406542` → `1E2F1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5)): `BD400120` → `1E2F1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), fixed): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), fixed): `BD402E88` → `1E2F7008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), fixed): `BD400120` → `1E2F7000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd04` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), dynamic up to 2.0): `BD406502` → `1E2F7002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd98` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), dynamic up to 2.0): `BD406545` → `1E201005` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e104` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), dynamic up to 2.0): `BD406503` → `1E201003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e194` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69), dynamic up to 2.0): `BD406542` → `1E2F7002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69)): `BD400120` → `1E2F7000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=2.0`, Performance (2.0)): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=2.0`, Performance (2.0)): `BD402E88` → `1E201008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=2.0`, Performance (2.0)): `BD400120` → `1E201000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=2.0`, Performance (2.0)): `BD400120` → `1E201000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=3.0`, Ultra performance (3.0, with a MetalFX upscaler)): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=3.0`, Ultra performance (3.0, with a MetalFX upscaler)): `BD402E88` → `1E211008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=3.0`, Ultra performance (3.0, with a MetalFX upscaler)): `BD400120` → `1E211000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=3.0`, Ultra performance (3.0, with a MetalFX upscaler)): `BD400120` → `1E211000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x424a64` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2C100B` → `1E2E100B` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x423c74` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2C1003` → `1E2E1003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x423d64` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2A1002` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.5 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2C1001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.4375 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2B9001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.375 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2B1001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
@@ -298,6 +333,9 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.21875 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E299001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.1875 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E291001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.15625 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E289001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204ab0` (`DM_FPS_LOCK=60`, Locked 60): `1E380009` → `52800009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204b90` (`DM_FPS_LOCK=60`, Locked 60): `35FFFC28` → `D503201F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204ab0` (`DM_FPS_LOCK=30`, Locked 30): `1E380009` → `52800029` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
 
 ### EA SPORTS FC 27
 

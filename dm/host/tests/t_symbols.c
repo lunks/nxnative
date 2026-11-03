@@ -33,6 +33,8 @@ int svc_nro_deactivate(module_t *m) { m->loaded = 0; return 1; }   // no memory 
 void thr_svc_enter(uint64_t *r, uint64_t a) { (void)r; (void)a; }
 void thr_svc_leave(void) {}
 void dm_spin_wait(uint64_t r, uint64_t a) { (void)r; (void)a; }
+int dm_opmode(void) { return 1; }   // loader.c res_chain_log (hle_oe.c, hle_cheats.c)
+const char *dm_setting_patch_applied(const char *var, const char **value) { (void)var; (void)value; return NULL; }
 uint64_t svc_dispatch(int n, uint64_t *r, uint64_t a) { (void)n; (void)r; (void)a; return 0; }
 static const char *wrap_kind, *wrap_name;
 static unsigned wraps;

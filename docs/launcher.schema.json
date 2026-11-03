@@ -31,8 +31,8 @@
         "base": {"description": "Render scale only: the 3D views' size the scale multiplies, docked and handheld, from the game's profile; absent for most games.", "type": "object", "required": ["docked", "handheld"],
                  "properties": {"docked": {"$ref": "#/$defs/size"}, "handheld": {"$ref": "#/$defs/size"}}},
         "level": {"description": "basic: a setting a front end shows first. Without it, the front end decides.", "const": "basic"},
-        "needs": {"description": "<VAR>=<value>: a sub-setting, drawn only while the row that sets <VAR> has that value. A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"},
-        "conflicts": {"description": "<VAR>=<value>: the row cannot be used with that value of the row that sets <VAR>: while that row has it, this one is held at its default and drawn disabled, and choosing the value resets this row.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"}
+        "needs": {"description": "<VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> has that value (one of the values). A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"},
+        "conflicts": {"description": "<VAR>=<value>: the row cannot be used with that value of the row that sets <VAR>: while that row has it, this one is held at its default and drawn disabled, and choosing the value resets this row. <VAR>=<value>:<own>[|<own>...]: only those values of this row: not offered while that row has the value, held at the default, reset when the value is chosen.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"}
       },
       "allOf": [
         {"if": {"properties": {"kind": {"const": "choice"}}}, "then": {"required": ["options"]}},

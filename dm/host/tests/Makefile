@@ -66,8 +66,10 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	TMPDIR="$(abspath $(B))" $(B)/t_cheats $(QUIET)
 	$(B)/t_nro
 	$(B)/t_symbols
+	$(B)/t_res_chain
 run: $(B)/t_nro
 run: $(B)/t_symbols
+run: $(B)/t_res_chain
 $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c
 .PHONY: symbols
@@ -91,6 +93,12 @@ $(B)/t_system_event: t_system_event.c ../hle_thread.c ../hle_sdk16.c ../hle_misc
 .PHONY: system-event
 system-event: $(B)/t_system_event
 	$(B)/t_system_event
+# the resolution chain logged at launch (loader.c res_chain_log, the profile's res_chain)
+$(B)/t_res_chain: t_res_chain.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_res_chain.c
+.PHONY: res-chain
+res-chain: $(B)/t_res_chain
+	$(B)/t_res_chain
 $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_nro.c
 .PHONY: nro

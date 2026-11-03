@@ -16,8 +16,10 @@ SCHEMA = 1   # launcher.json's version (docs/launcher.schema.json); it grows onl
 # docs/launcher.schema.json together (test_launcher_settings.py checks that the three agree); a reader ignores keys it does not know
 META = {
     'level': r'basic',                       # a setting a front end shows first; without it, the front end decides
-    'needs': r'DM_[A-Z0-9_]+=[^;=]+',        # <VAR>=<value>: a sub-setting, drawn only while the row that sets <VAR> has that value
-    'conflicts': r'DM_[A-Z0-9_]+=[^;=]+',    # <VAR>=<value>: held at its default, and drawn disabled, while the row that sets <VAR> has that value
+    'needs': r'DM_[A-Z0-9_]+=[^;=|:]+(\|[^;=|:]+)*',   # <VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> has one of the values
+    # <VAR>=<value>: held at its default, and drawn disabled, while the row that sets <VAR> has that value; <VAR>=<value>:<own value>[|<own value>...]: only those values of
+    # this row cannot be used with it (not offered while <VAR> has the value, a held one goes back to the default), the rest of the row stays usable
+    'conflicts': r'DM_[A-Z0-9_]+=[^;=|:]+(:[^;=|:]+(\|[^;=|:]+)*)?',
 }
 
 
@@ -129,9 +131,15 @@ def build(gid, patched, control):
         for key in ('needs', 'conflicts'):
             if key not in m: continue
             need, want = m[key].split('=', 1)
+            want, _, own = want.partition(':')
             if need not in table: sys.exit(f'settings.tsv:{n}: {key} names a variable no row sets: {m[key]}')
+            if need == var: sys.exit(f'settings.tsv:{n}: {key} names the row\'s own variable: {m[key]}')
             can = table[need]
-            if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: {key} a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
+            for w in want.split('|'):
+                if can is not None and w not in can: sys.exit(f'settings.tsv:{n}: {key} a value {need} never takes: {w} (it takes {", ".join(sorted(can))})')
+            mine = table[var]
+            for w in filter(None, own.split('|')):
+                if mine is not None and w not in mine: sys.exit(f'settings.tsv:{n}: conflicts names a value this row never takes: {w} (it takes {", ".join(sorted(mine))})')
         if not shown(cond, n): continue
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
@@ -142,6 +150,10 @@ def build(gid, patched, control):
             if values == 'patches' and var not in popts: sys.exit(f'settings.tsv:{n}: values patches needs the condition patches:{var} (the profile\'s setting patches for this build)')
             opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
+            own = m.get('conflicts', '').partition(':')[2]
+            for w in filter(None, own.split('|')):   # a patches row's values are known only now, for the build packed
+                if w not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: conflicts names a value this row does not offer: {w}')
+            if s['default'] in own.split('|'): sys.exit(f'settings.tsv:{n}: a conflicting value cannot be the default (the row goes back to it): {s["default"]}')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first
             s['options'] = opts
             if values == 'languages' and not have: s['note'] = UNKNOWN_LANGUAGES

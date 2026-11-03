@@ -5,8 +5,8 @@ import Combine
 struct Setting: Decodable, Identifiable {
     let env, kind, label, note, def: String
     let section: String?   // heading on the settings screen; absent in older bundles
-    let needs: String?     // "<VAR>=<value>": a sub-setting, drawn only while that setting has that value
-    let conflicts: String? // "<VAR>=<value>": held at its default, and drawn disabled, while that setting has that value
+    let needs: String?     // "<VAR>=<value>[|<value>...]": a sub-setting, drawn only while that setting has one of the values
+    let conflicts: String? // "<VAR>=<value>": held at its default, and drawn disabled, while that setting has that value; "<VAR>=<value>:<own>[|<own>...]": only those values of this row
     let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     struct Base: Decodable { let docked, handheld: [Int] }
@@ -57,20 +57,44 @@ final class LauncherModel: ObservableObject {
             let saved = ignoreSaved ? nil : defaults.object(forKey: "launcher." + s.env) as? String   // a string, as launcher.c reads it: not string(forKey:), which turns a number into one
             values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
         }
-        for s in settings where blocker(s) != nil && !fixed.contains(s.env) && !s.isDefault(values[s.env] ?? s.def) { values[s.env] = s.def }   // two saved choices that conflict: the later row in the list keeps its own
+        for s in settings where held(s) && !fixed.contains(s.env) { values[s.env] = s.def }   // two saved choices that conflict: the later row in the list keeps its own
     }
 
-    // A row with "conflicts" cannot be used together with that setting's value: while the other row has it, this one is held at
-    // its default and drawn disabled. Choosing a value resets the rows that conflict with it, so the two never hold together; a value an env file fixes stays
-    func blocker(_ s: Setting) -> Setting? {
+    // A row's "conflicts" as its parts: the setting, its value, and this row's own values that cannot go with it (nil: the whole row)
+    private func conflict(_ s: Setting) -> (key: String, want: String, own: [String]?)? {
         guard let c = s.conflicts, let eq = c.firstIndex(of: "=") else { return nil }
-        let key = String(c[c.startIndex..<eq]), want = String(c[c.index(after: eq)...])
-        guard values[key] == want, let other = settings.first(where: { $0.env == key }), visible(other) else { return nil }
-        return other
+        let rest = c[c.index(after: eq)...], colon = rest.firstIndex(of: ":")
+        let want = String(colon.map { rest[rest.startIndex..<$0] } ?? rest)
+        let own = colon.map { rest[rest.index(after: $0)...].split(separator: "|").map(String.init) }
+        return (String(c[c.startIndex..<eq]), want, own)
+    }
+    // The other row while it has the value this row conflicts with (drawn, so its value counts), nil otherwise
+    private func conflicting(_ s: Setting) -> (other: Setting, own: [String]?)? {
+        guard let c = conflict(s), values[c.key] == c.want, let other = settings.first(where: { $0.env == c.key }), visible(other) else { return nil }
+        return (other, c.own)
+    }
+    // A row with "conflicts" cannot be used together with that setting's value: while the other row has it, this one is held at
+    // its default and drawn disabled. Choosing a value resets the rows that conflict with it, so the two never hold together; a value an env file fixes stays.
+    // A conflict of some of the row's own values leaves the row usable: those values are not offered (options) and go back to the default (held)
+    func blocker(_ s: Setting) -> Setting? {
+        guard let c = conflicting(s), c.own == nil else { return nil }
+        return c.other
+    }
+    func held(_ s: Setting) -> Bool {   // the row's value cannot be used now: the whole row is blocked, or its value is one the other setting's value rules out
+        guard let c = conflicting(s) else { return false }
+        guard let own = c.own else { return !s.isDefault(values[s.env] ?? s.def) }
+        return own.contains(values[s.env] ?? s.def)
+    }
+    func options(_ s: Setting) -> [[String]] {   // a choice's values on offer now: without the ones a conflict rules out
+        guard let c = conflicting(s), let own = c.own else { return s.options ?? [] }
+        return (s.options ?? []).filter { !own.contains($0[0]) }
     }
     func set(_ s: Setting, _ v: String) {
         values[s.env] = v
-        for r in settings where r.env != s.env && !fixed.contains(r.env) && r.conflicts == "\(s.env)=\(v)" { values[r.env] = r.def }
+        for r in settings where r.env != s.env && !fixed.contains(r.env) {
+            guard let c = conflict(r), c.key == s.env, c.want == v else { continue }
+            if c.own == nil || c.own!.contains(values[r.env] ?? r.def) { values[r.env] = r.def }
+        }
     }
 
     var sections: [String] {
@@ -81,9 +105,9 @@ final class LauncherModel: ObservableObject {
     // with rumble off). A row naming a setting this game does not have stays drawn, as it has nothing to hide behind
     func visible(_ s: Setting) -> Bool {
         guard let n = s.needs, let eq = n.firstIndex(of: "=") else { return true }
-        let key = String(n[n.startIndex..<eq]), want = String(n[n.index(after: eq)...])
+        let key = String(n[n.startIndex..<eq]), want = n[n.index(after: eq)...].split(separator: "|").map(String.init)
         guard let v = values[key] else { return true }
-        return v == want
+        return want.contains(v)
     }
     func rows(in section: String) -> [Setting] { settings.filter { $0.sectionTitle == section && visible($0) } }
     // The Mac window: Basic settings first, then Advanced settings, each in the list's sections and order
@@ -114,9 +138,9 @@ final class LauncherModel: ObservableObject {
         for s in settings {
             let v = values[s.env] ?? s.def
             if fixed.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (\(fromLaunch.contains(s.env) ? "launch environment" : "env file"))\n", stderr); continue }
-            let w = blocker(s) != nil ? s.def : v   // held at its default while a conflicting value holds (one an env file fixes)
+            let w = held(s) ? s.def : v   // held at its default while a conflicting value holds (one an env file fixes)
             store(s, w)
-            setenv(s.env, w, 1); fputs("launcher: \(s.env)=\(w)\(s.isDefault(w) ? "" : " (changed)")\(w != v ? " (held: conflicts with \(blocker(s)?.env ?? ""))" : "")\n", stderr)
+            setenv(s.env, w, 1); fputs("launcher: \(s.env)=\(w)\(s.isDefault(w) ? "" : " (changed)")\(w != v ? " (held: conflicts with \(conflicting(s)?.other.env ?? ""))" : "")\n", stderr)
         }
     }
     private func store(_ s: Setting, _ v: String) {
@@ -127,7 +151,7 @@ final class LauncherModel: ObservableObject {
     // A value an env file or the launch fixed stays
     func choose(_ s: Setting, _ v: String) {
         guard !fixed.contains(s.env), s.accepts(v) else { return }
-        guard blocker(s) == nil else { return }
+        guard blocker(s) == nil, s.kind != "choice" || options(s).contains(where: { $0[0] == v }) else { return }   // a value a conflict rules out now is not taken
         set(s, v); store(s, v); setenv(s.env, v, 1)
         fputs("launcher: \(s.env)=\(v) (in-game menu)\n", stderr)
     }

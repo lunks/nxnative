@@ -48,3 +48,7 @@ gpu_timestamps	segment
 # uniform 0. Its members by agl's shader reflection (BAHS, ActionLibraryPass / SilverStarPass): cGSysCtxView (3x4 rows) at +0x0, cGSysCtxViewProj (4x4 rows) at +0x30, the projection at
 # +0x70, cGSysCtxInvView at +0xb0, near / far at +0xe0; a captured frame (F2724) decodes to a GL perspective projection with no x / y offset (no jitter), near 1, far 10000, 45 degrees
 camera_mats	vertex 0 0x0 0x30
+# The resolution chain the host logs at launch (loader.c res_chain_log; README.md, Resolution model): the upscaler's output docked (the 2880x1620 window x 0.8), docked with
+# single upscale (DM_SINGLE_UPSCALE: the window), handheld (1920x1080, either way), and the game's own upscale rates (ProjectGraphicsParam NdsrUpscaleMinRate / MaxRate;
+# the controller also runs at 1.0, no upscaler, until a frame is over its budget). The scene is the output / the rate; DM_UPSCALE_RATIO fixes the rate (setting_patches.tsv)
+res_chain	2304x1296 2880x1620 1920x1080 1.375 2.0
