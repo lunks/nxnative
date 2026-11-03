@@ -5,9 +5,10 @@
 //    motion vectors of the camera's movement, with a history reset at camera cuts. The game does not jitter its projection (Donkey Kong Bananza: the projection's x / y offsets are 0 in
 //    the captured frames), so the gain is temporal anti-aliasing and stability, not detail the jitter would add.
 //  - DM_MFX_INTERP=1: MetalFX's Metal 4 frame interpolator makes one picture between two game frames, shown on the display link's 120 Hz tick before the game frame (60 + 60 on a fixed
-//    120 Hz screen). Its scene is a copy of the upscaler's output right after the upscale (no UI yet); its UI is that texture at the present, when the game has drawn the UI over it
-//    (uiTextureComposited: MetalFX takes the UI out by the difference). The result is stretched into a texture of the window's size and format the way the game's last pass copies the
-//    upscaler's output into its window texture, so the present treats it as a game frame.
+//    120 Hz screen). It works on the game's finished frames: each presented window texture decoded to linear light as the present decodes it (sRGB; PQ or linear for HDR output). MetalFX
+//    interpolates the scene under the UI, which is the frame less what the UI added to the upscaler's output (copies of it after the upscale and when the game starts drawing its window
+//    texture); the newer frame's UI is composited over its picture, which is encoded back into a texture of the window texture's format that the present shows as a game frame (EDR layer
+//    included). A static scene's interpolated picture is the game frame's.
 // Both need the camera: the profile's camera_mats (DM_GAME_CAM_MATS_*: the uniform block of the scene passes holding the 3x4 view and 4x4 view-projection matrices as rows; Bananza: gsys's
 // Context block, vertex uniform 0, view at +0x0 and view-projection at +0x30) read at the first draw of every pass with a depth attachment, and the depth of the pass whose depth matches
 // the upscaler's input. Motion vectors come from the depth and this and the previous frame's view-projection (mfx_mv in dm/gfx/msl/mfx.metal); a pixel whose depth at its previous place
@@ -31,14 +32,15 @@ static id<MTLTexture> mfx_tex(MTLPixelFormat f, NSUInteger w, NSUInteger h, MTLT
     return t;
 }
 static void mfx_drop(id<MTLTexture> __strong *t) { if (*t) { res_remove(*t); defer_obj_release(*t); *t = nil; } }   // a recorded frame may still use it: released after the submissions so far
-static id<MTLComputePipelineState> mfx_kernel(NSString *name) {
-    NSError *e = nil; id<MTLLibrary> lib = host_lib("mfx", &e); id<MTLFunction> f = lib ? [lib newFunctionWithName:name] : nil;
+static id<MTLComputePipelineState> mfx_kernel_in(const char *lib_name, NSString *name) {   // a kernel of the host's library lib_name (dm/gfx/msl/<lib_name>.metal)
+    NSError *e = nil; id<MTLLibrary> lib = host_lib(lib_name, &e); id<MTLFunction> f = lib ? [lib newFunctionWithName:name] : nil;
     id<MTLComputePipelineState> ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
-    if (!ps) MLOG("[RED] [mfx] kernel %s: %s", name.UTF8String, e ? e.localizedDescription.UTF8String : "not in the host's mfx library");
+    if (!ps) MLOG("[RED] [mfx] kernel %s: %s", name.UTF8String, e ? e.localizedDescription.UTF8String : "not in the host's library");
     return ps;
 }
+static id<MTLComputePipelineState> mfx_kernel(NSString *name) { return mfx_kernel_in("mfx", name); }
 static id<MTL4ArgumentTable> mfx_table(void) {
-    MTL4ArgumentTableDescriptor *d = [MTL4ArgumentTableDescriptor new]; d.maxBufferBindCount = 1; d.maxTextureBindCount = 4;
+    MTL4ArgumentTableDescriptor *d = [MTL4ArgumentTableDescriptor new]; d.maxBufferBindCount = 1; d.maxTextureBindCount = 5;
     NSError *e = nil; id<MTL4ArgumentTable> t = [g_dev newArgumentTableWithDescriptor:d error:&e];
     if (!t) MLOG("[RED] [mfx] argument table: %s", e.localizedDescription.UTF8String);
     return t;
@@ -344,30 +346,33 @@ static int mfx_interp_on(void) {
     if (v && !DM_GAME_UPSCALER_N) { MLOG("[mfx] DM_MFX_INTERP: this game has no upscaler of its own to take the scene from; frame interpolation off"); v = 0; }
     if (v && !DM_GAME_CAM_MATS) { MLOG("[RED] [mfx] DM_MFX_INTERP: this game's profile has no camera_mats key; frame interpolation off"); v = 0; }
     if (v && !(g_q4 && [MTLFXFrameInterpolatorDescriptor supportsMetal4FX:g_dev])) { MLOG("[mfx] DM_MFX_INTERP: this GPU has no Metal 4 MetalFX frame interpolator; off"); v = 0; }
-    if (v) MLOG("[mfx] frame interpolation (DM_MFX_INTERP=1): MetalFX makes a picture between two game frames, shown on the 120 Hz display link before each game frame");
+    if (v) MLOG("[mfx] frame interpolation (DM_MFX_INTERP=1): MetalFX makes a picture between two game frames from the finished window frames, shown on the 120 Hz display link before each game frame");
     return g_mfi_on = v;
 }
-// A game frame's interpolation inputs, from the upscaler (submit thread) to the present (the game's present thread)
-// (the textures by reference: the submit thread may replace its rings when a size changes while the present still uses this frame's)
-typedef struct { uint64_t frame, n; int ok, reset; __strong id<MTLTexture> out, scene, dep, mv; NVNcopyRegion orr; NSUInteger cw, ch, mw, mh; mfx_cam cam; } mfx_frame;
+// A game frame's interpolation inputs, from the upscaler and the start of the game's window pass (submit thread) to the present (the game's present thread). The textures by reference:
+// the submit thread may replace its rings when a size changes while the present still uses this frame's. scene: the upscaler's output right after the upscale; fin: the same when the game
+// starts drawing into its window texture, the UI drawn over it
+typedef struct { uint64_t frame, n; int ok, reset; __strong id<MTLTexture> out, scene, fin, dep, mv; NVNcopyRegion orr; NSUInteger cw, ch, mw, mh; mfx_cam cam; } mfx_frame;
 static struct {
     pthread_mutex_t mu; mfx_frame cur; uint64_t n;
-    id<MTLTexture> scene[MFX_RING]; NSUInteger sw, sh; MTLPixelFormat sf; int s;   // copies of the upscaler's output right after the upscale (submit thread)
+    // submit thread
+    id<MTLTexture> scene[MFX_RING], fin[MFX_RING]; NSUInteger sw, sh; MTLPixelFormat sf; int s;
+    mfx_frame pend; uint64_t no_window;   // this frame's, from the upscaler until the window pass (g_mfi_pend); upscaler frames whose window pass was not seen
     // present thread
-    mfx_frame prev; int prev_ok; uint64_t taken;
-    id<MTL4FXFrameInterpolator> fi; NSUInteger key[7]; int refused;
-    id<MTLTexture> ui, res, slot[MFX_SLOTS]; NSUInteger ww, wh; MTLPixelFormat wf; int last_slot;
-    id<MTLComputePipelineState> st_ps; id<MTL4ArgumentTable> st_at;
+    mfx_frame prev; int prev_ok; uint64_t taken, last_enc;   // prev: the frame whose scene is in col[ck]; last_enc: the frame of the interpolator's last picture (+ 1)
+    id<MTL4FXFrameInterpolator> fi; NSUInteger key[5]; int refused;
+    id<MTLTexture> frm, col[2], res, slot[MFX_SLOTS]; int ck, last_slot;   // window-sized: the frame decoded, the scene under its UI (this and the previous frame's), MetalFX's picture, the encoded pictures
+    id<MTLComputePipelineState> dec_ps, enc_ps; id<MTL4ArgumentTable> dec_at, enc_at;
     id<MTL4CommandAllocator> alloc[3]; id<MTL4CommandBuffer> cb[3]; _Atomic int busy[3];
-    id<MTLResidencySet> rs;
-    double last_t, dt; int active, why_off, said_off, fresh;
+    double last_t, dt; int active, said_off, fresh;
     uint64_t presents, made, no_frame, resets, off_rate, slots_busy, cb_busy;
     double gpu[300]; int ngpu;
     pthread_mutex_t gmu;
 } g_mfi = {.mu = PTHREAD_MUTEX_INITIALIZER, .gmu = PTHREAD_MUTEX_INITIALIZER, .last_slot = -1};
 static _Atomic uint64_t g_mfi_v, g_mfi_cmt;   // interpolations committed (the encode thread's progress, as the snapshots' g_snap_cmt)
 static int g_mfi_link;   // the display link was put at 120 Hz for frame interpolation (link_sync): every game frame is held for its interval
-// After the upscale (whichever drew it): this frame's scene copy and motion, for the present
+static _Atomic uint64_t g_mfi_win[4]; static _Atomic int g_mfi_nwin;   // the textures the game presented lately (its window textures), by serial (present thread → submit thread)
+// After the upscale (whichever drew it): this frame's scene copy and motion, kept until the game starts drawing into its window texture (mfx_ui_point)
 static void mfx_after(const mfx_io *io) {
     if (!mfx_interp_on()) return;
     uint64_t ep = atomic_load(&g_cur_frame);
@@ -376,16 +381,36 @@ static void mfx_after(const mfx_io *io) {
     int ok = mfx_motion(io);
     NSUInteger w = io->orr.width, h = io->orr.height; MTLPixelFormat f = io->out.pixelFormat;
     if (g_mfi.sw != w || g_mfi.sh != h || g_mfi.sf != f || !g_mfi.scene[0]) {
-        for (int k = 0; k < MFX_RING; k++) mfx_drop(&g_mfi.scene[k]);
-        for (int k = 0; k < MFX_RING; k++) g_mfi.scene[k] = mfx_tex(f, w, h, MTLTextureUsageShaderRead, @"mfx scene");
+        for (int k = 0; k < MFX_RING; k++) { mfx_drop(&g_mfi.scene[k]); mfx_drop(&g_mfi.fin[k]); }
+        for (int k = 0; k < MFX_RING; k++) { g_mfi.scene[k] = mfx_tex(f, w, h, MTLTextureUsageShaderRead, @"mfx scene"); g_mfi.fin[k] = mfx_tex(f, w, h, MTLTextureUsageShaderRead, @"mfx scene with the UI"); }
         res_commit(); g_mfi.sw = w; g_mfi.sh = h; g_mfi.sf = f;
-        MLOG("[mfx] scene copies %lux%lu format %lu (the upscaler's output before the UI)", (unsigned long)w, (unsigned long)h, (unsigned long)f);
+        MLOG("[mfx] scene copies %lux%lu format %lu (the upscaler's output after the upscale, and with the UI when the game starts drawing its window texture)", (unsigned long)w, (unsigned long)h, (unsigned long)f);
     }
+    if (g_mfi_pend) g_mfi.no_window++;
     int s = g_mfi.s = (g_mfi.s + 1) % MFX_RING;
     if (g_mfi.scene[s]) enc_b_copy_texture(blit(), io->out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0), MTLSizeMake(w, h, 1), g_mfi.scene[s], 0, 0, MTLOriginMake(0, 0, 0));
-    mfx_frame fr = {.frame = ep, .ok = ok && g_mfi.scene[s], .reset = !ok || g_mm.reset, .out = io->out, .scene = g_mfi.scene[s], .dep = ok ? g_mm.dep[g_mm.cur] : nil, .mv = ok ? g_mm.mv[g_mm.cur] : nil,
-                    .orr = io->orr, .cw = g_mm.cw, .ch = g_mm.ch, .mw = g_mm.w, .mh = g_mm.h, .cam = g_mm.cam};
+    g_mfi.pend = (mfx_frame){.frame = ep, .ok = ok && g_mfi.scene[s] && g_mfi.fin[s], .reset = !ok || g_mm.reset, .out = io->out, .scene = g_mfi.scene[s], .fin = g_mfi.fin[s],
+                             .dep = ok ? g_mm.dep[g_mm.cur] : nil, .mv = ok ? g_mm.mv[g_mm.cur] : nil, .orr = io->orr, .cw = g_mm.cw, .ch = g_mm.ch, .mw = g_mm.w, .mh = g_mm.h, .cam = g_mm.cam};
+    g_mfi_pend = 1;
+}
+// Before a pass opens (rp_begin_ex_) while an upscaler frame waits: the first pass into one of the game's window textures ends the frame's UI. The upscaler's output, with the UI the game
+// drew over it, is copied here, in command order, and not at the present: the game may submit its next frame's first passes (Bananza clears that texture early in each frame) before it
+// presents this one. The frame then goes to the present
+static void mfx_ui_point(void) {
+    int hit = 0, nw = atomic_load(&g_mfi_nwin);
+    for (int i = 0; i < R.rt.n && !hit; i++) if (R.rt.color[i]) for (int k = 0; k < nw && k < 4 && !hit; k++) hit = atomic_load(&g_mfi_win[k]) == R.rt.color[i]->serial;
+    if (!hit) return;
+    g_mfi_pend = 0;
+    mfx_frame fr = g_mfi.pend; g_mfi.pend = (mfx_frame){0};
+    if (!fr.out || !fr.fin || fr.frame != atomic_load(&g_cur_frame)) { g_mfi.no_window++; return; }   // the upscaler ran in an earlier frame (a menu came after it): not this frame's picture
+    enc_b_copy_texture(blit(), fr.out, 0, 0, MTLOriginMake(fr.orr.xoffset, fr.orr.yoffset, 0), MTLSizeMake(fr.orr.width, fr.orr.height, 1), fr.fin, 0, 0, MTLOriginMake(0, 0, 0));
     pthread_mutex_lock(&g_mfi.mu); fr.n = ++g_mfi.n; g_mfi.cur = fr; pthread_mutex_unlock(&g_mfi.mu);
+}
+static void mfx_note_window(uint64_t ser) {   // present thread: a presented texture (the window textures, as mfx_ui_point looks for them)
+    static int next; int n = atomic_load(&g_mfi_nwin);
+    for (int k = 0; k < n && k < 4; k++) if (atomic_load(&g_mfi_win[k]) == ser) return;
+    atomic_store(&g_mfi_win[next++ % 4], ser);
+    if (n < 4) atomic_store(&g_mfi_nwin, n + 1);
 }
 // The display link at 120 Hz while interpolating (link_sync): the pacing mode it takes instead of want
 static int mfx_link_mode(int want) {
@@ -401,10 +426,10 @@ static void mfx_note_gpu(double ms) { pthread_mutex_lock(&g_mfi.gmu); if (ms > 0
 static void mfx_stats(void) {
     double a[300]; int n; pthread_mutex_lock(&g_mfi.gmu); n = g_mfi.ngpu < 300 ? g_mfi.ngpu : 300; memcpy(a, g_mfi.gpu, sizeof a); pthread_mutex_unlock(&g_mfi.gmu);
     for (int i = 1; i < n; i++) { double v = a[i]; int j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
-    MLOG("[mfx] up to present %llu: interpolated %llu of %llu frames (GPU p50 %.2f / p95 %.2f ms); not interpolated: no upscaler frame %llu, history reset %llu (camera cuts %llu), off for the frame rate %llu, slots busy %llu, command buffer busy %llu; motion %llu of %llu upscaler frames (no depth pass %llu, no camera %llu), largest projection offset %.4f px",
+    MLOG("[mfx] up to present %llu: interpolated %llu of %llu frames (GPU p50 %.2f / p95 %.2f ms a frame, decode included); not interpolated: no upscaler frame %llu, history reset %llu (camera cuts %llu), off for the frame rate %llu, slots busy %llu, command buffer busy %llu, upscaler frames without a window pass %llu; motion %llu of %llu upscaler frames (no depth pass %llu, no camera %llu), largest projection offset %.4f px",
          (unsigned long long)g_present_n, (unsigned long long)g_mfi.made, (unsigned long long)g_mfi.presents, n ? a[n / 2] : -1.0, n ? a[(n * 95) / 100] : -1.0,
          (unsigned long long)g_mfi.no_frame, (unsigned long long)g_mfi.resets, (unsigned long long)g_mm.cuts, (unsigned long long)g_mfi.off_rate, (unsigned long long)g_mfi.slots_busy, (unsigned long long)g_mfi.cb_busy,
-         (unsigned long long)g_mm.made, (unsigned long long)g_mm.frames, (unsigned long long)g_mm.no_depth, (unsigned long long)g_mm.no_cam, g_mm.jmax);
+         (unsigned long long)g_mfi.no_window, (unsigned long long)g_mm.made, (unsigned long long)g_mm.frames, (unsigned long long)g_mm.no_depth, (unsigned long long)g_mm.no_cam, g_mm.jmax);
 }
 // Whether this game frame should get a picture before it: the game at 25 fps or more and a screen that shows at least two pictures per game frame
 static int mfx_rate_ok(double period) {
@@ -419,100 +444,127 @@ static int mfx_rate_ok(double period) {
     return ok;
 }
 static int prev_same(const mfx_frame *a, const mfx_frame *b) { return a->scene.pixelFormat == b->scene.pixelFormat && a->scene.width == b->scene.width && a->scene.height == b->scene.height; }
-// At the game's present (its thread; the frame's work is submitted): the interpolated picture between the previous upscaler frame and this one, in a command buffer of its own ordered after
-// the frame (through the encode thread's queue when it runs, as the snapshots), into a window-sized slot. Returns the slot (-1: none) and in *v the commit to wait for before showing it.
-// busy: the slots presents not yet committed name
+// How the present decodes a window texture of format pf (present_hdr_params, present.metal win_decode), as mfx_win_decode / mfx_win_encode take it (MfxWin.hdr): the game's HDR content
+// as the present reads it (PQ or linear, scaled to paper white 1.0, its primaries); anything else as sRGB, which is what an SDR window texture's bytes are to the screen whatever view the
+// game drew it through (Bananza draws its RGBA8 window texture through an sRGB view). 0: a format the kernels do not take. *raw: the format without sRGB, the encoded picture's
+static int mfx_win_codec(MTLPixelFormat pf, float hp[4], MTLPixelFormat *raw) {
+    MTLPixelFormat r = pf == MTLPixelFormatRGBA8Unorm_sRGB ? MTLPixelFormatRGBA8Unorm : pf == MTLPixelFormatBGRA8Unorm_sRGB ? MTLPixelFormatBGRA8Unorm : pf;
+    if (r != MTLPixelFormatRGBA8Unorm && r != MTLPixelFormatBGRA8Unorm && r != MTLPixelFormatRGB10A2Unorm && r != MTLPixelFormatRGBA16Float) return 0;
+    float h[4] = {0}; int hs = 0;
+    if (present_hdr_params(pf, MTLPixelFormatRGBA16Float, h, &hs) && hs) { hp[0] = h[0]; hp[1] = h[1]; hp[2] = h[2]; }
+    else { hp[0] = 2; hp[1] = 1; hp[2] = 0; }
+    hp[3] = 0; *raw = r;
+    return 1;
+}
+static void mfx_retain(NSMutableArray *a, id o) { if (o) [a addObject:o]; }
+// At the game's present (its thread; the frame's work is submitted): in a command buffer of its own ordered after the frame (through the encode thread's queue when it runs, as the
+// snapshots), the presented window texture is decoded (mfx_win_decode: the frame, and the scene under its UI, kept as the next frame's history) and, when the previous frame is its
+// pair, the interpolator makes the scene between them, which gets this frame's UI and is encoded into a slot of the window texture's size and format (mfx_win_encode). Returns the slot
+// (-1: none) and in *v the commit to wait for before showing it. busy: the slots presents not yet committed name
 static int mfx_present_frame(const tex_t *t, double period, unsigned busy, uint64_t *v) { @autoreleasepool {
     *v = 0;
     if (!mfx_interp_on() || !t) return -1;
+    mfx_note_window(t->serial);
     g_mfi.presents++;
     mfx_frame fr; pthread_mutex_lock(&g_mfi.mu); fr = g_mfi.cur; pthread_mutex_unlock(&g_mfi.mu);
     double now = CACurrentMediaTime(), dt = g_mfi.last_t > 0 ? now - g_mfi.last_t : period; g_mfi.last_t = now;
     g_mfi.dt = dt > 1.0 / 250 && dt < 0.1 ? dt : period > 0 ? period : 1.0 / 60;
     if (g_present_n && g_present_n % 600 == 0) mfx_stats();
-    if (fr.n == g_mfi.taken || !fr.ok) { g_mfi.no_frame++; g_mfi.prev_ok = 0; return -1; }   // no upscaler this frame (a menu, a load screen) or no motion
+    if (fr.n == g_mfi.taken || !fr.ok) { g_mfi.no_frame++; g_mfi.prev_ok = 0; return -1; }   // no upscaler this frame (a menu, a load screen), no window pass seen yet, or no motion
     g_mfi.taken = fr.n;
-    int pair = g_mfi.prev_ok && g_mfi.prev.n + 1 == fr.n && !fr.reset && prev_same(&g_mfi.prev, &fr);
-    mfx_frame prev = g_mfi.prev; g_mfi.prev = fr; g_mfi.prev_ok = 1;
-    if (!mfx_rate_ok(period)) { g_mfi.off_rate++; return -1; }
-    if (!pair) { g_mfi.resets++; }
-    id<MTLTexture> win = tex_mtl(t);
-    if (!win || win.textureType != MTLTextureType2D) return -1;
-    MTLPixelFormat wf = win.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB || win.pixelFormat == MTLPixelFormatRGBA8Unorm ? MTLPixelFormatRGBA8Unorm :
-                        win.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB || win.pixelFormat == MTLPixelFormatBGRA8Unorm ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatInvalid;
-    int enc = win.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB || win.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
-    if (wf == MTLPixelFormatInvalid) { static int said; if (!said++) MLOG("[RED] [mfx] the window texture's format %lu is not RGBA8 / BGRA8: no interpolated pictures", (unsigned long)win.pixelFormat); return -1; }
-    // The interpolator, by the scene's size and format and the motion's
-    NSUInteger sw = fr.orr.width, sh = fr.orr.height; MTLPixelFormat sf = fr.scene.pixelFormat;
-    NSUInteger key[7] = {sw, sh, sf, fr.mw, fr.mh, 0, 0};
+    if (!mfx_rate_ok(period)) { g_mfi.off_rate++; g_mfi.prev_ok = 0; return -1; }
+    id<MTLTexture> win = tex_mtl(t); float hp[4]; MTLPixelFormat wf = MTLPixelFormatInvalid;
+    if (!win || win.textureType != MTLTextureType2D || !mfx_win_codec(win.pixelFormat, hp, &wf)) {
+        static int said; if (!said++) MLOG("[RED] [mfx] the window texture's format %lu is not RGBA8, BGRA8, RGB10A2 or RGBA16F: no interpolated pictures", win ? (unsigned long)win.pixelFormat : 0ul);
+        g_mfi.prev_ok = 0; return -1;
+    }
+    NSUInteger ww = win.width, wh = win.height;
+    // The interpolator and the window-sized textures, by the motion's size and the window texture's size and format
+    NSUInteger key[5] = {fr.mw, fr.mh, ww, wh, wf};
     if (memcmp(g_mfi.key, key, sizeof key)) {
-        memcpy(g_mfi.key, key, sizeof key); g_mfi.fi = nil; g_mfi.refused = 1; mfx_drop(&g_mfi.ui); mfx_drop(&g_mfi.res);
+        if (busy) { g_mfi.slots_busy++; g_mfi.prev_ok = 0; return -1; }   // a queued present still shows a slot
+        memcpy(g_mfi.key, key, sizeof key); g_mfi.fi = nil; g_mfi.refused = 1; g_mfi.prev_ok = 0;
+        mfx_drop(&g_mfi.frm); mfx_drop(&g_mfi.col[0]); mfx_drop(&g_mfi.col[1]); mfx_drop(&g_mfi.res); for (int i = 0; i < MFX_SLOTS; i++) mfx_drop(&g_mfi.slot[i]);
         if (@available(macOS 27.0, iOS 27.0, *)) {
             NSError *e = nil; uint64_t t0 = now_ns();
             if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
             MTLFXFrameInterpolatorDescriptor *d = [MTLFXFrameInterpolatorDescriptor new];
-            d.colorTextureFormat = sf; d.outputTextureFormat = sf; d.uiTextureFormat = sf;
+            d.colorTextureFormat = MTLPixelFormatRGBA16Float; d.outputTextureFormat = MTLPixelFormatRGBA16Float;   // no UI texture: mfx_win_encode puts the UI back
             d.depthTextureFormat = MTLPixelFormatR32Float; d.motionTextureFormat = MTLPixelFormatRG16Float;
-            d.inputWidth = fr.mw; d.inputHeight = fr.mh; d.outputWidth = sw; d.outputHeight = sh;
+            d.inputWidth = fr.mw; d.inputHeight = fr.mh; d.outputWidth = ww; d.outputHeight = wh;
             id<MTL4FXFrameInterpolator> fi = g_fx_comp ? [d newFrameInterpolatorWithDevice:g_dev compiler:g_fx_comp] : nil;
+            int ok = fi != nil;
             if (fi) {
-                g_mfi.ui = mfx_tex(sf, sw, sh, fi.uiTextureUsage | MTLTextureUsageShaderRead, @"mfx UI (composited)");
-                g_mfi.res = mfx_tex(sf, sw, sh, fi.outputTextureUsage | MTLTextureUsageShaderRead, @"mfx interpolated"); res_commit();
+                g_mfi.frm = mfx_tex(MTLPixelFormatRGBA16Float, ww, wh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite, @"mfx frame (decoded)");
+                for (int k = 0; k < 2; k++) g_mfi.col[k] = mfx_tex(MTLPixelFormatRGBA16Float, ww, wh, fi.colorTextureUsage | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite, @"mfx scene under the UI");
+                g_mfi.res = mfx_tex(MTLPixelFormatRGBA16Float, ww, wh, fi.outputTextureUsage | MTLTextureUsageShaderRead, @"mfx interpolated (linear)");
+                for (int i = 0; i < MFX_SLOTS; i++) g_mfi.slot[i] = mfx_tex(wf, ww, wh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite, @"mfx picture");
+                res_commit();
+                ok = g_mfi.frm && g_mfi.col[0] && g_mfi.col[1] && g_mfi.res; for (int i = 0; i < MFX_SLOTS; i++) ok = ok && g_mfi.slot[i];
             }
-            g_mfi.refused = !fi || !g_mfi.ui || !g_mfi.res; g_mfi.fi = g_mfi.refused ? nil : fi; g_mfi.fresh = 1;
-            MLOG("%s[mfx] frame interpolator: depth / motion %lux%lu → %lux%lu, scene format %lu, %.1f ms%s", g_mfi.refused ? "[RED] " : "", (unsigned long)fr.mw, (unsigned long)fr.mh, (unsigned long)sw,
-                 (unsigned long)sh, (unsigned long)sf, (now_ns() - t0) / 1e6, g_mfi.refused ? ": MetalFX made none; no interpolated pictures" : "");
+            g_mfi.refused = !ok; g_mfi.fi = ok ? fi : nil; g_mfi.fresh = 1;
+            MLOG("%s[mfx] frame interpolator: depth / motion %lux%lu → the window's %lux%lu (its texture's format %lu, pictures in format %lu), decoded %s, %.1f ms%s", g_mfi.refused ? "[RED] " : "",
+                 (unsigned long)fr.mw, (unsigned long)fr.mh, (unsigned long)ww, (unsigned long)wh, (unsigned long)win.pixelFormat, (unsigned long)wf,
+                 hp[0] == 1 ? "from PQ (HDR)" : hp[0] == 0 ? "as linear (HDR)" : "from sRGB", (now_ns() - t0) / 1e6, g_mfi.refused ? ": MetalFX made none; no interpolated pictures" : "");
         } else MLOG("[RED] [mfx] frame interpolation needs macOS 27's MetalFX (content rectangles for dynamic resolution); off");
     }
     if (g_mfi.refused) return -1;
-    if (!pair) return -1;   // the first frame of a pair: its scene is the history the next one interpolates from
-    // The window-sized slots (the present draws them as the game's own window texture)
-    if (g_mfi.ww != win.width || g_mfi.wh != win.height || g_mfi.wf != wf || !g_mfi.slot[0]) {
-        if (busy) { g_mfi.slots_busy++; return -1; }
-        for (int i = 0; i < MFX_SLOTS; i++) mfx_drop(&g_mfi.slot[i]);
-        for (int i = 0; i < MFX_SLOTS; i++) g_mfi.slot[i] = mfx_tex(wf, win.width, win.height, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite, @"mfx picture");
-        res_commit(); g_mfi.ww = win.width; g_mfi.wh = win.height; g_mfi.wf = wf;
-        MLOG("[mfx] interpolated pictures %lux%lu format %lu (the window texture's, format %lu)", (unsigned long)win.width, (unsigned long)win.height, (unsigned long)wf, (unsigned long)win.pixelFormat);
+    if (!g_mfi.dec_ps) {
+        g_mfi.dec_ps = mfx_kernel_in("present", @"mfx_win_decode"); g_mfi.enc_ps = mfx_kernel_in("present", @"mfx_win_encode"); g_mfi.dec_at = mfx_table(); g_mfi.enc_at = mfx_table();
+        if (!g_mfi.dec_ps || !g_mfi.enc_ps || !g_mfi.dec_at || !g_mfi.enc_at) { g_mfi.refused = 1; return -1; }
     }
-    int s = -1; for (int k = 1; k <= MFX_SLOTS && s < 0; k++) { int c = (g_mfi.last_slot + k + MFX_SLOTS) % MFX_SLOTS; if (!(busy >> c & 1)) s = c; }
-    if (s < 0) { g_mfi.slots_busy++; return -1; }
+    int pair = g_mfi.prev_ok && g_mfi.prev.n + 1 == fr.n && !fr.reset && prev_same(&g_mfi.prev, &fr);
+    if (!pair) g_mfi.resets++;   // this frame's scene is the history the next one interpolates from
+    int s = -1;
+    if (pair) { for (int k = 1; k <= MFX_SLOTS && s < 0; k++) { int c = (g_mfi.last_slot + k + MFX_SLOTS) % MFX_SLOTS; if (!(busy >> c & 1)) s = c; } if (s < 0) g_mfi.slots_busy++; }
     int a = -1; for (int i = 0; i < 3 && a < 0; i++) if (!atomic_load(&g_mfi.busy[i])) a = i;
-    if (a < 0) { g_mfi.cb_busy++; return -1; }
-    if (!g_mfi.alloc[a]) { g_mfi.alloc[a] = [g_dev newCommandAllocator]; g_mfi.cb[a] = [g_dev newCommandBuffer]; if (!g_mfi.alloc[a] || !g_mfi.cb[a]) { MLOG("[RED] [mfx] no command allocator / buffer"); return -1; } }
-    if (!g_mfi.st_ps) { g_mfi.st_ps = mfx_kernel(@"mfx_stretch"); g_mfi.st_at = mfx_table(); if (!g_mfi.st_ps || !g_mfi.st_at) { g_mfi.refused = 1; return -1; } }
-    g_mfi.last_slot = s;
+    if (a < 0) { g_mfi.cb_busy++; g_mfi.prev_ok = 0; return -1; }
+    if (!g_mfi.alloc[a]) { g_mfi.alloc[a] = [g_dev newCommandAllocator]; g_mfi.cb[a] = [g_dev newCommandBuffer]; if (!g_mfi.alloc[a] || !g_mfi.cb[a]) { MLOG("[RED] [mfx] no command allocator / buffer"); g_mfi.prev_ok = 0; return -1; } }
+    if (s >= 0) g_mfi.last_slot = s;
     res_commit();   // the slots and the window texture, as snap_take
-    id<MTLTexture> out = fr.out, ui = g_mfi.ui, res = g_mfi.res, slot = g_mfi.slot[s];
-    uint64_t gpu; uint8_t *pb = mfx_par(&gpu); uint32_t *pu = (uint32_t *)pb;
-    pu[0] = 0; pu[1] = 0; pu[2] = (uint32_t)sw; pu[3] = (uint32_t)sh; pu[4] = (uint32_t)win.width; pu[5] = (uint32_t)win.height; pu[6] = (uint32_t)enc;
+    int k = g_mfi.ck ^ 1;
+    id<MTLTexture> raw = present_raw_src(win), frm = g_mfi.frm, col = g_mfi.col[k], pcol = g_mfi.col[k ^ 1], res = g_mfi.res, slot = s >= 0 ? g_mfi.slot[s] : nil;
+    uint64_t gpu; uint8_t *pb = mfx_par(&gpu); float *pf = (float *)pb; uint32_t *pu = (uint32_t *)(pb + 16);
+    pf[0] = hp[0]; pf[1] = hp[1]; pf[2] = hp[2]; pf[3] = 0; pu[0] = (uint32_t)ww; pu[1] = (uint32_t)wh; pu[2] = pu[3] = 0;   // present.metal MfxWin
+    MTLSize grid = MTLSizeMake(ww, wh, 1), tg = MTLSizeMake(16, 16, 1);
     [g_mfi.alloc[a] reset];
     id<MTL4CommandBuffer> cb = g_mfi.cb[a];
     [cb beginCommandBufferWithAllocator:g_mfi.alloc[a]];
+    // The game's textures are read in this first encoder only: after the frame's work, and the game's next frame waits for it (the window texture and the upscaler's copies)
     id<MTL4ComputeCommandEncoder> ce = [cb computeCommandEncoder];
-    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];   // after the frame's work, the UI included
-    [ce copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(fr.orr.xoffset, fr.orr.yoffset, 0) sourceSize:MTLSizeMake(sw, sh, 1) toTexture:ui destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
-    [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // MetalFX's encoders and the game's next frame come after the copy
-    [ce endEncoding];
-    id<MTL4FXFrameInterpolator> fi = g_mfi.fi;
-    fi.colorTexture = fr.scene; fi.prevColorTexture = prev.scene; fi.depthTexture = fr.dep; fi.motionTexture = fr.mv;
-    fi.uiTexture = ui; fi.uiTextureComposited = YES; fi.outputTexture = res;
-    if (@available(macOS 27.0, iOS 27.0, *)) { fi.contentWidth = fr.cw; fi.contentHeight = fr.ch; }
-    fi.motionVectorScaleX = 1; fi.motionVectorScaleY = 1; fi.jitterOffsetX = 0; fi.jitterOffsetY = 0;
-    fi.deltaTime = (float)g_mfi.dt; fi.nearPlane = (float)fr.cam.near; fi.farPlane = (float)fr.cam.far; fi.fieldOfView = (float)fr.cam.fov; fi.aspectRatio = (float)fr.cam.aspect;
-    fi.depthReversed = fr.cam.rev; fi.shouldResetHistory = g_mfi.fresh; g_mfi.fresh = 0;   // a new interpolator's first picture is this frame again
-    [fi encodeToCommandBuffer:cb];
-    fi.colorTexture = nil; fi.prevColorTexture = nil; fi.depthTexture = nil; fi.motionTexture = nil; fi.uiTexture = nil; fi.outputTexture = nil;
-    ce = [cb computeCommandEncoder];
-    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:resource_vis()];   // after MetalFX's encoders, and after the presents that read this slot before
-    [g_mfi.st_at setTexture:res.gpuResourceID atIndex:0]; [g_mfi.st_at setTexture:slot.gpuResourceID atIndex:1]; [g_mfi.st_at setAddress:gpu atIndex:0];
-    [ce setComputePipelineState:g_mfi.st_ps]; [ce setArgumentTable:g_mfi.st_at];
-    [ce dispatchThreads:MTLSizeMake(win.width, win.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:resource_vis()];
+    [g_mfi.dec_at setTexture:raw.gpuResourceID atIndex:0]; [g_mfi.dec_at setTexture:fr.scene.gpuResourceID atIndex:1]; [g_mfi.dec_at setTexture:fr.fin.gpuResourceID atIndex:2];
+    [g_mfi.dec_at setTexture:frm.gpuResourceID atIndex:3]; [g_mfi.dec_at setTexture:col.gpuResourceID atIndex:4]; [g_mfi.dec_at setAddress:gpu atIndex:0];
+    [ce setComputePipelineState:g_mfi.dec_ps]; [ce setArgumentTable:g_mfi.dec_at];
+    [ce dispatchThreads:grid threadsPerThreadgroup:tg];
     [ce barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
     [ce endEncoding];
+    id<MTL4FXFrameInterpolator> fi = g_mfi.fi;
+    if (s >= 0) {
+        fi.colorTexture = col; fi.prevColorTexture = pcol; fi.depthTexture = fr.dep; fi.motionTexture = fr.mv;
+        fi.uiTexture = nil; fi.outputTexture = res;
+        if (@available(macOS 27.0, iOS 27.0, *)) { fi.contentWidth = fr.cw; fi.contentHeight = fr.ch; }
+        fi.motionVectorScaleX = 1; fi.motionVectorScaleY = 1; fi.jitterOffsetX = 0; fi.jitterOffsetY = 0;   // motion in pixels of the motion texture's content: MetalFX scales it to the output (checked standalone)
+        fi.deltaTime = (float)g_mfi.dt; fi.nearPlane = (float)fr.cam.near; fi.farPlane = (float)fr.cam.far; fi.fieldOfView = (float)fr.cam.fov; fi.aspectRatio = (float)fr.cam.aspect;
+        // A new interpolator, or a previous call that was not for the previous frame: MetalFX's history is not this pair's (its first picture is then the newer frame)
+        fi.depthReversed = fr.cam.rev; fi.shouldResetHistory = g_mfi.fresh || g_mfi.last_enc != fr.n; g_mfi.fresh = 0; g_mfi.last_enc = fr.n + 1;
+        [fi encodeToCommandBuffer:cb];
+        fi.colorTexture = nil; fi.prevColorTexture = nil; fi.depthTexture = nil; fi.motionTexture = nil; fi.outputTexture = nil;
+        ce = [cb computeCommandEncoder];
+        [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:resource_vis()];   // after MetalFX's encoders, and after the presents that read this slot before
+        [g_mfi.enc_at setTexture:res.gpuResourceID atIndex:0]; [g_mfi.enc_at setTexture:slot.gpuResourceID atIndex:1]; [g_mfi.enc_at setTexture:frm.gpuResourceID atIndex:2];
+        [g_mfi.enc_at setTexture:col.gpuResourceID atIndex:3]; [g_mfi.enc_at setAddress:gpu atIndex:0];
+        [ce setComputePipelineState:g_mfi.enc_ps]; [ce setArgumentTable:g_mfi.enc_at];
+        [ce dispatchThreads:grid threadsPerThreadgroup:tg];
+        [ce barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
+        [ce endEncoding];
+    }
     [cb endCommandBuffer];
     atomic_store(&g_mfi.busy[a], 1);
     MTL4CommitOptions *o = [MTL4CommitOptions new]; _Atomic int *bp = &g_mfi.busy[a];
-    NSArray *keep = @[out, slot, fr.scene, prev.scene, fr.dep, fr.mv, fi, ui, res];   // Metal 4 retains nothing: these live until the GPU is done
+    NSMutableArray *keep = [NSMutableArray array];   // Metal 4 retains nothing: these live until the GPU is done
+    mfx_retain(keep, raw); mfx_retain(keep, win); mfx_retain(keep, fr.scene); mfx_retain(keep, fr.fin); mfx_retain(keep, frm); mfx_retain(keep, col); mfx_retain(keep, pcol); mfx_retain(keep, res); mfx_retain(keep, slot);
+    if (s >= 0) { mfx_retain(keep, fr.dep); mfx_retain(keep, fr.mv); mfx_retain(keep, fi); }
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)keep;
         if (f.error) MLOG("[RED] [mfx] interpolation command buffer: %s", f.error.description.UTF8String);
         else if (f.GPUEndTime > f.GPUStartTime) mfx_note_gpu((f.GPUEndTime - f.GPUStartTime) * 1e3);
@@ -528,10 +580,12 @@ static int mfx_present_frame(const tex_t *t, double period, unsigned busy, uint6
         pthread_mutex_lock(&g_res_mu); [g_q4 commit:&cb count:1 options:o]; pthread_mutex_unlock(&g_res_mu);
         atomic_store(&g_mfi_cmt, val);
     }
+    g_mfi.ck = k; g_mfi.prev = fr; g_mfi.prev_ok = 1;
+    if (s < 0) return -1;
     *v = val;
-    if (!g_mfi.made++) MLOG("[mfx] first interpolated picture: scene %lux%lu, depth / motion %lux%lu of %lux%lu, window %lux%lu, frame interval %.1f ms, camera near %.3f far %.1f fov %.2f",
-                            (unsigned long)sw, (unsigned long)sh, (unsigned long)fr.cw, (unsigned long)fr.ch, (unsigned long)fr.mw, (unsigned long)fr.mh,
-                            (unsigned long)win.width, (unsigned long)win.height, g_mfi.dt * 1e3, fr.cam.near, fr.cam.far, fr.cam.fov);
+    if (!g_mfi.made++) MLOG("[mfx] first interpolated picture: window %lux%lu (format %lu), depth / motion %lux%lu of %lux%lu, upscaler output %dx%d, frame interval %.1f ms, camera near %.3f far %.1f fov %.2f",
+                            (unsigned long)ww, (unsigned long)wh, (unsigned long)win.pixelFormat, (unsigned long)fr.cw, (unsigned long)fr.ch, (unsigned long)fr.mw, (unsigned long)fr.mh,
+                            fr.orr.width, fr.orr.height, g_mfi.dt * 1e3, fr.cam.near, fr.cam.far, fr.cam.fov);
     return s;
 } }
 static void mfx_commit_wait(uint64_t v) { if (v) rec_note_wait(&g_mfi_cmt, v); }

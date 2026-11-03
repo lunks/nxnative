@@ -78,7 +78,8 @@ flowchart LR
 On the Mac, for games whose profile names their own upscaler and their camera (Donkey Kong Bananza). **On** shows a picture MetalFX's frame interpolation makes between each two game frames, so a 60 fps game shows 120 pictures a second on a 120 Hz screen (the display runs its 120 Hz pacing for it). The game keeps its own frame rate and timing; its HUD comes from the newer frame. Off by default.
 
 - **When it pauses:** below 25 fps, and on a screen that cannot show two pictures per game frame (a 60 Hz screen with the game at 60). It also skips camera cuts, loading screens and menus without the game's 3D scene.
-- **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro, and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
+- **With [HDR](#hdr):** both can be on. The interpolated pictures are made from the game's finished frames and shown the same way, so they have the same brightness and colour, in SDR and HDR.
+- **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro (measured at 2304x1296; it now works at the window's size), and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
 - In `env.txt`: `DM_MFX_INTERP=1`.
 
 ### Game language

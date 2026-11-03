@@ -940,6 +940,8 @@ void mtl_sub_begin(void) {
 static void rp_end(void);
 // MetalFX temporal upscaling and frame interpolation at a game's own upscaler (nvn_mfx.inc): the scene's depth and camera, from each pass with a depth attachment
 static int mfx_cam_on(void); static void mfx_pass_begin(id<MTLTexture> depth, NSUInteger level); static void mfx_note_pass(void);
+// ... and frame interpolation's UI point: an upscaler frame waits (g_mfi_pend) for the first pass into one of the game's window textures (mfx_ui_point, before a pass opens)
+static int g_mfi_pend; static void mfx_ui_point(void);
 static void geo_mesh_flush_pass(void);   // a waiting run of mesh draws is drawn before its pass ends (nvn_geometry.inc)
 // DM_NVN_PASSGPU_SERIAL=1 (for measurement): before creating each encoder on the main command buffer, encode 'signal n+1 → wait for signal n+1' - the signal is only raised once all prior work has completed,
 // so the following encoder starts only after the previous one has fully finished; on TBDR passes no longer overlap in the pipeline, and the per-pass start-to-end span of DM_NVN_PASSGPU is that pass's exclusive time (the whole-frame total is inflated; look only at relative cost)
@@ -4095,6 +4097,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     uint64_t reg0 = 0, ser0 = 0, dirty0 = 0;
     if (rt_range_on()) { reg0 = g_reg_gen; ser0 = g_ser_gen; }
     if (rt_range_on()) dirty0=nvn_dirty_now();
+    if (g_mfi_pend) mfx_ui_point();   // frame interpolation: the upscaler's output with the UI, before the game's window pass reads it (nvn_mfx.inc)
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *pd = [MTL4RenderPassDescriptor new];
     int any = 0;

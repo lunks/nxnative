@@ -60,7 +60,7 @@ final class LauncherModel: ObservableObject {
         for s in settings where blocker(s) != nil && !fixed.contains(s.env) && !s.isDefault(values[s.env] ?? s.def) { values[s.env] = s.def }   // two saved choices that conflict: the later row in the list keeps its own
     }
 
-    // A row with "conflicts" cannot be used together with that setting's value (HDR and frame interpolation): while the other row has it, this one is held at
+    // A row with "conflicts" cannot be used together with that setting's value: while the other row has it, this one is held at
     // its default and drawn disabled. Choosing a value resets the rows that conflict with it, so the two never hold together; a value an env file fixes stays
     func blocker(_ s: Setting) -> Setting? {
         guard let c = s.conflicts, let eq = c.firstIndex(of: "=") else { return nil }
