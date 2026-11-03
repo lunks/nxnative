@@ -753,6 +753,24 @@ int main(void) {
         EP_RESET(); setenv("DM_T_UP", "metalfx-temporal", 1);
         CHECK(sp_apply(ep, ne) == 1 && rd32(0x1300) == 0x55555555u, "setting patches: a value list, the variable at its second value: written");
         unsetenv("DM_T_UP"); unsetenv("DM_T_RATIO"); EP_RESET();
+        // a term on a variable of the table tests what it wrote (Bananza's softest rate inside the sharpest rate's code): its value when its rows were written,
+        // unset when they were not (refused here: its original word does not hold), whatever the environment says
+        static const setting_patch_t wp[] = {
+            {"DM_T_CEIL", "1.5", "Ceiling", "main", B1, 0x1300, 0x11111111u, 0x22222222u, "DM_T_DYN=1"},
+            {"DM_T_SOFT", "2.0", "Floor", "main", B1, 0x1304, 0x33333333u, 0x44444444u, "DM_T_DYN=1&DM_T_CEIL=1.0|1.5"},
+            {"DM_T_SOFT", "2.0", "Floor, no ceiling", "main", B1, 0x1308, 0x66666666u, 0x77777777u, "DM_T_CEIL!=1.0|1.5"},
+        };
+        const int nw = (int)(sizeof wp / sizeof wp[0]);
+        EP_RESET(); setenv("DM_T_DYN", "1", 1); setenv("DM_T_CEIL", "1.5", 1); setenv("DM_T_SOFT", "2.0", 1);
+        CHECK(sp_apply(wp, nw) == 2 && rd32(0x1300) == 0x22222222u && rd32(0x1304) == 0x44444444u && rd32(0x1308) == 0x66666666u,
+              "setting patches: a term on a variable of the table holds once that variable's rows were written");
+        EP_RESET(); wr32(0x1300, 0x12345678u);
+        CHECK(sp_apply(wp, nw) == 1 && rd32(0x1300) == 0x12345678u && rd32(0x1304) == 0x33333333u && rd32(0x1308) == 0x77777777u,
+              "setting patches: that variable refused (its word changed): the term tests it as unset, whatever the environment says");
+        EP_RESET(); unsetenv("DM_T_DYN");
+        CHECK(sp_apply(wp, nw) == 1 && rd32(0x1300) == 0x11111111u && rd32(0x1304) == 0x33333333u && rd32(0x1308) == 0x77777777u,
+              "setting patches: that variable's own condition did not hold: nothing written for it, and the term sees it unset");
+        unsetenv("DM_T_CEIL"); unsetenv("DM_T_SOFT"); EP_RESET();
         #undef EP_RESET
         #undef B1
     }

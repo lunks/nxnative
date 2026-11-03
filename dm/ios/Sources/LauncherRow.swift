@@ -14,6 +14,9 @@ struct SettingRow: View {
     private var locked: Bool { m.fixed.contains(s.env) || blocker != nil }
     private var note: String {
         if let b = blocker, !m.fixed.contains(s.env) { return "Off while \(b.label) is on" }
+        if m.raisedRows.contains(s.env), let k = s.atleast, let b = m.settings.first(where: { $0.env == k }) {   // raised to its bound when that row changed
+            return (s.note.isEmpty ? "" : s.note + " · ") + "Raised to match \(b.label)"
+        }
         guard locked else { return s.note }
         return (s.note.isEmpty ? "" : s.note + " · ") + (m.fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file")
     }
@@ -35,7 +38,7 @@ struct SettingRow: View {
             switch s.kind {
             case "choice":
                 Picker(selection: m.binding(s)) {
-                    ForEach(m.options(s), id: \.[0]) { Text($0[1]).tag($0[0]) }
+                    ForEach(m.options(s), id: \.[0]) { Text(m.optionLabel(s, $0)).tag($0[0]) }
                 } label: {
                     settingLabel
                 }

@@ -317,28 +317,43 @@ static int single_upscale_apply(void) {   // 1 when the stub will take the windo
 }
 
 // The resolution chain at launch, for a profile with res_chain (game.py; Bananza's README.md, Resolution model): the upscaler's output for the mode (docked with or
-// without single upscale, handheld), the upscale rate the game will run (the rate the setting patch DM_UPSCALE_RATIO wrote, fixed, or from it to the game's highest
-// with DM_UPSCALE_DYNAMIC=1; else the game's own range), the scene's size (output / rate, rounded up, as the game's 2304 / 1.375 = 1676), the upscaler, and the effects'
-// and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first upscale names the sizes the game drew
+// without single upscale, handheld); the upscale rate the setting patches wrote: fixed (DM_UPSCALE_RATIO), or dynamic from it (the sharpest) to the softest
+// (DM_UPSCALE_SOFTEST as written: raised to the sharpest, past the game's highest only with a MetalFX upscaler; without it, the game's own highest), else the game's
+// own range; the rate each stage starts at (the parameter apply writes the fixed or the sharpest rate; the game's own starts at 1.0); the scene's size (output / rate,
+// rounded up, as the game's 2304 / 1.375 = 1676); the upscaler and whether it runs at the sharpest rate (at 1.0 the game turns its upscaler off, and MetalFX with
+// it); the effects' and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first upscale names the sizes drawn
 static void res_chain_log(int single) {
     int ow[3], oh[3]; double lo, hi;
     if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
     int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2, w = ow[k], h = oh[k];
     const char *val = NULL, *rl = dm_setting_patch_applied("DM_UPSCALE_RATIO", &val), *dy = getenv("DM_UPSCALE_DYNAMIC"), *up = getenv("DM_UPSCALER");
-    double r0 = rl && val ? atof(val) : 0, r1 = r0;
-    if (r0 >= 1.0 && r0 < hi && dy && !strcmp(dy, "1")) r1 = hi;   // dynamic: from the chosen rate up to the game's highest (setting_patches.tsv's dynamic rows)
-    char rate[192], scene[96];
+    const char *fval = NULL, *fl = dm_setting_patch_applied("DM_UPSCALE_SOFTEST", &fval);
+    int mfx = up && (!strcmp(up, "metalfx") || !strcmp(up, "metalfx-temporal"));
+    double r0 = rl && val ? atof(val) : 0, r1 = r0;   // the sharpest and the softest rate (equal: fixed)
+    int dynamic = r0 >= 1.0 && r0 <= hi && dy && !strcmp(dy, "1");   // setting_patches.tsv's dynamic rows: a sharpest rate from 1.0 to the game's highest
+    if (dynamic) {
+        r1 = fl && fval ? atof(fval) : hi;
+        if (r1 > hi && !mfx) r1 = hi;   // past the game's highest only with a MetalFX upscaler (the rows lower it)
+        if (r1 < r0) r1 = r0;           // never sharper than the sharpest (the rows raise it)
+    }
+    char rate[320], scene[96], ups[160];
+    const char *name = up && *up ? up : "game";
     if (r0 < 1.0) {   // the game's own: no upscaler at a stage's start, then its range
-        snprintf(rate, sizeof rate, "the game's own: 1.0 (no upscaler) until a frame is over budget, then %.5g to %.5g", lo, hi);
+        snprintf(rate, sizeof rate, "the game's own: starts at 1.0 (no upscaler), %.5g to %.5g once a frame is over budget", lo, hi);
         snprintf(scene, sizeof scene, "%dx%d, then %dx%d to %dx%d", w, h, (int)ceil(w / lo), (int)ceil(h / lo), (int)ceil(w / hi), (int)ceil(h / hi));
+        snprintf(ups, sizeof ups, "%s, off at the start (rate 1.0)", name);
     } else {
-        if (r1 > r0) snprintf(rate, sizeof rate, "%.5g to %.5g, dynamic (%s)", r0, r1, rl); else snprintf(rate, sizeof rate, "%.5g fixed (%s)", r0, rl);
+        if (dynamic) snprintf(rate, sizeof rate, "%.5g (sharpest) to %.5g (softest), dynamic, start %.5g (%s; %s)", r0, r1, r0, rl, fl ? fl : "softest: the game's highest");
+        else snprintf(rate, sizeof rate, "%.5g fixed, start %.5g (%s)", r0, r0, rl);
         if (r1 > r0) snprintf(scene, sizeof scene, "%dx%d to %dx%d", (int)ceil(w / r0), (int)ceil(h / r0), (int)ceil(w / r1), (int)ceil(h / r1));
         else snprintf(scene, sizeof scene, "%dx%d", (int)ceil(w / r0), (int)ceil(h / r0));
+        if (r1 <= 1.0) snprintf(ups, sizeof ups, "none (rate 1.0: the game turns its upscaler off)");
+        else if (r0 <= 1.0) snprintf(ups, sizeof ups, "%s, off at the sharpest (rate 1.0: the game turns its upscaler off), on when softer", name);
+        else snprintf(ups, sizeof ups, "%s, on at the sharpest", name);
     }
     const char *eff = dm_setting_patch_applied("DM_EFFECTS_RES", NULL), *shd = dm_setting_patch_applied("DM_SHADOW_RES", NULL);
     LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
-        docked && single ? " (single upscale: the window's size)" : "", rate, scene, r0 == 1.0 && r1 == 1.0 ? "none (rate 1.0)" : up && *up ? up : "game",
+        docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups,
         eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)");
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and

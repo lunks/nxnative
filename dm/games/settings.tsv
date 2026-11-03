@@ -11,32 +11,37 @@
 #   shown     always; DM_GAME_<NAME>!=<value> or ==<value>; fixups:<KEY>: main's rewriter table has that key (a stub in the game's build, patch_nso.py);
 #             patches:<VAR>: the profile's setting patches (setting_patches.tsv) write words for that variable on the packed build; languages>1 (more than one to pick, so also when the control data lists none); gfxapi:<API>: the packer's GFXAPI;
 #             platform:<ios | mac>: the app's platform (SETTINGS_PLATFORM, ios when unset), for a switch only that platform's front end reads; several joined by & must all hold
-#   section   Game, Controls or Performance: a heading on the single settings screen. Rows appear in table order within each section
+#   section   Game, Resolution, Effects, Frame rate, HDR, Controls or Performance: a heading on the settings screen. Sections come in the order of their first rows, and rows in table order
+#             within each section; <ios>|<mac> gives each platform its own (a row the iPhone keeps under Game, beside Console mode, goes under Resolution in the Mac window)
 #             Reset to tested defaults clears all launcher choices; values fixed by an env file stay
 #   label, note  the setting's name and the line under it (may be empty; only for a setting with a cost: latency, memory, heat)
 #   meta      optional, key=value pairs separated by ; (settings.py META lists the keys; docs/frontends.md, The settings list, describes them):
-#             level=basic  a setting a front end shows first;  needs=<VAR>=<value>[|<value>...]  a sub-setting, drawn only while the row that sets <VAR> has one of the values
+#             level=basic  a setting a front end shows first;  needs=<VAR>=<value>[|<value>...]  a sub-setting, drawn only while the row that sets <VAR> is drawn and has one of the values
 #             conflicts=<VAR>=<value>  held at its default, and drawn disabled, while the row that sets <VAR> has that value; choosing that value resets this row;
 #             conflicts=<VAR>=<value>:<own value>[|<own value>...]  only those values of this row: not offered while <VAR> has the value, and reset when it is chosen
+#             atleast=<VAR>  a choice of numbers: only values at least the number the row that sets <VAR> holds are offered; a lower one is raised to the lowest offered
+# The Mac window's Resolution section follows the picture's way: what the game upscales to (Output resolution), with what (Game's upscaler; a MetalFX temporal option such as
+# camera jitter goes right after it), how much smaller it renders (Render resolution, then Dynamic resolution and its Softest), and the app's own scaling to the window (Upscaling)
 DM_FPS_TARGET	choice	30=30 fps,60=60 fps,120=120 fps?DM_GAME_FPS_MAX==120&platform:mac	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Game	Frame rate		level=basic
-DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Game	Dynamic resolution	Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.
+DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Game|Resolution	Dynamic resolution	Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.
 DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		level=basic
 DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
-DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
-DM_SINGLE_UPSCALE	choice	0=Game default (smaller then stretched),1=Window (one upscale)	0	fixups:SINGLE_UPSCALE&platform:mac	Game	Output resolution	Experimental: Window upscales the picture once, straight to the game's window, instead of to a smaller size and then again to the window. Sharper, for more GPU time.
-DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX,metalfx-temporal=MetalFX temporal	game	DM_GAME_UPSCALER_N!=0	Game	Game's upscaler
-DM_UPSCALE_RATIO	choice	patches	game	patches:DM_UPSCALE_RATIO&platform:mac	Game	Upscaler quality	Fixes how much smaller than the output the game renders. Native costs the most GPU time and memory; Ultra performance needs a MetalFX upscaler.	conflicts=DM_UPSCALER=game:3.0
-DM_UPSCALE_DYNAMIC	toggle	-	0	patches:DM_UPSCALE_RATIO&platform:mac	Game	Dynamic resolution	Lets the game render smaller, down to Performance, when a frame runs late, and come back to the chosen quality.	needs=DM_UPSCALE_RATIO=1.0|1.5|1.6875
-DM_EFFECTS_RES	choice	patches	game	patches:DM_EFFECTS_RES&platform:mac	Game	Effects resolution	Full draws ambient occlusion, refraction and soft particles at the render size instead of half: sharper, for more GPU time and memory. Untested.
-DM_SHADOW_RES	choice	patches	game	patches:DM_SHADOW_RES&platform:mac	Game	Shadow resolution	Full keeps shadows sharp when the game lowers its resolution, for a little more GPU time.
-DM_SHADOW_MAP_SIZE	choice	patches	game	patches:DM_SHADOW_MAP_SIZE&platform:mac	Game	Shadow map size	Sharper shadows for more GPU time and memory. Larger sizes are untested: the game may crash, most likely when the map opens.
-DM_FPS_LOCK	choice	patches	game	patches:DM_FPS_LOCK&platform:mac	Game	Frame rate lock	Locked 60 never halves to 30 in busy scenes: the game's dynamic resolution has to absorb the load, and a frame that still misses 16.7 ms makes the game run slower and judder. Locked 30 holds 30.
-DM_MFX_INTERP	toggle	-	0	DM_GAME_MFX_FRAMES!=0&platform:mac	Game	Frame interpolation	Shows a picture MetalFX makes between two game frames: smoother motion on a 120 Hz screen, about half a frame more latency and more GPU time.
-DM_HDR	toggle	-	0	gfxapi:nvn&platform:mac	Game	HDR	The game's own HDR picture, on a screen with HDR (an XDR screen, or a monitor with High Dynamic Range on in System Settings › Displays).
-DM_HDR_PAPER_WHITE	choice	100=100 nits,160=160 nits,203=203 nits,250=250 nits,300=300 nits,400=400 nits	203	gfxapi:nvn&platform:mac	Game	HDR paper white	The brightness of white in the HUD and menus: raise it if the game looks dim next to other windows.	needs=DM_HDR=1
-DM_HDR_PEAK	choice	0=From the screen,400=400 nits,600=600 nits,800=800 nits,1000=1000 nits	0	gfxapi:nvn&platform:mac	Game	HDR peak	Lower it if bright highlights look flat or clipped.	needs=DM_HDR=1
-DM_HDR_ENCODING	choice	auto=Auto,pq=PQ,linear=Linear	auto	gfxapi:nvn&platform:mac	Game	HDR encoding	Try Linear if the picture looks washed out or grey.	needs=DM_HDR=1
-DM_HDR_GAMUT	choice	auto=Auto,2020=BT.2020,709=BT.709	auto	gfxapi:nvn&platform:mac	Game	HDR colour range	Try BT.709 if colours look oversaturated.	needs=DM_HDR=1
+DM_SINGLE_UPSCALE	choice	0=Game default (smaller then stretched),1=Window (one upscale)	0	fixups:SINGLE_UPSCALE&platform:mac	Resolution	Output resolution	Experimental: Window upscales the picture once, straight to the game's window, instead of to a smaller size and then again to the window. Sharper, for more GPU time.
+DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX,metalfx-temporal=MetalFX temporal	game	DM_GAME_UPSCALER_N!=0	Game|Resolution	Game's upscaler
+DM_UPSCALE_RATIO	choice	patches	game	patches:DM_UPSCALE_RATIO&platform:mac	Resolution	Render resolution	How much smaller than the output the game renders; with dynamic resolution, the sharpest it renders. Native renders the output itself, without the game's upscaler or MetalFX. Ultra performance needs a MetalFX upscaler.	conflicts=DM_UPSCALER=game:3.0
+DM_UPSCALE_DYNAMIC	toggle	-	0	patches:DM_UPSCALE_RATIO&platform:mac	Resolution	Dynamic resolution	Renders softer when frames run late, down to Softest, and comes back to Render resolution: never sharper.	needs=DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	choice	patches	2.0	patches:DM_UPSCALE_SOFTEST&platform:mac	Resolution	Softest	The furthest dynamic resolution goes when frames run late.	needs=DM_UPSCALE_DYNAMIC=1;atleast=DM_UPSCALE_RATIO;conflicts=DM_UPSCALER=game:3.0
+DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game|Resolution	Upscaling	Uses more GPU time and can increase heat.
+DM_EFFECTS_RES	choice	patches	game	patches:DM_EFFECTS_RES&platform:mac	Effects	Effects resolution	Full draws ambient occlusion, refraction and soft particles at the render size instead of half: sharper, for more GPU time and memory. Untested.
+DM_SHADOW_RES	choice	patches	game	patches:DM_SHADOW_RES&platform:mac	Effects	Shadow resolution	Full keeps shadows sharp when the game lowers its resolution, for a little more GPU time.
+DM_SHADOW_MAP_SIZE	choice	patches	game	patches:DM_SHADOW_MAP_SIZE&platform:mac	Effects	Shadow map size	Sharper shadows for more GPU time and memory. Larger sizes are untested: the game may crash, most likely when the map opens.
+DM_FPS_LOCK	choice	patches	game	patches:DM_FPS_LOCK&platform:mac	Frame rate	Frame rate lock	Locked 60 never halves to 30 in busy scenes: dynamic resolution has to absorb the load, and a frame that still misses 16.7 ms makes the game run slower and judder. Locked 30 holds 30.
+DM_MFX_INTERP	toggle	-	0	DM_GAME_MFX_FRAMES!=0&platform:mac	Frame rate	Frame interpolation	Shows a picture MetalFX makes between two game frames: smoother motion on a 120 Hz screen, about half a frame more latency and more GPU time.
+DM_HDR	toggle	-	0	gfxapi:nvn&platform:mac	HDR	HDR	The game's own HDR picture, on a screen with HDR (an XDR screen, or a monitor with High Dynamic Range on in System Settings › Displays).
+DM_HDR_PAPER_WHITE	choice	100=100 nits,160=160 nits,203=203 nits,250=250 nits,300=300 nits,400=400 nits	203	gfxapi:nvn&platform:mac	HDR	HDR paper white	The brightness of white in the HUD and menus: raise it if the game looks dim next to other windows.	needs=DM_HDR=1
+DM_HDR_PEAK	choice	0=From the screen,400=400 nits,600=600 nits,800=800 nits,1000=1000 nits	0	gfxapi:nvn&platform:mac	HDR	HDR peak	Lower it if bright highlights look flat or clipped.	needs=DM_HDR=1
+DM_HDR_ENCODING	choice	auto=Auto,pq=PQ,linear=Linear	auto	gfxapi:nvn&platform:mac	HDR	HDR encoding	Try Linear if the picture looks washed out or grey.	needs=DM_HDR=1
+DM_HDR_GAMUT	choice	auto=Auto,2020=BT.2020,709=BT.709	auto	gfxapi:nvn&platform:mac	HDR	HDR colour range	Try BT.709 if colours look oversaturated.	needs=DM_HDR=1
 DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic
 DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
 DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Game	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off. A full-screen picture without cropping needs a patch for each game.

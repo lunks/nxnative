@@ -1786,8 +1786,8 @@ static void sources_scan(void) {
 // [RED] line says why. A value with rows for other builds only is refused the same way: fixed addresses never run on a
 // build they were not found in. A variable unset, or set to a value without rows (the game's own, "game"), writes nothing.
 // A row may carry a condition on a quantity the host knows at launch (sp_quantity: the HDR peak ratio it will report) or on another
-// setting's value in the environment (sp_when_env: Bananza's upscale ratio fixed or dynamic, DM_UPSCALE_DYNAMIC), so one value can
-// choose among words: only the rows whose condition holds are written, and two that hold for the same word refuse.
+// setting's value in the environment (sp_when_env: Bananza's upscale ratio fixed or dynamic, DM_UPSCALE_DYNAMIC; for a variable of the table, the value it
+// wrote), so one value can choose among words: only the rows whose condition holds are written, and two that hold for the same word refuse.
 // The words written are held: a cheat that stores into one is turned off at load, and any cheat write over one is refused
 // (main_write_check), so a cheat's on / off pair can never undo the setting or fight it. Only main's code is written (the
 // one module with a writable alias); on the iPhone no code page is writable, so a group with code words is refused there.
@@ -1809,21 +1809,28 @@ static int sp_quantity(const char *name, double *out, char *desc, size_t n) {
     return -1;
 }
 
+static const char *sp_applied_value(const char *var);
+static const setting_patch_t *g_sp_tab; static int g_sp_ntab;   // the table sp_apply applies, for the terms on its own variables
+
 // A term on another setting (game.py WHEN_ENV): DM_<NAME>=a|b holds when the environment sets the variable to one of the values, DM_<NAME>!=a|b when it is
-// unset or set to none of them. desc names the variable's value
+// unset or set to none of them. A variable with setting patches of its own in the table is tested by what it wrote (its value when its rows were written, earlier in
+// the table's order; unset when they were not: refused, or no condition held), so a row whose words only work beside that variable's never runs without them
+// (Bananza's softest rate inside the sharpest rate's clamp). desc names the variable's value
 static int sp_when_env(const char *t, char *desc, size_t n) {
     const char *ne = strstr(t, "!="), *eq = strchr(t, '=');
     if (!eq) { snprintf(desc, n, "%s: no = in the term", t); return 0; }
     size_t k = ne ? (size_t)(ne - t) : (size_t)(eq - t);
     char name[64]; snprintf(name, sizeof name, "%.*s", (int)k, t);
-    const char *want = t + k + (ne ? 2 : 1), *v = getenv(name);
+    int patched = 0;
+    for (int i = 0; i < g_sp_ntab && !patched; i++) patched = !strcmp(g_sp_tab[i].var, name);
+    const char *want = t + k + (ne ? 2 : 1), *v = patched ? sp_applied_value(name) : getenv(name);
     int in = 0;
     for (const char *p = want; v && *v && *p;) {
         size_t len = strcspn(p, "|");
         if (strlen(v) == len && !strncmp(v, p, len)) { in = 1; break; }
         p += len; if (*p == '|') p++;
     }
-    snprintf(desc, n, "%s=%s", name, v && *v ? v : "(unset)");
+    snprintf(desc, n, "%s=%s%s", name, v && *v ? v : patched ? "(not written)" : "(unset)", patched && v && *v ? " (written)" : "");
     return ne ? !in : in;
 }
 
@@ -1882,6 +1889,7 @@ const char *dm_setting_patch_applied(const char *var, const char **value) {
     for (int i = 0; i < g_sp_napplied; i++) if (!strcmp(g_sp_applied[i].var, var)) { if (value) *value = g_sp_applied[i].value; return g_sp_applied[i].label; }
     return NULL;
 }
+static const char *sp_applied_value(const char *var) { const char *v = NULL; return dm_setting_patch_applied(var, &v) ? v : NULL; }
 
 // One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written
 static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val) {
@@ -1957,6 +1965,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
 // once, by its value in the environment. Returns the words written
 static int sp_apply(const setting_patch_t *t, int n) {
     int done = 0;
+    g_sp_tab = t; g_sp_ntab = n;
     for (int i = 0; i < n; i++) {
         int first = 1;
         for (int k = 0; k < i; k++) if (!strcmp(t[k].var, t[i].var)) { first = 0; break; }
@@ -1964,6 +1973,7 @@ static int sp_apply(const setting_patch_t *t, int n) {
         const char *v = getenv(t[i].var);
         if (v && *v) done += sp_apply_group(t, n, t[i].var, v);
     }
+    g_sp_tab = NULL; g_sp_ntab = 0;
     return done;
 }
 

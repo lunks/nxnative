@@ -1,7 +1,7 @@
 // Mac app launcher: the settings window shown before the game starts, in the launcher's own process (launcher.c calls dm_mac_launcher before it starts the host). Its settings come from the
 // app's Resources/dm/launcher.json (dm/games/settings.py with SETTINGS_PLATFORM=mac); the model and the rows are the iOS launcher's (dm/ios/Sources/LauncherSettings.swift, LauncherRow.swift),
 // and so is the store: launcher.<VAR> in the app's preferences, which launcher.c reads when the window is not shown (docs/frontends.md, Saved choices). Basic settings (level basic) come
-// first, the others under Advanced settings, each in the list's sections. Play puts the settings into this process's environment, which the host inherits; Quit and closing the window end the
+// first, the others under Advanced settings, each in the list's sections (the picture's settings under Resolution, Effects, Frame rate and HDR; a section of upscale rates says the render size it gives). Play puts the settings into this process's environment, which the host inherits; Quit and closing the window end the
 // app without the game. "Show this window at launch" off: no window unless Option is held at launch, and launcher.c applies the saved choices. The window never takes focus by itself: an app
 // opened in the background (open -g) keeps its window behind until the player switches to it
 import AppKit
@@ -65,8 +65,18 @@ struct LauncherView: View {
         ForEach(m.sections(basic: basic), id: \.self) { section in
             let rows = m.rows(in: section, basic: basic)
             if !rows.isEmpty {
-                Section(section) {
-                    ForEach(rows) { SettingRow(s: $0, m: m) }
+                if let summary = m.renderSummary(in: section) {   // a section of upscale rates (Resolution): the render size the rows give, and what it is upscaled to
+                    Section {
+                        ForEach(rows) { SettingRow(s: $0, m: m) }
+                    } header: {
+                        Text(section)
+                    } footer: {
+                        Text(summary).monospacedDigit()
+                    }
+                } else {
+                    Section(section) {
+                        ForEach(rows) { SettingRow(s: $0, m: m) }
+                    }
                 }
             }
         }

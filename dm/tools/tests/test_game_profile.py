@@ -155,6 +155,13 @@ class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes 
                 self.assertIn(why, with_patches(table))
         self.assertIn('written twice', with_patches(f'DM_R\t1.5\tA\t{w}\t0x1000\t36081548\t140000AA\tDM_D=1\nDM_R\t1.5\tB\t{w}\t0x1000\t36081548\t140000AB\n'))   # still: a row without a condition shares no word
 
+    def test_a_condition_on_a_patched_variable_follows_its_rows(self):   # the host tests what that variable wrote, in table order (Bananza's softest rate after its sharpest)
+        w = f'main\t{BID}'
+        floor = f'DM_F\t2.0\tFloor\t{w}\t0x1008\t9100112B\t1E201000\tDM_D=1&DM_R=1.5\n'
+        ceil = f'DM_R\t1.5\tCeiling\t{w}\t0x1004\tBD406502\t1E2F1002\tDM_D=1\n'
+        self.assertEqual(with_patches(ceil + floor)[0], '#define DM_GAME_SETTING_PATCHES_N 2')
+        self.assertIn('come later in the table', with_patches(floor + ceil))
+
 
 class ResChain(unittest.TestCase):   # res_chain: the resolution chain the host logs at launch (loader.c res_chain_log)
     def test_macro(self):

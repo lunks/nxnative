@@ -64,7 +64,8 @@ import Foundation
         let mac = try! JSONDecoder().decode(SettingsFile.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
         setenv("DM_ENV_FILE_KEYS", "", 1); unsetenv("DM_FULLSCREEN"); unsetenv("DM_OPMODE")
         let mm = LauncherModel(mac.settings, defaults: d)
-        expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Controls", "Performance"], "Basic and Advanced keep the list's sections")
+        expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Resolution", "HDR", "Controls", "Performance"],
+               "Basic keeps its sections; Advanced has the picture's (Upscaling under Resolution, HDR), in the list's order: \(mm.sections(basic: false))")
         expect(mm.rows(in: "Game", basic: true).map(\.env) == ["DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_OPMODE", "DM_LANG", "DM_FULLSCREEN"], "Basic rows in the list's order")
         expect(!file.settings.contains { $0.env == "DM_FULLSCREEN" } && mm.values["DM_FULLSCREEN"] == "0", "Display mode is the Mac's, Window by default")
         mm.values["DM_FULLSCREEN"] = "1"; mm.apply()
@@ -110,6 +111,52 @@ import Foundation
         vc.values["DM_T_Q"] = "3.0"; vc.apply()
         expect(String(cString: getenv("DM_T_Q")) == "game", "Play holds a value the conflict rules out at the default")
         for k in ["DM_T_UP", "DM_T_Q", "DM_T_DYN"] { unsetenv(k); d.removeObject(forKey: "launcher." + k) }
+        // Donkey Kong Bananza's Resolution section: render sizes of upscale rates (rate_base, with the output for Output resolution: Window), nested sub-settings
+        // (Softest needs Dynamic resolution, which needs Render resolution), and a softest rate never sharper than the render resolution (atleast)
+        let res = try! JSONDecoder().decode(SettingsFile.self, from: Data(#"""
+            {"settings": [{"env":"DM_OPMODE","kind":"choice","section":"Game","label":"Console mode","note":"","default":"1","options":[["1","Docked"],["0","Handheld"]],"level":"basic"},
+                          {"env":"DM_SINGLE_UPSCALE","kind":"choice","section":"Resolution","label":"Output resolution","note":"","default":"0","options":[["0","Game default"],["1","Window"]]},
+                          {"env":"DM_UPSCALER","kind":"choice","section":"Resolution","label":"Game's upscaler","note":"","default":"game","options":[["game","Game's own"],["metalfx-temporal","MetalFX temporal"]]},
+                          {"env":"DM_UPSCALE_RATIO","kind":"choice","section":"Resolution","label":"Render resolution","note":"","default":"game","conflicts":"DM_UPSCALER=game:3.0",
+                           "options":[["game","Game default (dynamic)"],["1.0","Native (1.0, no upscaler)"],["1.5","Quality (1.5)"],["1.6875","Balanced (1.69)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}},
+                          {"env":"DM_UPSCALE_DYNAMIC","kind":"toggle","section":"Resolution","label":"Dynamic resolution","note":"","default":"0","on":"1","off":"0","needs":"DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0"},
+                          {"env":"DM_UPSCALE_SOFTEST","kind":"choice","section":"Resolution","label":"Softest","note":"","default":"2.0","needs":"DM_UPSCALE_DYNAMIC=1","atleast":"DM_UPSCALE_RATIO","conflicts":"DM_UPSCALER=game:3.0",
+                           "options":[["1.0","Native (1.0, no upscaler)"],["1.5","Quality (1.5)"],["1.6875","Balanced (1.69)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}},
+                          {"env":"DM_EFFECTS_RES","kind":"choice","section":"Effects","label":"Effects resolution","note":"","default":"game","options":[["game","Game default (half)"],["full","Full"]]}]}
+            """#.utf8)).settings
+        let rm = LauncherModel(res, defaults: d)
+        let ratio = res[3], dynRow = res[4], soft = res[5]
+        expect(rm.sections(basic: false) == ["Resolution", "Effects"] && rm.sections(basic: true) == ["Game"], "the Mac window's Advanced sections in the list's order")
+        expect(rm.optionLabel(ratio, ["1.5", "Quality (1.5)"]) == "Quality (1.5) · 1536 × 864" && rm.optionLabel(ratio, ["game", "Game default (dynamic)"]) == "Game default (dynamic)",
+               "a rate's render size for the game's docked output; the game's own has none")
+        rm.set(res[1], "1")
+        expect(rm.optionLabel(ratio, ["1.5", "Quality (1.5)"]) == "Quality (1.5) · 1920 × 1080" && rm.optionLabel(ratio, ["1.6875", "B"]) == "B · 1707 × 960", "Output resolution: Window: the window's size divided, rounded up")
+        rm.values["DM_OPMODE"] = "0"
+        expect(rm.optionLabel(ratio, ["2.0", "P"]) == "P · 960 × 540", "handheld: its own output")
+        rm.values["DM_OPMODE"] = "1"
+        expect(!rm.visible(dynRow) && !rm.visible(soft) && rm.renderSummary(in: "Resolution") == nil, "the game's own rate: no dynamic rows, no summary")
+        rm.set(ratio, "1.5"); rm.set(dynRow, "1")
+        expect(rm.visible(dynRow) && rm.visible(soft), "a rate: Dynamic resolution, and with it on, Softest")
+        expect(rm.renderSummary(in: "Resolution") == "Renders 1920 × 1080 to 1440 × 810, upscaled to 2880 × 1620.", "the summary names both sizes: \(rm.renderSummary(in: "Resolution") ?? "nil")")
+        expect(rm.options(soft).map { $0[0] } == ["1.5", "1.6875", "2.0"], "Softest offers nothing sharper than the render resolution (and no Ultra with the game's upscaler)")
+        rm.set(soft, "1.6875"); rm.set(ratio, "2.0")
+        expect(rm.values["DM_UPSCALE_SOFTEST"] == "2.0" && rm.raisedRows.contains("DM_UPSCALE_SOFTEST"), "a sharper render resolution keeps Softest; a softer one raises it, and the row says so")
+        rm.set(soft, "2.0")
+        expect(!rm.raisedRows.contains("DM_UPSCALE_SOFTEST"), "choosing the row again clears the note")
+        rm.set(ratio, "game")
+        expect(!rm.visible(dynRow) && !rm.visible(soft) && rm.options(soft).count == 4, "the game's own rate: Softest hides with Dynamic resolution (nested), and its bound goes")
+        rm.set(ratio, "1.0")
+        expect(rm.renderSummary(in: "Resolution") == "Renders 2880 × 1620 to 1440 × 810, upscaled to 2880 × 1620. At 2880 × 1620 the game's upscaler is off.", "a Native sharpest: the upscaler is off there")
+        rm.set(dynRow, "0")
+        expect(rm.renderSummary(in: "Resolution") == "Renders 2880 × 1620, the output itself: no upscaler." && !rm.visible(soft), "Native fixed: no upscaler")
+        d.set("1.5", forKey: "launcher.DM_UPSCALE_SOFTEST"); d.set("1.6875", forKey: "launcher.DM_UPSCALE_RATIO")   // a pair saved by a front end that ignores atleast
+        let saved = LauncherModel(res, defaults: d)
+        expect(saved.values["DM_UPSCALE_SOFTEST"] == "1.6875", "a saved softest rate below the saved render resolution loads raised")
+        saved.values["DM_UPSCALE_SOFTEST"] = "1.0"; saved.apply()
+        expect(String(cString: getenv("DM_UPSCALE_SOFTEST")) == "1.6875", "Play never sends a softest rate below the render resolution")
+        for s in res { unsetenv(s.env); d.removeObject(forKey: "launcher." + s.env) }
         failed += checkLauncherLayout(LauncherModel(mac.settings, defaults: d), defaults: d)
         print("launcher storage: \(failed) failed")
         exit(failed == 0 ? 0 : 1)

@@ -10,17 +10,21 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent / 'tools'))
 import game, nacp
 
-SECTIONS = ('Game', 'Controls', 'Performance')   # headings on the single settings screen
+SECTIONS = ('Game', 'Resolution', 'Effects', 'Frame rate', 'HDR', 'Controls', 'Performance')   # headings on the settings screen (a row's may differ by platform: <ios>|<mac>)
 SCHEMA = 1   # launcher.json's version (docs/launcher.schema.json); it grows only by optional fields, so a reader of 1 reads every 1
 # The meta column's keys, each with the pattern its value must match. A key is added here, in docs/frontends.md and in
 # docs/launcher.schema.json together (test_launcher_settings.py checks that the three agree); a reader ignores keys it does not know
 META = {
     'level': r'basic',                       # a setting a front end shows first; without it, the front end decides
-    'needs': r'DM_[A-Z0-9_]+=[^;=|:]+(\|[^;=|:]+)*',   # <VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> has one of the values
+    'needs': r'DM_[A-Z0-9_]+=[^;=|:]+(\|[^;=|:]+)*',   # <VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> is drawn and has one of the values
     # <VAR>=<value>: held at its default, and drawn disabled, while the row that sets <VAR> has that value; <VAR>=<value>:<own value>[|<own value>...]: only those values of
     # this row cannot be used with it (not offered while <VAR> has the value, a held one goes back to the default), the rest of the row stays usable
     'conflicts': r'DM_[A-Z0-9_]+=[^;=|:]+(:[^;=|:]+(\|[^;=|:]+)*)?',
+    'atleast': r'DM_[A-Z0-9_]+',             # <VAR>: a choice of numbers whose values below the number <VAR>'s row holds are not offered, and a held one is raised (Bananza's softest rate, never sharper than its render resolution)
 }
+# Rows whose options are upscale rates (numbers the output size is divided by): their list entry gets rate_base, the output sizes from the profile's res_chain, so a front end can
+# show each option's render size in pixels for the console mode and output resolution chosen
+RATE_ROWS = ('DM_UPSCALE_RATIO', 'DM_UPSCALE_SOFTEST')
 
 
 def meta(text, n):
@@ -45,12 +49,29 @@ def render_base(g):
     return {'docked': [int(m[1]), int(m[2])], 'handheld': [int(m[3]), int(m[4])]}
 
 
+def rate_base(g):
+    """The profile's res_chain as the output sizes an upscale rate divides: {"docked": [w, h], "handheld": [w, h], "when": [{"is": "DM_SINGLE_UPSCALE=1",
+    "docked": [w, h], "handheld": [w, h]}]} (the first entry of when whose setting holds wins); None without res_chain (game.py checks its form)"""
+    rc = g.words('res_chain', '')
+    if not rc: return None
+    d, single, hh = ([int(x) for x in w.split('x')] for w in rc[:3])
+    return {'docked': d, 'handheld': hh, 'when': [{'is': 'DM_SINGLE_UPSCALE=1', 'docked': single, 'handheld': hh}]}
+
+
+def section(text, platform, n):   # a row's section, <ios>|<mac> for each platform's own
+    parts = text.split('|')
+    if len(parts) > 2 or not all(parts): sys.exit(f'settings.tsv:{n}: a platform section is <ios>|<mac>: {text}')
+    for p in parts:
+        if p not in SECTIONS: sys.exit(f'settings.tsv:{n}: unknown section: {p}')
+    return parts[0] if platform == 'ios' or len(parts) == 1 else parts[1]
+
+
 def rows():
     for n, line in enumerate((HERE / 'settings.tsv').read_text(encoding='utf-8').splitlines(), 1):
         if not line.strip() or line.startswith('#'): continue
         c = line.split('\t')
         if len(c) not in (7, 8, 9): sys.exit(f'settings.tsv:{n}: 7 to 9 columns expected, {len(c)} found')
-        if c[5] not in SECTIONS: sys.exit(f'settings.tsv:{n}: unknown section: {c[5]}')
+        section(c[5], 'ios', n)
         yield n, c + [''] * (9 - len(c))
 
 
@@ -125,9 +146,14 @@ def build(gid, patched, control):
         if kind == 'choice' and values not in ('languages', 'patches'): return {v.split('?', 1)[0].split('=', 1)[0] for v in values.split(',')}
         return None
 
-    out, table, base = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g)
-    for n, (var, kind, values, default, cond, section, label, note, extra) in rows():
+    out, table, base, rbase = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g), rate_base(g)
+    kinds = {r[1][0]: (r[1][1], r[1][2]) for r in rows()}
+    for n, (var, kind, values, default, cond, sect, label, note, extra) in rows():
         m = meta(extra, n)
+        if 'atleast' in m:   # both rows choices of numbers (a label row's own word, such as game, puts no bound)
+            if m['atleast'] not in kinds: sys.exit(f'settings.tsv:{n}: atleast names a variable no row sets: {m["atleast"]}')
+            if m['atleast'] == var: sys.exit(f'settings.tsv:{n}: atleast names the row\'s own variable')
+            if kind != 'choice' or kinds[m['atleast']][0] != 'choice': sys.exit(f'settings.tsv:{n}: atleast joins two choices: {var} and {m["atleast"]}')
         for key in ('needs', 'conflicts'):
             if key not in m: continue
             need, want = m[key].split('=', 1)
@@ -141,8 +167,9 @@ def build(gid, patched, control):
             for w in filter(None, own.split('|')):
                 if mine is not None and w not in mine: sys.exit(f'settings.tsv:{n}: conflicts names a value this row never takes: {w} (it takes {", ".join(sorted(mine))})')
         if not shown(cond, n): continue
-        s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
+        s = {'env': var, 'kind': kind, 'section': section(sect, platform, n), 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
+        if var in RATE_ROWS and rbase: s['rate_base'] = rbase     # each rate's render size in pixels, for the console mode and output resolution chosen
         if kind == 'choice':
             def offered(v):   # value=label?cond&cond: an option only some games or platforms have
                 parts = v.split('?', 1)
@@ -155,6 +182,7 @@ def build(gid, patched, control):
                 if w not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: conflicts names a value this row does not offer: {w}')
             if s['default'] in own.split('|'): sys.exit(f'settings.tsv:{n}: a conflicting value cannot be the default (the row goes back to it): {s["default"]}')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first
+            if 'atleast' in m and not all(re.fullmatch(r'\d+(\.\d+)?', o[0]) for o in opts): sys.exit(f'settings.tsv:{n}: atleast needs a choice of numbers: {", ".join(o[0] for o in opts)}')
             s['options'] = opts
             if values == 'languages' and not have: s['note'] = UNKNOWN_LANGUAGES
         elif kind == 'range':

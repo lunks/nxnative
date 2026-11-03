@@ -18,7 +18,7 @@
       "properties": {
         "env": {"description": "The environment switch the setting sets.", "type": "string", "pattern": "^DM_[A-Z0-9_]+$"},
         "kind": {"enum": ["choice", "range", "toggle"]},
-        "section": {"description": "The heading it goes under (Game, Controls and Performance today); sections and rows come in the order to show them. A reader draws a section it does not know like the others, under its name.", "type": "string"},
+        "section": {"description": "The heading it goes under (Game, Resolution, Effects, Frame rate, HDR, Controls and Performance today); sections come in the order of their first rows, and rows in the order to show them. A reader draws a section it does not know like the others, under its name.", "type": "string"},
         "label": {"type": "string"},
         "note": {"description": "The line under the label; empty for most settings.", "type": "string"},
         "default": {"description": "The tested default for this app's platform, with profile defaults resolved.", "type": "string"},
@@ -30,8 +30,13 @@
         "off": {"description": "toggle: the value the switch takes when off.", "type": "string"},
         "base": {"description": "Render scale only: the 3D views' size the scale multiplies, docked and handheld, from the game's profile; absent for most games.", "type": "object", "required": ["docked", "handheld"],
                  "properties": {"docked": {"$ref": "#/$defs/size"}, "handheld": {"$ref": "#/$defs/size"}}},
+        "rate_base": {"description": "A choice whose options are upscale rates (numbers the output is divided by): the output sizes, docked and handheld, from the game's profile, so a front end can show each option's render size in pixels (output / rate, rounded up); when lists other sizes while a setting has a value (<VAR>=<value>), the first that holds wins. Absent for most games.", "type": "object", "required": ["docked", "handheld"],
+                 "properties": {"docked": {"$ref": "#/$defs/size"}, "handheld": {"$ref": "#/$defs/size"},
+                                "when": {"type": "array", "items": {"type": "object", "required": ["is", "docked", "handheld"],
+                                         "properties": {"is": {"type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=|]+$"}, "docked": {"$ref": "#/$defs/size"}, "handheld": {"$ref": "#/$defs/size"}}}}}},
         "level": {"description": "basic: a setting a front end shows first. Without it, the front end decides.", "const": "basic"},
-        "needs": {"description": "<VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> has that value (one of the values). A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"},
+        "needs": {"description": "<VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> is drawn and has that value (one of the values). A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"},
+        "atleast": {"description": "<VAR>: a choice of numbers that cannot go below the number the row that sets <VAR> holds: lower values are not offered, and a lower one held is raised to the lowest offered (a value of that row that is not a number puts no bound). The host refuses or corrects a lower pair as well.", "type": "string", "pattern": "^DM_[A-Z0-9_]+$"},
         "conflicts": {"description": "<VAR>=<value>: the row cannot be used with that value of the row that sets <VAR>: while that row has it, this one is held at its default and drawn disabled, and choosing the value resets this row. <VAR>=<value>:<own>[|<own>...]: only those values of this row: not offered while that row has the value, held at the default, reset when the value is chosen.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"}
       },
       "allOf": [

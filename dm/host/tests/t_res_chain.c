@@ -1,5 +1,5 @@
 // The resolution chain logged at launch (loader.c res_chain_log, the profile's res_chain): the output for the mode and single upscale, the upscale rate the setting
-// patches wrote (fixed, dynamic up to the game's highest, or the game's own range), the scene's size, the upscaler, the effects and the shadows. Runs with
+// patches wrote (fixed, dynamic from the sharpest to the softest, or the game's own range) and the start rate, the scene's size, the upscaler at the sharpest, the effects and the shadows. Runs with
 // GAME=040074A01BF12000 (its res_chain); another profile without the key logs nothing. Expectations are written by hand.
 #include "../loader.c"
 #include <assert.h>
@@ -17,9 +17,10 @@ int svc_nro_deactivate(module_t *m) { (void)m; return 1; }
 static int opmode = 1;
 int dm_opmode(void) { return opmode; }
 // what the setting patches wrote at launch (hle_cheats.c): the label and value of a variable, NULL for none
-static const char *ratio_label, *ratio_value, *effects_label, *shadow_label;
+static const char *ratio_label, *ratio_value, *softest_label, *softest_value, *effects_label, *shadow_label;
 const char *dm_setting_patch_applied(const char *var, const char **value) {
     if (!strcmp(var, "DM_UPSCALE_RATIO") && ratio_label) { if (value) *value = ratio_value; return ratio_label; }
+    if (!strcmp(var, "DM_UPSCALE_SOFTEST") && softest_label) { if (value) *value = softest_value; return softest_label; }
     if (!strcmp(var, "DM_EFFECTS_RES") && effects_label) { if (value) *value = "full"; return effects_label; }
     if (!strcmp(var, "DM_SHADOW_RES") && shadow_label) { if (value) *value = "full"; return shadow_label; }
     return NULL;
@@ -50,19 +51,34 @@ int main(void) {
     if (!*DM_GAME_RES_CHAIN) { printf("no res_chain in this profile: nothing to check\n"); return 0; }
     unsetenv("DM_UPSCALE_DYNAMIC"); unsetenv("DM_UPSCALER");
     const char *l = chain(0);
-    expect(l, "resolution: docked, output 2304x1296; upscale rate the game's own: 1.0 (no upscaler) until a frame is over budget, then 1.375 to 2", "the game's own: its output and its rates");
-    expect(l, "scene 2304x1296, then 1676x943 to 1152x648; upscaler game; effects the game's (half-res effects at half); shadows the game's", "the game's own: its scene sizes (2304 / 1.375 = 1676), its upscaler, its effects and shadows");
+    expect(l, "resolution: docked, output 2304x1296; upscale rate the game's own: starts at 1.0 (no upscaler), 1.375 to 2 once a frame is over budget", "the game's own: its output, its start and its rates");
+    expect(l, "scene 2304x1296, then 1676x943 to 1152x648; upscaler game, off at the start (rate 1.0); effects the game's (half-res effects at half); shadows the game's",
+           "the game's own: its scene sizes (2304 / 1.375 = 1676), its upscaler off at the start, its effects and shadows");
     ratio_label = "Balanced (1.69), fixed"; ratio_value = "1.6875"; effects_label = "Full (half- and quarter-res effects at the render size)"; shadow_label = "Full (no dynamic scaling)";
     setenv("DM_UPSCALER", "metalfx-temporal", 1);
     l = chain(1);
-    expect(l, "resolution: docked, output 2880x1620 (single upscale: the window's size); upscale rate 1.6875 fixed (Balanced (1.69), fixed); scene 1707x960; upscaler metalfx-temporal; "
-              "effects Full (half- and quarter-res effects at the render size); shadows Full (no dynamic scaling)", "Window + MetalFX temporal + Balanced + effects and shadows Full");
-    setenv("DM_UPSCALE_DYNAMIC", "1", 1); ratio_label = "Balanced (1.69), dynamic up to 2.0";
-    expect(chain(1), "upscale rate 1.6875 to 2, dynamic (Balanced (1.69), dynamic up to 2.0); scene 1707x960 to 1440x810", "dynamic: from the chosen rate to the game's highest");
-    ratio_label = "Performance (2.0)"; ratio_value = "2.0";
-    expect(chain(1), "upscale rate 2 fixed (Performance (2.0)); scene 1440x810", "Performance stays fixed with dynamic resolution on (nothing above it)");
+    expect(l, "resolution: docked, output 2880x1620 (single upscale: the window's size); upscale rate 1.6875 fixed, start 1.6875 (Balanced (1.69), fixed); scene 1707x960; "
+              "upscaler metalfx-temporal, on at the sharpest; effects Full (half- and quarter-res effects at the render size); shadows Full (no dynamic scaling)", "Window + MetalFX temporal + Balanced + effects and shadows Full");
+    // dynamic: the sharpest (DM_UPSCALE_RATIO) to the softest (DM_UPSCALE_SOFTEST as written)
+    setenv("DM_UPSCALE_DYNAMIC", "1", 1); ratio_label = "Quality (1.5), dynamic: the sharpest"; ratio_value = "1.5"; softest_label = "Balanced (1.69)"; softest_value = "1.6875";
+    expect(chain(1), "upscale rate 1.5 (sharpest) to 1.6875 (softest), dynamic, start 1.5 (Quality (1.5), dynamic: the sharpest; Balanced (1.69)); scene 1920x1080 to 1707x960; "
+                     "upscaler metalfx-temporal, on at the sharpest", "dynamic Quality to Balanced: both sizes, the start at the sharpest");
+    softest_label = NULL; softest_value = NULL;
+    expect(chain(1), "upscale rate 1.5 (sharpest) to 2 (softest), dynamic, start 1.5 (Quality (1.5), dynamic: the sharpest; softest: the game's highest); scene 1920x1080 to 1440x810",
+           "no softest written: the game's own highest bounds it");
+    softest_label = "Native (1.0) raised to Quality (1.5), the sharpest"; softest_value = "1.0";
+    expect(chain(1), "upscale rate 1.5 (sharpest) to 1.5 (softest), dynamic", "a softest sharper than the sharpest is raised to it");
+    softest_label = "Performance (2.0): Ultra performance needs a MetalFX upscaler"; softest_value = "3.0"; setenv("DM_UPSCALER", "game", 1);
+    expect(chain(1), "upscale rate 1.5 (sharpest) to 2 (softest)", "Ultra performance as the softest without MetalFX: the game's highest");
+    softest_label = "Ultra performance (3.0)"; setenv("DM_UPSCALER", "metalfx", 1);
+    expect(chain(1), "upscale rate 1.5 (sharpest) to 3 (softest), dynamic, start 1.5 (Quality (1.5), dynamic: the sharpest; Ultra performance (3.0)); scene 1920x1080 to 960x540", "Ultra performance as the softest with MetalFX");
+    ratio_label = "Native (1.0, no upscaler), dynamic: the sharpest"; ratio_value = "1.0"; softest_label = "Balanced (1.69)"; softest_value = "1.6875";
+    expect(chain(1), "scene 2880x1620 to 1707x960; upscaler metalfx, off at the sharpest (rate 1.0: the game turns its upscaler off), on when softer", "a Native sharpest: no upscaler (nor MetalFX) at the sharpest");
+    ratio_label = "Performance (2.0), dynamic: the sharpest"; ratio_value = "2.0"; softest_label = "Performance (2.0)"; softest_value = "2.0";
+    expect(chain(1), "upscale rate 2 (sharpest) to 2 (softest), dynamic, start 2", "Performance to Performance: one rate");
+    softest_label = NULL; softest_value = NULL;
     unsetenv("DM_UPSCALE_DYNAMIC"); ratio_label = "Native (1.0, no upscaler), fixed"; ratio_value = "1.0";
-    expect(chain(1), "upscale rate 1 fixed (Native (1.0, no upscaler), fixed); scene 2880x1620; upscaler none (rate 1.0)", "Native: the window's size, no upscaler");
+    expect(chain(1), "upscale rate 1 fixed, start 1 (Native (1.0, no upscaler), fixed); scene 2880x1620; upscaler none (rate 1.0: the game turns its upscaler off)", "Native: the window's size, no upscaler");
     opmode = 0;
     expect(chain(1), "resolution: handheld, output 1920x1080; upscale rate 1 fixed", "handheld: its own output, single upscale or not");
     opmode = 1; ratio_label = NULL; ratio_value = NULL; unsetenv("DM_UPSCALER");

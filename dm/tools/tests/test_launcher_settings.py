@@ -140,6 +140,18 @@ class LauncherSettingsTests(unittest.TestCase):
                     patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': api, **({'SETTINGS_PLATFORM': platform} if platform else {})}):
                 self.assertEqual(conforms(settings.build(gid, tmp, Path(tmp) / 'control.nacp'), schema, schema), [])
 
+    def test_bananza_mac_list_follows_the_schema(self):   # its rate rows (rate_base, atleast) and the Mac sections
+        schema = json.loads((ROOT / 'docs/launcher.schema.json').read_text(encoding='utf-8'))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=['en-US']), \
+                patch.dict(os.environ, {'GFXAPI': 'nvn', 'SETTINGS_PLATFORM': 'mac'}):
+            (Path(tmp) / 'main.fixups.tsv').write_text('# BUILD_ID\te25c90c1c136638885659fd55bf8a03b\n# SINGLE_UPSCALE\t1\n')
+            listed = settings.build('040074A01BF12000', tmp, Path(tmp) / 'control.nacp')
+        rows = {s['env']: s for s in listed['settings']}
+        self.assertIn('rate_base', rows['DM_UPSCALE_SOFTEST'])
+        self.assertEqual(conforms(listed, schema, schema), [])
+        bad = {**rows['DM_UPSCALE_SOFTEST'], 'rate_base': {'docked': [1, 2], 'handheld': [3, 4], 'when': [{'is': 'single', 'docked': [1, 2], 'handheld': [3, 4]}]}}
+        self.assertNotEqual(conforms({'schema': 1, 'game': BOTW, 'settings': [bad]}, schema, schema), [])
+
     def test_schema_1_takes_new_sections_but_not_new_kinds(self):
         """A section is a heading a reader draws by its name, so a new one stays schema 1; a new kind would not"""
         schema = json.loads((ROOT / 'docs/launcher.schema.json').read_text(encoding='utf-8'))

@@ -120,7 +120,9 @@ SETTING_PATCHES = 'setting_patches.tsv'
 WHEN_QUANTITIES = ('hdr_peak',)   # what a setting patch row's condition may test, as the host knows it at launch (hle_cheats.c sp_quantity): hdr_peak = the HDR peak / paper white it reports
 WHEN = re.compile(r'(' + '|'.join(WHEN_QUANTITIES) + r')(<=|>=|<|>)(\d+(?:\.\d+)?)')
 # or a term on another setting, as the environment holds it at launch: DM_<NAME>=a|b holds when the variable is set to one of the values, DM_<NAME>!=a|b when it is
-# unset or set to none of them (so a row can depend on a second setting: Donkey Kong Bananza's fixed or dynamic upscale ratio, DM_UPSCALE_DYNAMIC)
+# unset or set to none of them (so a row can depend on a second setting: Donkey Kong Bananza's fixed or dynamic upscale ratio, DM_UPSCALE_DYNAMIC). A term on a variable with
+# setting patches of its own tests what it wrote, not the environment: its value when its rows were written, unset otherwise (refused, or no condition held); its rows come
+# earlier in the table, which the host applies in order (Bananza's softest rate, whose words lie in code only the sharpest's rows make live)
 WHEN_ENV = re.compile(r'(DM_[A-Z0-9_]+)(!=|=)([A-Za-z0-9_.+-]+(?:\|[A-Za-z0-9_.+-]+)*)')
 
 
@@ -135,7 +137,12 @@ def setting_patches(g):
     if not p.exists(): return []
     builds = {(m, b) for row in g.builds().values() for m, b in row.items() if m != 'display'}
     out, owner, seen = [], {}, {}
-    for n, line in enumerate(p.read_text(encoding='utf-8').splitlines(), 1):
+    lines = p.read_text(encoding='utf-8').splitlines()
+    first = {}   # each variable's place in the table (its first row): a when term may name only a variable placed before the row's own
+    for line in lines:
+        c = line.split('\t')
+        if line.strip() and not line.startswith('#'): first.setdefault(c[0].strip(), len(first))
+    for n, line in enumerate(lines, 1):
         if not line.strip() or line.startswith('#'): continue
         c = [v.strip() for v in line.split('\t')]
         where = f'{p}:{n}'
@@ -146,6 +153,9 @@ def setting_patches(g):
         if when and not all(WHEN.fullmatch(t) or WHEN_ENV.fullmatch(t) for t in when.split('&')):
             sys.exit(f'{where}: when is <quantity><op><number> (the quantities {", ".join(WHEN_QUANTITIES)}, the ops < <= > >=) or <VAR>=<value>[|<value>...] / <VAR>!=<value>[|<value>...], joined by &: {when}')
         if when and any((m := WHEN_ENV.fullmatch(t)) and m[1] == var for t in when.split('&')): sys.exit(f'{where}: a row\'s condition names its own variable {var} (the value already chooses the row): {when}')
+        for t in when.split('&') if when else ():
+            m = WHEN_ENV.fullmatch(t)
+            if m and first.get(m[1], -1) > first[var]: sys.exit(f'{where}: a condition on {m[1]}, whose setting patches come later in the table: put its rows first (the host applies the variables in table order, and the term tests what {m[1]} wrote)')
         if not re.fullmatch(r'DM_[A-Z0-9_]+', var): sys.exit(f'{where}: the variable is DM_<NAME>: {var}')
         if not re.fullmatch(r'[A-Za-z0-9_.+-]+', value): sys.exit(f'{where}: the value is one word of letters, digits, _ . + -: {value}')
         if not label: sys.exit(f'{where}: no label (the option\'s name in the settings window, and the host\'s log line)')

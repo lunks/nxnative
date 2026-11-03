@@ -1,9 +1,13 @@
 # Settings
 
-The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
+The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. On the iPhone all settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window), which groups the picture's settings under [Resolution](#resolution), [Effects](#effects), [Frame rate](#frame-rate-mac) and [HDR](#hdr). This page follows that order.
 
 - [Tested defaults](#tested-defaults)
-- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Output resolution](#output-resolution), [Game's upscaler](#games-upscaler), [Upscaler quality](#upscaler-quality), [Dynamic resolution](#dynamic-resolution), [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Frame rate lock](#frame-rate-lock), [Frame interpolation](#frame-interpolation), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
+- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Game language](#game-language), [Picture](#picture), [Picture shape](#picture-shape), [Frame-rate counter](#frame-rate-counter)
+- [Resolution](#resolution): [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Output resolution](#output-resolution), [Render resolution](#render-resolution), [Dynamic resolution](#dynamic-resolution), [Softest](#softest)
+- [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size)
+- [Frame rate (Mac)](#frame-rate-mac): [Frame rate lock](#frame-rate-lock), [Frame interpolation](#frame-interpolation)
+- [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -35,6 +39,40 @@ The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed ther
 
 **Docked** renders at the Switch's TV resolution, **Handheld** at its lower handheld resolution, which is lighter on the phone and can give a higher frame rate.
 
+### Game language
+
+The game's own languages. The app was packed with one of them; pick another here without repacking. A game packed from a dump or a NUP may come without its list: every language is offered then, with a note, and a game that lacks the one you pick may show another.
+
+### Picture
+
+iPhone and iPad. **Fit**, the default, shows the game's picture (16:9, or the taller one of [Picture shape](#picture-shape)) as large as it fits, with black bars where the screen has another shape. **Fill** enlarges it until it covers the whole screen and crops what lies outside; nothing is stretched. An iPhone loses some of the top and bottom, an iPad some of each side, so health bars, subtitles or maps near the edges can be cut off. A picture that fills the screen without cropping needs a patch for each game that renders a wider view. Fill applies in landscape; in portrait the picture stays fitted above the controls, and on a TV it is always fitted.
+
+### Picture shape
+
+Games whose profile supports it (Breath of the Wild, Animal Crossing: New Horizons). **iPhone Duo screen (1.43:1)** renders a taller picture of the Duo's own shape: the sides of 16:9 with more above and below, and the HUD at the screen's edges. **16:9** is the Switch's picture. The taller picture has about a quarter more pixels, so it runs a little slower and warmer.
+
+### Frame-rate counter
+
+Shows the frames per second at the top left.
+
+## Resolution
+
+How large the game draws its picture, and how it gets to the screen. On the iPhone, **Upscaling** and **Game's upscaler** are under **Game**; the Mac window's Advanced settings put them under **Resolution**, with the settings below that only the Mac has (Donkey Kong Bananza), in the order the picture takes:
+
+```mermaid
+flowchart LR
+    R["Render resolution<br/>the 3D picture<br/>e.g. 1920x1080"] --> U{"Game's upscaler"}
+    U --> O["Output resolution<br/>2304x1296, or the<br/>window's 2880x1620"]
+    O --> H["the game draws<br/>its HUD"] --> S{Upscaling} --> W["Window or screen"]
+```
+
+- **Render resolution** is how much smaller than its output the game draws its 3D picture: the output divided by a rate. Each option shows the size it gives for the console mode and output resolution chosen, such as **Quality (1.5) · 1920 × 1080**.
+- **Dynamic resolution** lets that size drop when frames run late, down to **Softest**, and come back. **Render resolution** is then the sharpest it ever draws.
+- The line under the section sums it up: *Renders 1920 × 1080 to 1707 × 960, upscaled to 2880 × 1620.*
+- **Effects** and shadows can stay at full size whatever you pick ([Effects](#effects)).
+
+Each of the Mac-only settings changes the game's code when the game starts. The game log names the result in one line: `resolution: docked, output 2880x1620 …; upscale rate 1.5 (sharpest) to 1.6875 (softest), dynamic, start 1.5 (…); scene 1920x1080 to 1707x960; upscaler metalfx-temporal, on at the sharpest; …`.
+
 ### Upscaling
 
 A game that renders below the screen's resolution is scaled up to the screen. **Standard**, the default, scales smoothly; **MetalFX** uses Apple's MetalFX upscaler, which sharpens edges and text as it scales.
@@ -52,7 +90,7 @@ Breath of the Wild renders 1280x720 in handheld mode. Docked it renders its worl
 
 - **When to change it:** turn it on if the picture looks soft and the device has GPU time to spare: on a Mac, or on an iPhone in handheld mode at 30 fps. For long sessions at 60 fps on an iPhone leave it at Standard.
 - **Cost:** more GPU time each frame, which can increase heat on an iPhone. [Breath of the Wild's measurements](../dm/games/01007EF00011E000/README.md#upscaling-current) cover Mac and iPhone; the matching iPhone Standard run and MetalFX's share of the thermal cost remain unmeasured. Nothing changes while the game's picture is as large as the screen. Unsupported devices and sizes use Standard scaling.
-- **On the Mac:** choose **MetalFX** under **Upscaling** in the [settings window](#the-mac-settings-window)'s Advanced settings, or set `DM_PRESENT_UPSCALE=metalfx` in its `env.txt` (off by default). It helps in a large window or on a 4K screen.
+- **On the Mac:** choose **MetalFX** under **Upscaling** in the [settings window](#the-mac-settings-window)'s Advanced settings (under **Resolution**), or set `DM_PRESENT_UPSCALE=metalfx` in its `env.txt` (off by default). It helps in a large window or on a 4K screen.
 
 ### Game's upscaler
 
@@ -75,26 +113,51 @@ flowchart LR
 
 ### Output resolution
 
-Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub), in Advanced settings; it was called **Single upscale**. As shipped (**Game default**), the game upscales its 3D picture to 2304x1296 (docked), draws its HUD on it, and then stretches the whole picture again to its 2880x1620 window. **Window** makes the game upscale once, straight to 2880x1620, and draw its HUD at that size, so nothing is stretched a second time.
+Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub), in Advanced settings, under **Resolution**; it was called **Single upscale**. As shipped (**Game default**), the game upscales its 3D picture to 2304x1296 (docked), draws its HUD on it, and then stretches the whole picture again to its 2880x1620 window. **Window** makes the game upscale once, straight to 2880x1620, and draw its HUD at that size, so nothing is stretched a second time.
 
-- **Cost:** the game's own resolution steps all grow by a quarter in each direction (up to about 1.56 times the pixels of its 3D picture), so it needs more GPU time and its dynamic resolution and frame rate drop sooner in busy areas. It works with every **Game's upscaler** choice.
+- **Cost:** the game's own resolution steps all grow by a quarter in each direction (up to about 1.56 times the pixels of its 3D picture), so it needs more GPU time and its dynamic resolution and frame rate drop sooner in busy areas. It works with every **Game's upscaler** and **Render resolution** choice: their sizes grow with the output.
 - **Docked only:** in handheld mode the game's picture is 1920x1080 either way.
 - **Not played yet:** the HUD's layout at the larger size and memory are unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off.
 - In `env.txt`: `DM_SINGLE_UPSCALE=1`. The game log then says `single upscale on` at start and `upscaler: output 2880x1620 … the window's size: one resample` once it upscales.
 
-In Advanced settings it comes first, then **Game's upscaler**, **Upscaler quality**, **Dynamic resolution**, **Effects resolution** and the shadow settings: together they work like a PC game's resolution options. The output is what the game upscales to (above); the upscaler quality says how much smaller the game renders its 3D picture; the effects and the shadows can stay at full size whatever you pick. Each changes the game's code when the game starts (Mac only, Donkey Kong Bananza). The log names the result in one line at start: `resolution: docked, output 2880x1620 …; upscale rate 1.6875 fixed (…); scene 1707x960; upscaler metalfx-temporal; effects …; shadows …`.
+### Render resolution
 
-### Upscaler quality
+Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic resolution, as on a Switch: it starts each level at its output's size without its upscaler, and renders smaller, down to half the output's width, once frames run late. The others set a rate:
 
-How much smaller than its output the game renders, as a fixed ratio. **Game default** keeps the game's own dynamic resolution (between the output itself and half its width, as on a Switch). The others hold one ratio: **Native** (1.0: the output's size, no upscaler, the most GPU time and memory), **Quality** (1.5), **Balanced** (1.69: 1707x960 for the 2880x1620 window), **Performance** (2.0) and **Ultra performance** (3.0, offered only with a MetalFX **Game's upscaler**: the game's own network was never run that far).
+| Option | Rate | With Output resolution: Window (2880×1620) | With Game default (2304×1296) |
+|---|---|---|---|
+| Native | 1.0 | 2880×1620 | 2304×1296 |
+| Quality | 1.5 | 1920×1080 | 1536×864 |
+| Balanced | 1.69 | 1707×960 | 1366×768 |
+| Performance | 2.0 | 1440×810 | 1152×648 |
+| Ultra performance | 3.0 | 960×540 | 768×432 |
 
-- **Cost:** GPU time and memory grow with the rendered pixels: Native at the window's size draws 2.95 times the pixels of the game's sharpest docked step. A fixed ratio does not drop when a scene gets heavy: the frame rate does instead, unless **Dynamic resolution** is on.
-- **Not played yet:** ratios other than the game's own steps (1.5, 1.69 and 3.0) are ones the game never picks itself. If the picture is wrong, misses parts, or the game crashes on entering a level, set it back to **Game default**.
+Handheld, the output is 1920×1080 either way (Quality 1280×720).
+
+- **Native** draws the output itself. At this rate the game turns its upscaler off, and with it MetalFX: **Game's upscaler** does nothing then.
+- **Ultra performance** is offered only with a MetalFX **Game's upscaler** (the game's own network was never run that far), and only without dynamic resolution.
+- **Without dynamic resolution** the rate is fixed: a busy scene lowers the frame rate instead.
+- **Cost:** GPU time and memory grow with the pixels drawn: Native at the window's size draws 2.95 times the pixels of the game's sharpest docked step.
+- **Not played yet:** 1.5, 1.69 and 3.0 are rates the game never picks itself. If the picture is wrong, misses parts, or the game crashes on entering a level, set it back to **Game default**.
 - In `env.txt`: `DM_UPSCALE_RATIO=1.6875` (`game`, `1.0`, `1.5`, `1.6875`, `2.0`, `3.0`).
 
 ### Dynamic resolution
 
-Shown with **Upscaler quality** at Native, Quality or Balanced. **On** lets the game render smaller, down to Performance (2.0), when frames run late, and come back up to the chosen quality; it may also stay sharper than the chosen quality until a scene is heavy. Off by default (a fixed ratio). In `env.txt`: `DM_UPSCALE_DYNAMIC=1`.
+Shown with **Render resolution** at Native, Quality, Balanced or Performance. **On** lets the game render softer when frames run late, down to **Softest**, and come back to **Render resolution** when they fit again. It never renders sharper than **Render resolution**, also when a level starts. Off by default (a fixed rate).
+
+- **How far it moves:** the game steps among rates of its own (1.375, 1.71 and 2.0 have been seen) and the two you chose; between two close choices, such as Quality and Balanced, it switches between those two.
+- **With a Native Render resolution:** the game's upscaler, and MetalFX, are off while it draws Native and on when it renders softer.
+- In `env.txt`: `DM_UPSCALE_DYNAMIC=1`.
+
+### Softest
+
+Shown while **Dynamic resolution** is on: the softest the game renders when frames run late. **Performance** (2.0) by default, the game's own limit. Options sharper than **Render resolution** are not offered, and when you make **Render resolution** softer than **Softest**, **Softest** follows it and says so under its name. **Ultra performance** (3.0) needs a MetalFX **Game's upscaler**.
+
+- In `env.txt`: `DM_UPSCALE_SOFTEST=1.6875` (`1.0`, `1.5`, `1.6875`, `2.0`, `3.0`). A value sharper than `DM_UPSCALE_RATIO` is raised to it when the game starts, and Ultra performance without MetalFX becomes Performance; the game log says so (`setting DM_UPSCALE_SOFTEST=1.5 (Quality (1.5) raised to Balanced (1.69), the sharpest)`).
+
+## Effects
+
+Mac only, for Donkey Kong Bananza, in Advanced settings: the parts of the picture the game draws smaller than its 3D picture.
 
 ### Effects resolution
 
@@ -110,6 +173,14 @@ Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advan
 
 The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
 
+## Frame rate (Mac)
+
+Mac only, in Advanced settings, for games whose profile has them.
+
+### Frame rate lock
+
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings, under **Frame rate**. **Game (60 or 30)** lets the game halve its frame rate to 30 for a while when its frames run late, as on a Switch 2; on a Mac it can then stay at 30 longer than it needs to. **Locked 60** keeps 60: in busy scenes dynamic resolution (the game's own, or [yours](#dynamic-resolution)) has to absorb the load, and a frame that still takes longer than 16.7 ms makes the game run slower for that moment and judder, instead of dropping to 30. **Locked 30** holds a steady 30. It changes the game's code when the game starts.
+
 ### Frame interpolation
 
 On the Mac, for games whose profile names their own upscaler and their camera (Donkey Kong Bananza). **On** shows a picture MetalFX's frame interpolation makes between each two game frames, so a 60 fps game shows 120 pictures a second on a 120 Hz screen (the display runs its 120 Hz pacing for it). The game keeps its own frame rate and timing; its HUD comes from the newer frame. Off by default.
@@ -119,29 +190,9 @@ On the Mac, for games whose profile names their own upscaler and their camera (D
 - **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro (measured at 2304x1296; it now works at the window's size), and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
 - In `env.txt`: `DM_MFX_INTERP=1`.
 
-### Frame rate lock
+## HDR
 
-Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game (60 or 30)** lets the game halve its frame rate to 30 for a while when its frames run late, as on a Switch 2; on a Mac it can then stay at 30 longer than it needs to. **Locked 60** keeps 60: in busy scenes the game's dynamic resolution has to absorb the load, and a frame that still takes longer than 16.7 ms makes the game run slower for that moment and judder, instead of dropping to 30. **Locked 30** holds a steady 30. It changes the game's code when the game starts.
-
-### Game language
-
-The game's own languages. The app was packed with one of them; pick another here without repacking. A game packed from a dump or a NUP may come without its list: every language is offered then, with a note, and a game that lacks the one you pick may show another.
-
-### Picture
-
-iPhone and iPad. **Fit**, the default, shows the game's picture (16:9, or the taller one of [Picture shape](#picture-shape)) as large as it fits, with black bars where the screen has another shape. **Fill** enlarges it until it covers the whole screen and crops what lies outside; nothing is stretched. An iPhone loses some of the top and bottom, an iPad some of each side, so health bars, subtitles or maps near the edges can be cut off. A picture that fills the screen without cropping needs a patch for each game that renders a wider view. Fill applies in landscape; in portrait the picture stays fitted above the controls, and on a TV it is always fitted.
-
-### Picture shape
-
-Games whose profile supports it (Breath of the Wild, Animal Crossing: New Horizons). **iPhone Duo screen (1.43:1)** renders a taller picture of the Duo's own shape: the sides of 16:9 with more above and below, and the HUD at the screen's edges. **16:9** is the Switch's picture. The taller picture has about a quarter more pixels, so it runs a little slower and warmer.
-
-### Frame-rate counter
-
-Shows the frames per second at the top left.
-
-### HDR
-
-Mac only: **HDR** in the settings window's Advanced settings, or `DM_HDR=1` in the game's `env.txt` (`~/Library/Application Support/nxnative/<title ID>/env.txt`). With it on, a Switch 2 game with an HDR mode (Donkey Kong Bananza) is told that the screen shows HDR when the window is on a screen with HDR headroom (an XDR screen, or an HDR monitor with **High Dynamic Range** on in System Settings › Displays). The game then renders its own HDR picture, and the app shows it with highlights above SDR white. Off by default: the picture stays SDR, exactly as before.
+Mac only: **HDR** in the settings window's Advanced settings, in a section of its own with its options, or `DM_HDR=1` in the game's `env.txt` (`~/Library/Application Support/nxnative/<title ID>/env.txt`). With it on, a Switch 2 game with an HDR mode (Donkey Kong Bananza) is told that the screen shows HDR when the window is on a screen with HDR headroom (an XDR screen, or an HDR monitor with **High Dynamic Range** on in System Settings › Displays). The game then renders its own HDR picture, and the app shows it with highlights above SDR white. Off by default: the picture stays SDR, exactly as before.
 
 - `DM_HDR_PAPER_WHITE` (80 to 1000 nits, default 203): the game's white for its HUD and menus, shown as the Mac's SDR white. Raise it if the game looks dim next to other windows, or lower it if it looks too bright.
 - `DM_HDR_PEAK` (nits): the brightest level the game aims for. By default the app works it out from what the screen reports (its EDR headroom × paper white).
@@ -273,7 +324,7 @@ Sets every setting back to the game's tested default; **Play** then forgets your
 
 ## The Mac settings window
 
-A Mac app ([A Mac app](development.md#a-mac-app)) shows its settings in a window before the game starts. They are the same settings as on the iPhone, with the same defaults. The window shows the most used ones first: **Frame rate**, **Render scale**, **Console mode**, **Game language**, **Display mode** and **Game rumble**, when the game has them. **Render scale** shows the picture's size in pixels beside the percentage for the chosen **Console mode**, when the game's profile has it (Breath of the Wild: 1600 × 900 docked, 1280 × 720 handheld at 100 %). The others are under **Advanced settings**, in the usual sections, with **Reset to tested defaults**. The window remembers whether Advanced settings is open. **Frame-rate counter** and **Touch feedback** are only on the iPhone.
+A Mac app ([A Mac app](development.md#a-mac-app)) shows its settings in a window before the game starts. They are the same settings as on the iPhone, with the same defaults. The window shows the most used ones first: **Frame rate**, **Render scale**, **Console mode**, **Game language**, **Display mode** and **Game rumble**, when the game has them. **Render scale** shows the picture's size in pixels beside the percentage for the chosen **Console mode**, when the game's profile has it (Breath of the Wild: 1600 × 900 docked, 1280 × 720 handheld at 100 %). The others are under **Advanced settings**: the game's other settings, then **Resolution** (with a line under it naming the size the game renders, when the game has the resolution settings), **Effects**, **Frame rate** and **HDR**, then **Controls** and **Performance**, with **Reset to tested defaults**. A setting that only matters with another appears under it. The window remembers whether Advanced settings is open. **Frame-rate counter** and **Touch feedback** are only on the iPhone.
 
 Click **Play** (or press Return) to start the game. **Quit**, ⌘Q or closing the window ends the app without the game. The app remembers your choices for that game, and a game started without the window, from a front end or with the window turned off, uses them too ([Saved choices](frontends.md#saved-choices)). A setting fixed by an `env.txt` or by the program that started the app is shown greyed out.
 
@@ -329,8 +380,9 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
 | [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `0` (default) |
-| [Upscaler quality](#upscaler-quality) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `1.5`, `1.6875`, `2.0`, `3.0` |
+| [Render resolution](#render-resolution) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `1.5`, `1.6875`, `2.0`, `3.0` |
 | [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
+| [Softest](#softest) (Mac) | `DM_UPSCALE_SOFTEST` | `1.0`, `1.5`, `1.6875`, `2.0` (default), `3.0`; not below `DM_UPSCALE_RATIO` |
 | [Effects resolution](#effects-resolution) (Mac) | `DM_EFFECTS_RES` | `game` (default), `full` |
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
