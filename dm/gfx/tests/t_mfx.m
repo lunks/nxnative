@@ -32,6 +32,12 @@ static id<MTLTexture> small_tex(MTLClearColor c) {   // a UI element: an R11G11B
     d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; res_add(t); res_commit(); fill(t, c, 0); return t;
 }
+static float small_float(uint32_t v, int mbits) {   // an unsigned 11- or 10-bit float (5-bit exponent)
+    uint32_t e = v >> mbits, m = v & ((1u << mbits) - 1);
+    if (e == 31) return m ? NAN : INFINITY;
+    return e ? ldexpf(1 + (float)m / (1 << mbits), (int)e - 15) : ldexpf((float)m / (1 << mbits), -14);
+}
+static void unpack_r11g11b10(uint32_t u, float c[3]) { c[0] = small_float(u & 0x7ff, 6); c[1] = small_float(u >> 11 & 0x7ff, 6); c[2] = small_float(u >> 22, 5); }
 static uint8_t *read_all(id<MTLTexture> t) {   // a 4-byte-per-pixel texture (private: through a blit)
     NSUInteger n = t.width * t.height * 4; id<MTLBuffer> b = [g_dev newBufferWithLength:n options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
@@ -323,6 +329,57 @@ int main(void) { @autoreleasepool {
             CHECK(d <= 1, hdr ? "HDR: a static scene's interpolated picture is the PQ window texture within a code (UI included)" : "SDR: a static scene's interpolated picture is the window texture within a code (UI included)");
         }
         if (interp) CHECK(slots == 2, "two interpolated pictures");
+    }
+    if (temporal) {
+        // A camera shake: the game offsets its projection by the same normalized amount in x and y (Bananza: up to 64 pixels). The whole pixels must reach the motion vectors and only
+        // the rest MetalFX's jitter; given whole pixels as jitter, the scaler's output went dark (mean luminance 0.01 of the scene's). Then an Inf in the scene colour, which
+        // the scaler check must report (MetalFX's auto exposure turns the frame black)
+        const double shake[] = {0, 3.3, 64.4, -40.2, 20.7, -9.6, 0, 0, 0, 0, 0, 0, 0, 0}; const int nshake = (int)(sizeof shake / sizeof *shake);
+        const double expect = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.75;   // the scene's luminance
+        double worst = 1e9;
+        g_test_hdr = -1;
+        uint64_t bad0 = g_mck.bad_out;
+        for (int f = 0; f < nshake + 10; f++) {
+            int inf = f == nshake;   // one frame of Inf in the scene colour, after the shake
+            double px = f < nshake ? shake[f] : 0, o = px * 2 / 960;
+            float svp[16]; memcpy(svp, vp, sizeof svp);
+            for (int k = 0; k < 4; k++) { svp[k] += (float)(o * vp[12 + k]); svp[4 + k] += (float)(o * vp[12 + k]); }   // ndc x and y += o
+            mfx_cam sc; CHECK(mfx_cam_from(view, svp, 1, &sc, why, sizeof why), "a shaken camera is a camera");
+            if (f == 2) {
+                mfx_cam cp = sc; double off = mfx_cam_split(&cp, 960, 540);
+                CHECK(fabs(off - 64.4) < 0.01, "the offset in pixels (x)");
+                fprintf(stderr, "shake 64.4 px: jitter left %.4f, %.4f px\n", cp.jx * 960 / 2, cp.jy * 540 / 2);
+                CHECK(fabs(cp.jx * 960 / 2 - 0.4) < 0.02 && fabs(cp.jy * 540 / 2 - 0.225) < 0.02, "at most half a pixel is left as jitter (64.4 px: 0.4; y 36.225 px: 0.225; the matrices are floats)");
+                double ndc0 = cam.vp0[0] * 300 + cam.vp0[1] * 40 + cam.vp0[2] * 100 + cam.vp0[3], w0 = cam.vp0[12] * 300 + cam.vp0[13] * 40 + cam.vp0[14] * 100 + cam.vp0[15];
+                double ndc1 = cp.vp0[0] * 300 + cp.vp0[1] * 40 + cp.vp0[2] * 100 + cp.vp0[3], w1 = cp.vp0[12] * 300 + cp.vp0[13] * 40 + cp.vp0[14] * 100 + cp.vp0[15];
+                CHECK(fabs((ndc1 / w1 - ndc0 / w0) * 960 / 2 - 64) < 1e-3, "the whole 64 pixels move the motion vectors' projection");
+            }
+            if (inf) fill(tex_mtl(&in), MTLClearColorMake(INFINITY, 0.25, 0.75, 1), 0);
+            frame++; mtl_set_frame(1000 + frame);
+            g_mc.n = 1; g_mc.c[0].depth = depth; g_mc.c[0].cam = sc; g_mc.c[0].passes = 10; g_mc.c[0].last = frame;
+            mtl_sub_begin();
+            CHECK(up_mfx_wanted(named) && up_mfx_encode(named), "the temporal scaler draws a shaken frame");
+            R.rt = (p_set_rt){.n = 1}; R.rt.color[0] = &win8; R.has_rt = 1;
+            if (g_mfi_pend) mfx_ui_point();
+            memset(&R, 0, sizeof R);
+            CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
+            if (inf) { fill(tex_mtl(&in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); continue; }
+            if (interp) { game_window_pass(tex_mtl(&out), tex_mtl(&win8), 0); uint64_t v = 0; mfx_present_frame(&win8, 1.0 / 60, 0, &v);
+                for (int k = 0; k < 3; k++) { uint64_t t0 = now_ns(); while (atomic_load(&g_mfi.busy[k]) && now_ns() - t0 < 5000000000ull) usleep(200); } }
+            if (f >= nshake) continue;
+            uint8_t *p = read_all(tex_mtl(&out)); double sum = 0; size_t n = 0;
+            for (size_t y = 100; y < 1080 - 100; y += 7) for (size_t x = 100; x < 1920 - 100; x += 7) {
+                uint32_t u; memcpy(&u, p + (y * 1920 + x) * 4, 4); float c[3]; unpack_r11g11b10(u, c);
+                sum += 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; n++;
+            }
+            free(p);
+            double r = sum / n / expect; if (r < worst) worst = r;
+            fprintf(stderr, "shake %+.1f px: output mean luminance %.3f of the scene's\n", shake[f], r);
+        }
+        CHECK(worst > 0.9, "a shaken frame's output keeps the scene's brightness");
+        CHECK(g_mck.bad_in == 1, "the scaler check reports the frame with an Inf in its colour input");
+        CHECK(g_mck.bad_out - bad0 <= 1, "the scaler check reports no dark output but at most the Inf frame's");
+        fprintf(stderr, "scaler check: non-finite input frames %llu, dark or non-finite output frames %llu\n", (unsigned long long)g_mck.bad_in, (unsigned long long)(g_mck.bad_out - bad0));
     }
     CHECK(g_mm.made == (uint64_t)frame && g_mm.no_depth == 0 && g_mm.no_cam == 0, "motion vectors every frame");
     if (temporal && DM_GAME_CAM_JITTER_N) {   // the camera jitter (DM_MFX_JITTER): its blocks, then a static scene through the temporal scaler without it, with it, and with the other sign
