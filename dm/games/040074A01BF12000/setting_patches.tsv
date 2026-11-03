@@ -159,12 +159,23 @@ DM_HDR	1	K 0.25 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c13663
 DM_HDR	1	K 0.21875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E299001	hdr_peak>3.31&hdr_peak<=5.98
 DM_HDR	1	K 0.1875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E291001	hdr_peak>5.98&hdr_peak<=15.6
 DM_HDR	1	K 0.15625 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E289001	hdr_peak>15.6
-# Frame rate (README.md, Frame rate lock): the frame-rate controller main+0x204a18 (called once a frame from main+0x203718 while VRR is off) turns the frame's measure (frame start to the
-# later of its submission and the GPU's end, in vsyncs v) into a target interval trunc(v + margin -0.2) + 1 at main+0x204ab0 (fcvtzs w9,s0; main+0x204ab4 add w10,w9,#1), clamps it to the
-# controller's [min, max] (main+0x204ab8-0x204ac4), steps up after 2 frames above the current interval and down, one step at a time, after 6 frames below it unless a registered listener sets
-# its veto byte (main+0x204b8c ldrb w8,[sp,#0x18]; main+0x204b90 cbnz w8 -> keep). mov w9,#(N-1) makes the target N before the same clamp, so the game's own present-interval path, its min / max
-# (cutscenes) and the frozen-interval path (main+0x204a4c) are untouched. Locked 60 also skips the veto (cbnz -> nop; the listeners are still called), so a step down to 60 is never refused
+# Frame rate mode (README.md, Frame rate mode): the frame-rate controller main+0x204a18 (once a frame from main+0x203718 while VRR is off) turns the frame's measure (frame start to the later
+# of its submission and the GPU's end, v vsyncs) into a target interval trunc(v - 0.2) + 1 (main+0x204ab0), clamps it to [min, max] (main+0x204ab8-0x204ac4), steps up after 2 frames above the
+# interval and down one step after its countdown (+0x4c, 6, decremented only on frames below the interval: main+0x204b00-0x204b10) unless a listener vetoes (main+0x204b90). The game advances a
+# fixed step of its interval per frame (sead's vsync wait main+0x1578e94 and the frame deadline main+0x5c62e4 read it), so a frame slower than its interval runs the game slow: the step-up
+# path stays the game's own in both values, and the game's speed with it.
+# Prefer 60 breaks the 30 fps trap (the GPU and CPU clocks follow the longer interval, so the measure stays above 1.2 vsyncs and the countdown never runs): after a step up the countdown is 120
+# frames (main+0x204bc4 ldr w12,[x20,#0x10] -> mov w12,#120) and runs on every frame, halving on frames below the interval (main+0x204b04-0x204b0c: lsr w8,w11,#1; sub w12,w11,#1;
+# csel w8,w8,w12,lt), so a light scene steps down after 7 frames as before and any scene tries 60 again after 120 frames (4 s at 30 fps); the veto is skipped (cbnz -> nop).
+# Hold 30 raises the clamp's lower bound to 2 (main+0x204a88 add + main+0x204a8c ldr -> ldr x8,[x8,#0xfd0] + mov w12,#2; main+0x204ac0 / 0x204ac4 compare and select w12 instead of the
+# controller's min): never 60, 20 when a frame needs it
 DM_FPS_LOCK	game	Game (60 or 30)	-
-DM_FPS_LOCK	60	Locked 60	main	e25c90c1c136638885659fd55bf8a03b	0x204ab0	1E380009	52800009
-DM_FPS_LOCK	60	Locked 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b90	35FFFC28	D503201F
-DM_FPS_LOCK	30	Locked 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ab0	1E380009	52800029
+DM_FPS_LOCK	60	Prefer 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b04	7A41B968	53017D68
+DM_FPS_LOCK	60	Prefer 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b08	5400006B	5100056C
+DM_FPS_LOCK	60	Prefer 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b0c	51000568	1A8CB108
+DM_FPS_LOCK	60	Prefer 60	main	e25c90c1c136638885659fd55bf8a03b	0x204b90	35FFFC28	D503201F
+DM_FPS_LOCK	60	Prefer 60	main	e25c90c1c136638885659fd55bf8a03b	0x204bc4	B940128C	52800F0C
+DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204a88	913F4108	F947E908
+DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204a8c	F9400108	5280004C
+DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ac0	6B08015F	6B0C015F
+DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ac4	1A89B10A	1A89B18A

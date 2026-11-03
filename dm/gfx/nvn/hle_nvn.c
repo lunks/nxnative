@@ -1828,6 +1828,25 @@ static void present_cfg(const win_t *o) {
         m ? "DM_PRESENT_INTERVAL" : "game profile present_interval", o->interval, scr > 0 ? "window" : "no window");
 }
 static int present_itv(const win_t *o) { int c = fps_present_cap(), k = atomic_load(&g_fs_k); return c ? (k && fstep_on() ? k : fstep_hz() / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
+// Game speed against the present interval, while the game picks its own interval (no frame cap of the host's): a game that advances a fixed step of its interval per frame
+// (Donkey Kong Bananza: sead's vsync wait and frame deadline read it) runs slow by the ratio of that interval's time to the frame's real time. Every 1800 frames one line: game time
+// counted that way against real time, and the frames that took over 1.5 times their interval; and once per episode (at most 20) a line when 30 frames in a row did, the game then in
+// slow motion: frames that miss their interval (more work than it allows), or the window covered and frames paced by the silent display link's fallback (frame times measure nothing then)
+static void itv_speed(const win_t *o, double fr_ms) {
+    static double game_ms, real_ms, run_ms; static uint64_t n, slow, silent; static int run, nlog;
+    if (fps_present_cap() || fr_ms <= 0) return;
+    int itv = present_itv(o), stalled = mtl_link_stalled(); double want = itv * 1000.0 / 60;
+    game_ms += want; real_ms += fr_ms; n++;
+    if (fr_ms > 1.5 * want) { slow++; silent += stalled != 0; run++; run_ms += fr_ms; } else { run = 0; run_ms = 0; }
+    if (run == 30 && nlog < 20)
+        LOG("[nvn] frames slower than their present interval: 30 in a row at interval %d took %.1f ms on average, so a game stepping by its interval runs at %.2f of real time%s%s", itv, run_ms / run, want * run / run_ms,
+            stalled ? " (the display link is silent: the window is covered, its fallback paces the frames)" : "", ++nlog == 20 ? "; further runs only counted below" : "");
+    if (n == 1800) {
+        LOG("[nvn] game time by present interval: %.2f s in %.2f s (%.3f of real time); frames over 1.5 times their interval %llu of %llu, %llu of them while the display link was silent",
+            game_ms / 1e3, real_ms / 1e3, game_ms / real_ms, (unsigned long long)slow, (unsigned long long)n, (unsigned long long)silent);
+        game_ms = real_ms = 0; n = slow = silent = 0;
+    }
+}
 // The acquire's wait for the display link: the present interval's vsyncs (60 Hz units), or with present_interval display above 60 Hz (DM_PRESENT_HZ=120 on a 120 Hz link,
 // DM_PRESENT_LINK=2) one tick of the present rate, as many link ticks as that takes. Before, a 120 Hz link waited two ticks per frame there, and display mode never went past 60 fps
 static int link_wait(const win_t *o, uint64_t timeout_ns) {
@@ -2027,6 +2046,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (prev_in) {
         double fr = (t0 - prev_in) / 1e6, wk = (t0 - prev_out) / 1e6, nv = atomic_exchange(&g_nvn_ns, 0) / 1e6;
         tpush(0, fr); tpush(1, wk); tpush(2, nv);
+        itv_speed(o, fr);
         trow(f, "@frame_ms", fr); trow(f, "@work_ms", wk); trow(f, "@nvn_ms", nv); trow(f, "@sync_ms", atomic_exchange(&g_sync_ns, 0) / 1e6); trow(f, "@itv", (double)present_itv(o));
         // Slow-frame attribution (taken only when DM_NVN_TSV is on): this frame's present-thread CPU time (−1 if the thread changed), CPU of all threads in the process, acquire wait accumulated per frame, present call time (same base as the GPU / on-screen present times: ms since process start)
         trow(f, "@wait_ms", g_acq_wait_ns / 1e6); trow(f, "@pq_wait_ms", g_pq_wait_ns / 1e6);

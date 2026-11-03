@@ -68,7 +68,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 119 | `build` → `game` ×2 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 125 | `build` → `game` ×2 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -401,9 +401,15 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.21875 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E299001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.1875 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E291001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.15625 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E289001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
-  - setting patch `main+0x204ab0` (`DM_FPS_LOCK=60`, Locked 60): `1E380009` → `52800009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
-  - setting patch `main+0x204b90` (`DM_FPS_LOCK=60`, Locked 60): `35FFFC28` → `D503201F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
-  - setting patch `main+0x204ab0` (`DM_FPS_LOCK=30`, Locked 30): `1E380009` → `52800029` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204b04` (`DM_FPS_LOCK=60`, Prefer 60): `7A41B968` → `53017D68` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204b08` (`DM_FPS_LOCK=60`, Prefer 60): `5400006B` → `5100056C` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204b0c` (`DM_FPS_LOCK=60`, Prefer 60): `51000568` → `1A8CB108` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204b90` (`DM_FPS_LOCK=60`, Prefer 60): `35FFFC28` → `D503201F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204bc4` (`DM_FPS_LOCK=60`, Prefer 60): `B940128C` → `52800F0C` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204a88` (`DM_FPS_LOCK=30`, Hold 30): `913F4108` → `F947E908` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204a8c` (`DM_FPS_LOCK=30`, Hold 30): `F9400108` → `5280004C` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204ac0` (`DM_FPS_LOCK=30`, Hold 30): `6B08015F` → `6B0C015F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x204ac4` (`DM_FPS_LOCK=30`, Hold 30): `1A89B10A` → `1A89B18A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
 
 ### EA SPORTS FC 27
 

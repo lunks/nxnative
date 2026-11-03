@@ -6,7 +6,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Game language](#game-language), [Picture](#picture), [Picture shape](#picture-shape), [Frame-rate counter](#frame-rate-counter)
 - [Resolution](#resolution): [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Output resolution](#output-resolution), [Render resolution](#render-resolution), [Dynamic resolution](#dynamic-resolution), [Softest](#softest)
 - [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size)
-- [Frame rate (Mac)](#frame-rate-mac): [Frame rate lock](#frame-rate-lock), [Frame interpolation](#frame-interpolation)
+- [Frame rate (Mac)](#frame-rate-mac): [Frame rate mode](#frame-rate-mode), [Frame interpolation](#frame-interpolation)
 - [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
@@ -177,9 +177,9 @@ The game's shadow cheats, if you have them, are turned off while one of these se
 
 Mac only, in Advanced settings, for games whose profile has them.
 
-### Frame rate lock
+### Frame rate mode
 
-Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings, under **Frame rate**. **Game (60 or 30)** lets the game halve its frame rate to 30 for a while when its frames run late, as on a Switch 2; on a Mac it can then stay at 30 longer than it needs to. **Locked 60** keeps 60: in busy scenes dynamic resolution (the game's own, or [yours](#dynamic-resolution)) has to absorb the load, and a frame that still takes longer than 16.7 ms makes the game run slower for that moment and judder, instead of dropping to 30. **Locked 30** holds a steady 30. It changes the game's code when the game starts.
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game (60 or 30)** lets the game halve its frame rate to 30 for a while when its frames run late, as on a Switch 2; on a Mac it can then stay at 30 long after the busy moment, because the Mac lowers its clocks at 30. **Prefer 60** still drops to 30 while frames are too slow for 60, but tries 60 again every few seconds: in a scene that cannot hold 60 you see a short stutter at each try. **Hold 30** stays at 30 (20 when a frame needs it). The game always keeps its real speed: it moves by one frame's worth of time per frame, so a mode that held 60 while frames took longer would run it in slow motion. It changes the game's code when the game starts.
 
 ### Frame interpolation
 
@@ -387,7 +387,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
 | Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |
-| Frame rate lock (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
+| Frame rate mode (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |

@@ -327,6 +327,13 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Fix:** **open**. Fixed-rate screens now request latency 1 by default, as described [above](#frame-latency-2-for-the-display-link-in-fullscreen); this only corrects the workaround's scope. The display link remains enabled, and the remaining presentation delay needs its own diagnosis.
 - **Found on:** [issue #822](https://github.com/seedds/nxnative/issues/822), Lollipop Chainsaw RePOP (`0100DD301A686000`, [PR #684](https://github.com/seedds/nxnative/pull/684)'s profile), macOS 27, `--platform mac-app`.
 
+### Frames slower than their present interval
+
+- **Symptom:** a game runs in slow motion while its present interval stays the same: Donkey Kong Bananza with its frame-rate target fixed at 1 (a first setting patch) ran heavy scenes at 44-55 fps, 0.75-0.9 of real speed, and a third of it while its window was covered.
+- **Cause:** a game that advances a fixed step of its present interval per frame (Bananza: sead's vsync wait and frame deadline read the interval) runs slow by the ratio of the interval's time to the frame's real time whenever frames take longer than the interval: more work than the interval allows, or a covered window, where the silent display link's fallback paces frames at 45-50 ms. Nothing in the log said so: the frame times and the interval were there, but not their ratio.
+- **Fix:** `itv_speed` in `hle_nvn.c`, while the game picks its own interval (no host frame cap): every 1,800 frames `[nvn] game time by present interval: G s in R s (x of real time); frames over 1.5 times their interval N of M, K of them while the display link was silent`, counting each frame as its interval's vsyncs, and once per episode (at most 20) `[nvn] frames slower than their present interval: 30 in a row at interval I took T ms on average, so a game stepping by its interval runs at x of real time`, noting a silent display link. For a game that steps by the clock instead the ratio means only that frames missed their interval. The setting patch now keeps the game's own step up ([Bananza's Frame rate mode](../../dm/games/040074A01BF12000/README.md#frame-rate-mode-current-opt-in-not-played-yet)).
+- **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#frame-rate-mode-current-opt-in-not-played-yet) (Mac, 2026-11-03).
+
 ## CPU cost and pacing
 
 ### Arena buffer ownership on allocation

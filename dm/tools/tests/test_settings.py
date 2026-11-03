@@ -131,14 +131,16 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
             with patch.object(settings,'HERE',Path(tmp)):
                 rows={s['env']:s for s in settings.build('010056B015FE8000',tmp,'unused')['settings']}
         self.assertEqual((rows['DM_B']['conflicts'],rows['DM_C']['needs']),('DM_A=a:y','DM_A=a|b'))
-    def test_bananza_frame_rate_lock(self):   # DM_FPS_LOCK: the frame-rate controller's target interval (main+0x204ab0) fixed at 1 or 2, the step-down veto skipped for 60 (main+0x204b90)
+    def test_bananza_frame_rate_mode(self):   # DM_FPS_LOCK: the frame-rate controller steps up as the game does; Prefer 60 tries 60 again after 120 frames and skips the veto, Hold 30 clamps at 2
         r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')['DM_FPS_LOCK']
         self.assertEqual((r['kind'],r['section'],r['default']),('choice','Frame rate','game'))
-        self.assertEqual(r['options'],[['game','Game (60 or 30)'],['60','Locked 60'],['30','Locked 30']])
-        self.assertIn('judder',r['note'])
+        self.assertEqual(r['options'],[['game','Game (60 or 30)'],['60','Prefer 60'],['30','Hold 30']])
+        self.assertIn('real speed',r['note'])
         self.assertNotIn('level',r)   # advanced settings
         rows=[l.split('\t') for l in (Path(settings.HERE)/self.DKB/'setting_patches.tsv').read_text().splitlines() if l.startswith('DM_FPS_LOCK\t') and len(l.split('\t'))>=8]
-        self.assertEqual(sorted((v,o,a,b) for _,v,_,_,_,o,a,b in rows),[('30','0x204ab0','1E380009','52800029'),('60','0x204ab0','1E380009','52800009'),('60','0x204b90','35FFFC28','D503201F')])
+        self.assertEqual(sorted((v,o,a,b) for _,v,_,_,_,o,a,b in rows),[('30','0x204a88','913F4108','F947E908'),('30','0x204a8c','F9400108','5280004C'),('30','0x204ac0','6B08015F','6B0C015F'),('30','0x204ac4','1A89B10A','1A89B18A'),
+                                                                         ('60','0x204b04','7A41B968','53017D68'),('60','0x204b08','5400006B','5100056C'),('60','0x204b0c','51000568','1A8CB108'),('60','0x204b90','35FFFC28','D503201F'),('60','0x204bc4','B940128C','52800F0C')])
+        self.assertNotIn('0x204ab0',[row[5] for row in rows])   # the target itself is never fixed: a fixed target ran the game slow whenever frames took longer than it
         self.assertTrue(all(row[4]==self.DKB_MAIN for row in rows))   # main v458752 only
     def test_hidden_without_a_patch_for_the_build(self):
         for gid,fixups,platform in [(self.DKB,'# BUILD_ID\t'+'0'*32+'\n','mac'),(self.DKB,'','mac'),(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n','ios'),('010056B015FE8000','# BUILD_ID\t3c10ec35c5ef4c3686b4053afb0e58e7\n','mac')]:
