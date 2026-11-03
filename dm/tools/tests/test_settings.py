@@ -46,6 +46,15 @@ class UpscalerSetting(unittest.TestCase):
                     fi=[s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_MFX_INTERP']
                 self.assertEqual(bool(fi),shown,(gid,platform))
                 if fi:self.assertEqual((fi[0]['kind'],fi[0]['default']),('toggle','0'))
+    def test_single_upscale_needs_the_stub_and_the_mac(self):   # DM_SINGLE_UPSCALE: main's rewriter table has SINGLE_UPSCALE (Bananza's patches.py CAPABILITIES), on the Mac only
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
+            p=Path(tmp)/'main.fixups.tsv'
+            for header,platform,shown in [('# SINGLE_UPSCALE\t1\n','mac',True),('# SINGLE_UPSCALE\t1\n','ios',False),('','mac',False)]:
+                p.write_text(header)
+                with patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
+                    su=[s for s in settings.build('040074A01BF12000',tmp,'unused')['settings'] if s['env']=='DM_SINGLE_UPSCALE']
+                self.assertEqual(bool(su),shown,(header,platform))
+                if su:self.assertEqual((su[0]['kind'],su[0]['default'],su[0]['section'],su[0].get('level')),('toggle','0','Game',None))
 
 class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches: the profile's setting_patches.tsv, for the build being packed (main's BUILD_ID), on the Mac
     DKB,DKB_MAIN='040074A01BF12000','e25c90c1c136638885659fd55bf8a03b'

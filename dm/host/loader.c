@@ -265,6 +265,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
+        else if (!strcmp(key, "SINGLE_UPSCALE")) m->single_upscale = v != 0;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -296,14 +297,26 @@ static void read_layout(module_t *m, const char *dir) {
 // (hle_nvn.c fstep_tick)
 uint8_t *dm_fps_state;
 static const char *g_fps_mod;   // the module holding the state page (for the log)
+static int g_single_upscale_stub;   // its build's stub reads state +0x38 (SINGLE_UPSCALE)
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
-    dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name;
+    dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; g_single_upscale_stub = m->single_upscale;
+}
+// Single upscale (DM_SINGLE_UPSCALE=1; state +0x38, read by Donkey Kong Bananza's stub at main+0x539d6c, its patches.py): the game's display scales become 1.0, so its upscaler
+// writes the window's size and the final copy to the window is 1:1 instead of a second resample. Read once at the start: the game builds its display argument once, at boot
+static void single_upscale_apply(void) {
+    const char *e = getenv("DM_SINGLE_UPSCALE"); int on = e && (!strcmp(e, "1") || !strcmp(e, "on"));
+    if (e && *e && !on && strcmp(e, "0") && strcmp(e, "off")) LOG("[RED] DM_SINGLE_UPSCALE=%s: 1 or 0; off", e);
+    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=1: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples"); return; }
+    if (!g_single_upscale_stub || !dm_fps_state) return;
+    uint32_t v = (uint32_t)on; memcpy(dm_fps_state + 0x38, &v, sizeof v);
+    if (on) LOG("%s: single upscale on (DM_SINGLE_UPSCALE=1): the game's display scales (Bananza: 0.8 docked) set to 1.0, so its upscaler writes the window's size and its "
+                "final copy is 1:1; the upscaler: output line names the sizes", g_fps_mod);
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 void dm_fps_state_apply(void) {
-    if (!dm_fps_state) return;
+    if (!dm_fps_state) { single_upscale_apply(); return; }   // only its [RED] line when asked for: no stub reads the page
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
@@ -347,6 +360,7 @@ void dm_fps_state_apply(void) {
             LOG("%s: screen shape %.3f: output 1920x%u, layout 1280x%u (DM_SCREEN_ASPECT; only builds with screen-shape stubs follow it)", g_fps_mod, a, oh, lh);
         }
     }
+    single_upscale_apply();
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }

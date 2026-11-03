@@ -135,6 +135,13 @@ int main(void) { @autoreleasepool {
         CHECK(!up_mfx_encode(named) && g_up_mfx_kept == kept + 1, "an image no larger than the texture leaves the dispatch to the shader");
         mtl_wait(mtl_sub_commit(), 5000000000ull);
     }
+    // The upscaler's output against the window (up_out_note, the DM_SINGLE_UPSCALE log), whatever draws it: a 1920x1080 output into a window of that size is one resample,
+    // into a 2880x1620 window two; a shader with two images is a layer of the network, not the upscale
+    S.tex[5][0] = 701; S.img[5][1] = 702; { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); }
+    mtl_note_window_size(1920, 1080); CHECK(up_out_note(named) == 1, "an output of the window's size is the only resample");
+    mtl_note_window_size(2880, 1620); CHECK(up_out_note(named) == 2, "an output smaller than the window is resampled again by the final copy");
+    NvShader *layer = upscaler("7629d857a0a93833_b"); layer->rf.nb = 3; layer->rf.b[2] = layer->rf.b[1]; layer->rf.b[2].reg = 2;
+    CHECK(up_out_note(layer) == 0, "a dispatch with two images is not the upscale");
     printf("t_upscaler_mfx (%s): %d checks, %d failed\n", on ? "metalfx" : "game", checks, failed);
     return failed != 0;
 }}

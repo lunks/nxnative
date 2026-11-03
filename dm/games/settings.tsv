@@ -23,6 +23,7 @@ DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		le
 DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
 DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
 DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX,metalfx-temporal=MetalFX temporal	game	DM_GAME_UPSCALER_N!=0	Game	Game's upscaler
+DM_SINGLE_UPSCALE	toggle	-	0	fixups:SINGLE_UPSCALE&platform:mac	Game	Single upscale	Experimental: the game upscales its picture once, straight to its window's size, instead of to a smaller size and then again to the window. Sharper, for more GPU time.
 DM_MFX_INTERP	toggle	-	0	DM_GAME_MFX_FRAMES!=0&platform:mac	Game	Frame interpolation	Shows a picture MetalFX makes between two game frames: smoother motion on a 120 Hz screen, about half a frame more latency and more GPU time.
 DM_HDR	toggle	-	0	gfxapi:nvn&platform:mac	Game	HDR	The game's own HDR picture, on a screen with HDR (an XDR screen, or a monitor with High Dynamic Range on in System Settings › Displays).
 DM_HDR_PAPER_WHITE	choice	100=100 nits,160=160 nits,203=203 nits,250=250 nits,300=300 nits,400=400 nits	203	gfxapi:nvn&platform:mac	Game	HDR paper white	The brightness of white in the HUD and menus: raise it if the game looks dim next to other windows.	needs=DM_HDR=1

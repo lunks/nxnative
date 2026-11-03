@@ -10624,6 +10624,7 @@ static int lc_keeps(uint32_t op) {
 static void dispatch(const p_dispatch *dp);
 static int up_mfx_wanted(NvShader *cs); static int up_mfx_encode(NvShader *cs);   // a game's upscaler through MetalFX (see up_mfx_encode)
 static int up_mfx_named(NvShader *cs); static int mfx_interp_on(void); static void mfx_after_game(NvShader *cs);   // frame interpolation after the game's own upscaler (nvn_mfx.inc)
+static int up_out_note(NvShader *cs);   // the upscaler's output size against the window's, logged when it changes (DM_SINGLE_UPSCALE)
 // ---------- Compute dispatches moved ahead of the render pass they would split (DM_NVN_CS_HOIST) ----------
 // Metal cannot run a compute dispatch inside a render pass, so a dispatch between two draws of one pass ends it, and on a tile-based GPU every attachment is stored and loaded again:
 // Breath of the Wild runs one GPU particle dispatch per emitter between the G-buffer's effect draws, six to eight splits of a 1600x900 G-buffer a frame (about 350 MB of attachment
@@ -11269,6 +11270,7 @@ static void dispatch(const p_dispatch *dp) {
     if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
     rp_flush();   // A full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does
     image_prepare(prog_get(S.cprog), 0x20);
+    if (!dp->ind && up_mfx_named(cs)) up_out_note(cs);
     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx, metalfx-temporal)
     int own = dispatch_own();
     if (own && g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -12980,6 +12982,27 @@ static int up_mfx_resolve(NvShader *cs, mfx_io *io) {
         orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) return 0;
     io->in = in; io->out = out; io->ir = ir; io->orr = orr; io->out_ser = dout.serial;
     return 1;
+}
+// The upscaler's output against the window (the game's swap chain textures): the size its final pass copies from and to. One resample when they match (Donkey Kong Bananza with
+// DM_SINGLE_UPSCALE=1: 2880x1620 into its 2880x1620 window), two when the game upscales to a smaller target first (2304x1296 docked as shipped). A line for each new output size,
+// 8 at most. Returns 0 for a dispatch that is not the upscale (a layer of the network), 1 for an output of the window's size, 2 for another (or no window yet)
+static _Atomic uint32_t g_win_wh;   // w | h << 16 of the window's first texture (nvnWindowInitialize, hle_nvn.c)
+void mtl_note_window_size(int w, int h) { if (w > 0 && h > 0 && w < 0x10000 && h < 0x10000) g_win_wh = (uint32_t)w | (uint32_t)h << 16; }
+static int up_out_note(NvShader *cs) {
+    static uint32_t last; static int lines;
+    int nt = 0, ni = 0;
+    for (int i = 0; i < cs->rf.nb; i++) { int k = cs->rf.b[i].kind; nt += k == NVN_RB_TEX; ni += k == NVN_RB_IMG; }
+    if (nt != 1 || ni != 1) return 0;   // a layer of the network, not the upscale itself
+    mfx_io io; if (!up_mfx_resolve(cs, &io)) return 0;
+    uint32_t wh = (uint32_t)io.orr.width | (uint32_t)io.orr.height << 16, win = g_win_wh;
+    int ww = (int)(win & 0xffff), wh_ = (int)(win >> 16), one = win && io.orr.width == ww && io.orr.height == wh_;
+    if (wh == last || lines >= 8) return one ? 1 : 2;
+    last = wh; lines++;
+    if (!win) MLOG("upscaler: output %dx%d (from %dx%d), no window yet", io.orr.width, io.orr.height, io.ir.width, io.ir.height);
+    else if (one) MLOG("upscaler: output %dx%d (from %dx%d), the window's size: one resample, the final copy is 1:1", io.orr.width, io.orr.height, io.ir.width, io.ir.height);
+    else MLOG("upscaler: output %dx%d (from %dx%d), window %dx%d: the final copy resamples it again (%.2fx)%s", io.orr.width, io.orr.height, io.ir.width, io.ir.height, ww, wh_,
+              (double)ww / io.orr.width, getenv("DM_SINGLE_UPSCALE") ? "" : "; DM_SINGLE_UPSCALE=1 upscales once, where the build has the stub");
+    return one ? 1 : 2;
 }
 // After the game's own upscaler ran: its output is the interpolation's scene (nvn_mfx.inc)
 static void mfx_after_game(NvShader *cs) { mfx_io io; if (up_mfx_resolve(cs, &io)) mfx_after(&io); }
