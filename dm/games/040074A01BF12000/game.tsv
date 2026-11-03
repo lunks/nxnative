@@ -44,3 +44,7 @@ render_cond	on
 # Dynamic resolution and the present interval read the GPU time between the frame's timestamp reports (about 26 a frame): with one time for the whole submission they read about 0,
 # the game kept 2304x1296 at 46 ms of GPU a frame and fell to interval 3 (15 fps before the odd-interval fix of the display link, 20 after). Each report takes its segment's GPU start / end: in the slow areas it steps down to 1152x648 with its upscaler and holds 30 fps
 gpu_timestamps	segment
+# The scene camera for MetalFX's motion vectors (DM_UPSCALER=metalfx-temporal, DM_MFX_INTERP; nvn_mfx.inc): gsys's Context uniform block (0x970 bytes), which the scene passes bind at vertex
+# uniform 0. Its members by agl's shader reflection (BAHS, ActionLibraryPass / SilverStarPass): cGSysCtxView (3x4 rows) at +0x0, cGSysCtxViewProj (4x4 rows) at +0x30, the projection at
+# +0x70, cGSysCtxInvView at +0xb0, near / far at +0xe0; a captured frame (F2724) decodes to a GL perspective projection with no x / y offset (no jitter), near 1, far 10000, 45 degrees
+camera_mats	vertex 0 0x0 0x30

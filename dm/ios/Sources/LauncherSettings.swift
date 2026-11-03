@@ -6,6 +6,7 @@ struct Setting: Decodable, Identifiable {
     let env, kind, label, note, def: String
     let section: String?   // heading on the settings screen; absent in older bundles
     let needs: String?     // "<VAR>=<value>": a sub-setting, drawn only while that setting has that value
+    let conflicts: String? // "<VAR>=<value>": held at its default, and drawn disabled, while that setting has that value
     let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     struct Base: Decodable { let docked, handheld: [Int] }
@@ -30,7 +31,7 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, conflicts, level, base, options, min, max, step, on, off }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
@@ -56,6 +57,20 @@ final class LauncherModel: ObservableObject {
             let saved = ignoreSaved ? nil : defaults.object(forKey: "launcher." + s.env) as? String   // a string, as launcher.c reads it: not string(forKey:), which turns a number into one
             values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
         }
+        for s in settings where blocker(s) != nil && !fixed.contains(s.env) && !s.isDefault(values[s.env] ?? s.def) { values[s.env] = s.def }   // two saved choices that conflict: the later row in the list keeps its own
+    }
+
+    // A row with "conflicts" cannot be used together with that setting's value (HDR and frame interpolation): while the other row has it, this one is held at
+    // its default and drawn disabled. Choosing a value resets the rows that conflict with it, so the two never hold together; a value an env file fixes stays
+    func blocker(_ s: Setting) -> Setting? {
+        guard let c = s.conflicts, let eq = c.firstIndex(of: "=") else { return nil }
+        let key = String(c[c.startIndex..<eq]), want = String(c[c.index(after: eq)...])
+        guard values[key] == want, let other = settings.first(where: { $0.env == key }), visible(other) else { return nil }
+        return other
+    }
+    func set(_ s: Setting, _ v: String) {
+        values[s.env] = v
+        for r in settings where r.env != s.env && !fixed.contains(r.env) && r.conflicts == "\(s.env)=\(v)" { values[r.env] = r.def }
     }
 
     var sections: [String] {
@@ -99,8 +114,9 @@ final class LauncherModel: ObservableObject {
         for s in settings {
             let v = values[s.env] ?? s.def
             if fixed.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (\(fromLaunch.contains(s.env) ? "launch environment" : "env file"))\n", stderr); continue }
-            store(s, v)
-            setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v)\(s.isDefault(v) ? "" : " (changed)")\n", stderr)
+            let w = blocker(s) != nil ? s.def : v   // held at its default while a conflicting value holds (one an env file fixes)
+            store(s, w)
+            setenv(s.env, w, 1); fputs("launcher: \(s.env)=\(w)\(s.isDefault(w) ? "" : " (changed)")\(w != v ? " (held: conflicts with \(blocker(s)?.env ?? ""))" : "")\n", stderr)
         }
     }
     private func store(_ s: Setting, _ v: String) {
@@ -111,7 +127,8 @@ final class LauncherModel: ObservableObject {
     // A value an env file or the launch fixed stays
     func choose(_ s: Setting, _ v: String) {
         guard !fixed.contains(s.env), s.accepts(v) else { return }
-        values[s.env] = v; store(s, v); setenv(s.env, v, 1)
+        guard blocker(s) == nil else { return }
+        set(s, v); store(s, v); setenv(s.env, v, 1)
         fputs("launcher: \(s.env)=\(v) (in-game menu)\n", stderr)
     }
 

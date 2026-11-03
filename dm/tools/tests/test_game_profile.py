@@ -67,6 +67,28 @@ class UpscalerKeys(unittest.TestCase):
         self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af"', '#define DM_GAME_UPSCALER_N 2'])
 
 
+
+def header_with(extra):
+    """The synthetic profile's header with extra game.tsv lines, or the exit message"""
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, ID).mkdir()
+        (Path(d, ID) / 'game.tsv').write_text(TSV + extra)
+        r = subprocess.run([sys.executable, str(GAME), 'header', ID, str(Path(d, ID) / 'game.h')], env={**os.environ, 'DM_GAMES_DIR': d}, capture_output=True, text=True)
+        return (Path(d, ID) / 'game.h').read_text() if r.returncode == 0 else r.stderr
+
+
+class CameraMats(unittest.TestCase):   # camera_mats: the scene camera for MetalFX's motion vectors (nvn_mfx.inc)
+    def test_macros(self):
+        self.assertIn('#define DM_GAME_CAM_MATS 0', header_with(''))
+        h = header_with('camera_mats\tvertex 0 0x0 0x30\n')
+        for m in ('DM_GAME_CAM_MATS 1', 'DM_GAME_CAM_MATS_STAGE 0', 'DM_GAME_CAM_MATS_SLOT 0', 'DM_GAME_CAM_MATS_VIEW 0x0', 'DM_GAME_CAM_MATS_VP 0x30', 'DM_GAME_MFX_FRAMES 0'): self.assertIn('#define ' + m, h)
+        self.assertIn('#define DM_GAME_CAM_MATS_STAGE 1', header_with('camera_mats\tfragment 3 16 64\n'))
+
+    def test_refused(self):
+        for bad in ('geometry 0 0 0x30', 'vertex 16 0 0x30', 'vertex 0 0x8 0x30', 'vertex 0 0x0'):
+            self.assertIn('camera_mats takes', header_with(f'camera_mats\t{bad}\n'), bad)
+
+
 if __name__ == '__main__':
     unittest.main()
 

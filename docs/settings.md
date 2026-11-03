@@ -3,7 +3,7 @@
 The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
 
 - [Tested defaults](#tested-defaults)
-- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter)
+- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Frame interpolation](#frame-interpolation), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -56,20 +56,30 @@ Breath of the Wild renders 1280x720 in handheld mode. Docked it renders its worl
 
 ### Game's upscaler
 
-Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's.
+Shown only for games that upscale their own picture with a network of their own before the app sees it: agl's NDSR network, in Donkey Kong Bananza and Splatoon Raiders. **Game's own**, the default, keeps the game's upscaler. **MetalFX** replaces it with Apple's MetalFX spatial scaler: the same input and output sizes, at a fraction of the GPU time, but Apple's scaler's picture rather than the game's. **MetalFX temporal** uses MetalFX's temporal scaler instead, which also takes the scene's depth and the camera's movement and blends each frame with the ones before: steadier edges and less shimmer, for about 2 ms of GPU time a frame on an M5 Pro. The game does not jitter its camera, so it smooths rather than adds detail. It needs the game's camera in its profile (Donkey Kong Bananza has it); a frame without it, or another game, gets the spatial scaler.
 
 ```mermaid
 flowchart LR
     R["Game's render<br/>e.g. 960x540"] --> U{Game's upscaler}
     U -->|Game's own| N["The game's network<br/>3.5-5 ms on an M1"]
     U -->|MetalFX| M["MetalFX spatial scaler<br/>about 1 ms on an M1"]
+    U -->|MetalFX temporal| T["MetalFX temporal scaler<br/>with depth and camera motion"]
     N --> O["Game's output, e.g. 1920x1080<br/>then the game draws its HUD"]
     M --> O
+    T --> O
 ```
 
 - **When to change it:** when the game falls short of its frame rate in busy scenes because of GPU time: Donkey Kong Bananza's upscaler is the largest single piece of a heavy frame on an M1 (3.5-5 ms of about 24 in handheld mode). Compare the look side by side before keeping it.
 - **Cost:** none in GPU time (it saves 2.5-4 ms a frame in that case); the picture is Apple's scaler's rather than the game's. Frames where the game renders at its output size are not upscaled and keep the game's shader either way. Devices without MetalFX keep the game's upscaler.
 - **Not the same as [Upscaling](#upscaling):** that one scales the finished picture, HUD included, to the screen; this one replaces the game's own step inside the frame. Both can be on.
+
+### Frame interpolation
+
+On the Mac, for games whose profile names their own upscaler and their camera (Donkey Kong Bananza). **On** shows a picture MetalFX's frame interpolation makes between each two game frames, so a 60 fps game shows 120 pictures a second on a 120 Hz screen (the display runs its 120 Hz pacing for it). The game keeps its own frame rate and timing; its HUD comes from the newer frame. Off by default.
+
+- **When it pauses:** below 25 fps, and on a screen that cannot show two pictures per game frame (a 60 Hz screen with the game at 60). It also skips camera cuts, loading screens and menus without the game's 3D scene.
+- **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro, and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
+- In `env.txt`: `DM_MFX_INTERP=1`.
 
 ### Game language
 
@@ -86,6 +96,15 @@ Games whose profile supports it (Breath of the Wild, Animal Crossing: New Horizo
 ### Frame-rate counter
 
 Shows the frames per second at the top left.
+
+### HDR
+
+Mac only: **HDR** in the settings window's Advanced settings, or `DM_HDR=1` in the game's `env.txt` (`~/Library/Application Support/nxnative/<title ID>/env.txt`). With it on, a Switch 2 game with an HDR mode (Donkey Kong Bananza) is told that the screen shows HDR when the window is on a screen with HDR headroom (an XDR screen, or an HDR monitor with **High Dynamic Range** on in System Settings › Displays). The game then renders its own HDR picture, and the app shows it with highlights above SDR white. Off by default: the picture stays SDR, exactly as before.
+
+- `DM_HDR_PAPER_WHITE` (80 to 1000 nits, default 203): the game's white for its HUD and menus, shown as the Mac's SDR white. Raise it if the game looks dim next to other windows, or lower it if it looks too bright.
+- `DM_HDR_PEAK` (nits): the brightest level the game aims for. By default the app works it out from what the screen reports (its EDR headroom × paper white).
+- Moving the window to an SDR screen turns the game back to SDR within a frame or two, and moving it back turns HDR on again.
+- [How it works, and what wrong colours mean](reference/rendering.md#hdr-output-from-the-games-own-hdr-path).
 
 ## Controls
 
@@ -265,12 +284,14 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble strength | `DM_RUMBLE_GAIN` | `0` to `3` |
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
-| Game's upscaler | `DM_UPSCALER` | `game`, `metalfx` |
+| Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
+| Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |
 | Encode thread | `DM_NVN_ENC_THREAD` | `1`, `0` |
 | Hold frames when late | `DM_FPS_HOLD` | `on`, `off` |
 | Performance HUD | `DM_METAL_HUD` | `1`, `0` |
+| [HDR](#hdr) (Mac) | `DM_HDR` | `1`, `0` (default) |
 
 `DM_LAUNCHER=0` skips the settings screen; the choices you saved there still apply. `DM_SAVED_CHOICES=0` starts with the tested defaults and keeps your saved choices for later. How the settings are listed for each game: [dm/games/settings.tsv](../dm/games/settings.tsv).

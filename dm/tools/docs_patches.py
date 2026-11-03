@@ -135,6 +135,8 @@ SWITCH_BINDING = [
     ('jit_key_data', '', {'what': 'the bytes of a nn::jit request that make the request', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the layout of the game's own request struct, for the image an iPhone serves"}),
     ('jit_route', '', {'what': 'a route for the nn::jit capture', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the game's own menus, for the image an iPhone serves"}),
     ('jit_out_code', '', {'what': 'where a nn::jit output lists the code it made', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the layout of the game's own output buffer, for the image an iPhone serves"}),
+    ('camera_mats', '', {'what': "the scene camera's uniform block, for MetalFX's motion vectors", 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the engine's own block and member offsets (gsys's Context, from agl's shader reflection); no NVN state names the camera"}),
     ('op_mode', '', {'what': 'the operation mode at start', 'now': 'game', 'goal': 'game', 'purpose': 'runtime', 'why': "the game's controls (handheld: the touch screen instead of a gyro pointer)"}),
 ]
 

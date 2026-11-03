@@ -77,7 +77,7 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
         self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN'})   # the Mac window's Display mode (front_mac.m reads 1 or 0)
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_HDR', 'DM_HDR_PAPER_WHITE', 'DM_HDR_PEAK', 'DM_HDR_ENCODING', 'DM_HDR_GAMUT'})   # the Mac window's Display mode (front_mac.m reads 1 or 0); HDR output (front_mac.m's EDR layer)
         s = mac['DM_FULLSCREEN']
         self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '0', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
 

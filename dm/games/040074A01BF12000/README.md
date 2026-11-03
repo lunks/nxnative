@@ -41,6 +41,14 @@ The scene renders into 1676×943 targets (R11G11B10F colour), agl's upscaler tak
    - **What NVN2 does:** decoding NVN2's indirect draw macro showed that instance count 0 draws nothing and the draw never resets the record.
    - **Now:** the walls, floor and lit passage draw as in the capture, at 60 fps.
 
+### MetalFX temporal scaling and frame interpolation (current, opt-in, not played yet)
+
+`DM_UPSCALER=metalfx-temporal` and `DM_MFX_INTERP=1` ([temporal scaling](../../../docs/reference/rendering.md#metalfx-temporal-scaling-at-a-games-own-upscaler), [frame interpolation](../../../docs/reference/rendering.md#metalfx-frame-interpolation-at-a-games-own-upscaler)) need the camera, the profile's `camera_mats` (`vertex 0 0x0 0x30`). Found statically and in a captured frame (F2724-F2726 and frame 3000, docked):
+
+- **Camera:** gsys's Context block (0x970 bytes, binding 0 in the game's BAHS shaders, bound at vertex uniform 0 of the scene passes, size 2432): `cGSysCtxView` (3x4 rows) +0x0, `cGSysCtxViewProj` +0x30, the projection +0x70, `cGSysCtxInvView` +0xb0, `cGSysCtxNearFarParam` +0xe0, `NearFarParam2` +0xf0 (its z is the aspect ratio), `NearFarParam3` +0x100, `cGSysCtxFovyParam` +0x110 (its z the field of view, 45 degrees). GL projection, near 1, far 10000, depth not reversed; the window origin is the upper left once the game is running.
+- **No jitter:** the projection's x / y offsets are 0 (high confidence for the frames seen; `cProjOffset` is a shadow / light parameter). **No velocity buffer:** agl's `smaa_resolve` and `fxaa_reprojection` read one, but none of their shaders is in the prewarm list of the play sessions, and the captured passes have no render-resolution velocity target (high confidence for gameplay; other scenes unchecked).
+- **Depth:** D32F at the upscaler's input size (1676x943 in the capture), its serial new every frame (dynamic resolution); the upscaler `7629d857a0a93833` reads the scene's R11G11B10F texture and writes the 2304x1296 R11G11B10F output, the UI is drawn into that output (passes after it), and `e9c6f339b7550c71` copies it into the 2880x1620 sRGB window texture.
+
 ## Boot (Mac)
 
 Each step below stopped the boot before its fix:
@@ -89,5 +97,7 @@ Each step below stopped the boot before its fix:
 - [Odd present intervals on the 30 Hz display link](../../../docs/reference/frame-rate.md#odd-present-intervals-on-the-30-hz-display-link): interval 3 took 66.7 ms a frame, 15 fps for 20.
 - [GPU timestamps per submission segment](../../../docs/reference/frame-rate.md#gpu-timestamps-per-submission-segment): dynamic resolution read a GPU time of about 0 and kept 2304x1296 while 14 ms over budget; with `gpu_timestamps segment` it steps down to 1152x648 with its upscaler in the heavy areas and holds 30 fps.
 - [Upsample pass reading the level above the one it renders](../../../docs/reference/rendering.md#upsample-pass-reading-the-level-above-the-one-it-renders): the stage intro's neon letters came out fat and filled, the bloom's upsample reading a sharper level through the view of the levels below (PR #1073).
+- [HDR output from the game's own HDR path](../../../docs/reference/rendering.md#hdr-output-from-the-games-own-hdr-path): with `DM_HDR=1` on an HDR screen the display reports HDR and the game renders its own HDR path, RGB10A2 window textures in ST 2084 PQ (static trace; **open**: not yet run in the game).
 - [Present snapshots: the game's swapchain texture free at once](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once): at the 30 fps cap with snapshots on it ran 43-65 fps of game time (fast-forward) and dropped about 110 of every 300 frames (PR #1073).
 - [Submissions handed to the GPU in segments](../../../docs/reference/frame-rate.md#submissions-handed-to-the-gpu-in-segments): a submission drawing into the target it inherited left those draws out of the segment's draw count (PR #1073).
+- [MetalFX temporal scaling at a game's own upscaler](../../../docs/reference/rendering.md#metalfx-temporal-scaling-at-a-games-own-upscaler) and [MetalFX frame interpolation at a game's own upscaler](../../../docs/reference/rendering.md#metalfx-frame-interpolation-at-a-games-own-upscaler): its camera in gsys's Context block (`camera_mats`), no velocity buffer and no jitter; opt-in, not played yet.

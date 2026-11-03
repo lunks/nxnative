@@ -99,20 +99,21 @@ static _Atomic uint32_t g_present_qos;
 #define ALLOC_MAX 8
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
 static id<MTL4CommandAllocator> g_up_alloc4[3];
-static id<MTL4CommandAllocator> g_present_alloc4[3];
-static id<MTL4CommandBuffer> g_present_cb[3];
+enum { PRESENT_ALLOCS = 6 };   // by ticket % 3: 0-2 the game's frames, 3-5 the interpolated pictures before them (DM_MFX_INTERP, nvn_mfx.inc)
+static id<MTL4CommandAllocator> g_present_alloc4[PRESENT_ALLOCS];
+static id<MTL4CommandBuffer> g_present_cb[PRESENT_ALLOCS];
 static id<MTL4ArgumentTable> g_vt, g_ft, g_ct, g_up_ct, g_ot;   // g_ot: the object stage of a task / mesh draw (mesh_tasks_draw)
 static int g_vbuf_cache = 1;   // DM_NVN_VBUF_CACHE=0 restores the uncached path for A/B measurements
 static uint64_t g_vt_addr[31]; static uint32_t g_vt_valid;
 static uint64_t g_vbuf_resolve, g_vbuf_reuse, g_vbuf_set, g_vbuf_skip, g_vbuf_copies, g_vbuf_copy_bytes;   // copies: vertex streams at addresses not 4-byte aligned (vbuf_unaligned)
 static id<MTL4ArgumentTable> g_present_args;
-static id<MTLBuffer> g_present_uv[3];
-static uint64_t g_present_alloc_fence[3];
+static id<MTLBuffer> g_present_uv[PRESENT_ALLOCS];
+static uint64_t g_present_alloc_fence[PRESENT_ALLOCS];
 // Under g_pq_mu: per present allocator, the newest ticket its commit feedback reported done on the GPU. present_now resets an allocator only once this reaches the ticket that
 // last used it. g_pq_done is not that: every display-link callback sets it to ticket - 1 (the previous present was committed, not run) and a present that was not submitted sets
 // it to its own ticket. Waiting on g_pq_done, a display-link present never waited here: with three presents in flight, or two after a dropped frame, the allocator was reset
 // under a present the GPU had not run, and that present's drawable read back black (t_present_alloc; docs/reference/frame-rate.md)
-static uint64_t g_present_alloc_done[3];
+static uint64_t g_present_alloc_done[PRESENT_ALLOCS];
 static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t g_link_cv = PTHREAD_COND_INITIALIZER;
@@ -469,6 +470,9 @@ void mtl_init(void) {
         if (!g_alloc4[i]) MDIE("failed to create MTL4CommandAllocator[%d]: %s", i, ae.localizedDescription.UTF8String);
         g_up_alloc4[i] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae];
         if (!g_up_alloc4[i]) MDIE("failed to create upload MTL4CommandAllocator[%d]: %s", i, ae.localizedDescription.UTF8String);
+    }
+    for (int i = 0; i < PRESENT_ALLOCS; i++) {
+        NSError *ae = nil;
         MTL4CommandAllocatorDescriptor *pad = [MTL4CommandAllocatorDescriptor new];
         pad.label = [NSString stringWithFormat:@"nvn-mtl present allocator %d", i];
         g_present_alloc4[i] = [g_dev newCommandAllocatorWithDescriptor:pad error:&ae];
@@ -489,8 +493,8 @@ void mtl_init(void) {
     pad.maxTextureBindCount = 1; pad.maxSamplerStateBindCount = 1; pad.maxBufferBindCount = 1;
     g_present_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
     if (!g_present_args) MDIE("failed to create the present argument table: %s", ate.localizedDescription.UTF8String);
-    for (int i = 0; i < 3; i++) {
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+    for (int i = 0; i < PRESENT_ALLOCS; i++) {
+        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];   // the crop (8), then HDR output's parameters (present.metal CropHdr)
         if (!g_present_uv[i]) MDIE("failed to create present UV buffer[%d]", i);
         res_add(g_present_uv[i]);
     }
@@ -934,6 +938,8 @@ void mtl_sub_begin(void) {
 }
 
 static void rp_end(void);
+// MetalFX temporal upscaling and frame interpolation at a game's own upscaler (nvn_mfx.inc): the scene's depth and camera, from each pass with a depth attachment
+static int mfx_cam_on(void); static void mfx_pass_begin(id<MTLTexture> depth, NSUInteger level); static void mfx_note_pass(void);
 static void geo_mesh_flush_pass(void);   // a waiting run of mesh draws is drawn before its pass ends (nvn_geometry.inc)
 // DM_NVN_PASSGPU_SERIAL=1 (for measurement): before creating each encoder on the main command buffer, encode 'signal n+1 → wait for signal n+1' - the signal is only raised once all prior work has completed,
 // so the following encoder starts only after the previous one has fully finished; on TBDR passes no longer overlap in the pipeline, and the per-pass start-to-end span of DM_NVN_PASSGPU is that pass's exclusive time (the whole-frame total is inflated; look only at relative cost)
@@ -4263,6 +4269,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
         if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
+        if (mfx_cam_on()) mfx_pass_begin(g_pass.hd ? dt : nil, pd.depthAttachment.level);   // the depth the camera of this pass's first draw goes with (nvn_mfx.inc)
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
     }
     if (g_vis_on) {
@@ -10613,6 +10620,7 @@ static int lc_keeps(uint32_t op) {
 
 static void dispatch(const p_dispatch *dp);
 static int up_mfx_wanted(NvShader *cs); static int up_mfx_encode(NvShader *cs);   // a game's upscaler through MetalFX (see up_mfx_encode)
+static int up_mfx_named(NvShader *cs); static int mfx_interp_on(void); static void mfx_after_game(NvShader *cs);   // frame interpolation after the game's own upscaler (nvn_mfx.inc)
 // ---------- Compute dispatches moved ahead of the render pass they would split (DM_NVN_CS_HOIST) ----------
 // Metal cannot run a compute dispatch inside a render pass, so a dispatch between two draws of one pass ends it, and on a tile-based GPU every attachment is stored and loaded again:
 // Breath of the Wild runs one GPU particle dispatch per emitter between the G-buffer's effect draws, six to eight splits of a 1600x900 G-buffer a frame (about 350 MB of attachment
@@ -10907,6 +10915,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_rp_layered = 0; g_sm_plan.on = 0;
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { PD("Z %llu draw skipped: the render pass did not begin vs=%.16s fs=%.16s", g_stat_pass, pr && pr->sh[0] ? pr->sh[0]->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-"); return; }   // Z lines: why a draw was dropped at these early returns
+    if (mfx_cam_on()) mfx_note_pass();   // the pass's first draw: its camera (nvn_mfx.inc)
     if (defer_q_draw) {
         defer_replay();
         // A replayed draw may have ended Q's encoder to align a GPU-written stream. Restore this draw's streams and encoder.
@@ -11257,7 +11266,7 @@ static void dispatch(const p_dispatch *dp) {
     if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
     rp_flush();   // A full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does
     image_prepare(prog_get(S.cprog), 0x20);
-    if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
+    if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx, metalfx-temporal)
     int own = dispatch_own();
     if (own && g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLComputeCommandEncoder> ce = own ? pg_compute() : (id<MTLComputeCommandEncoder>)dispatch_enc();
@@ -11278,6 +11287,7 @@ static void dispatch(const p_dispatch *dp) {
         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
     } else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (own) enc_c_end(ce);
+    if (!dp->ind && mfx_interp_on() && up_mfx_named(cs)) mfx_after_game(cs);   // the game's own upscaler ran: its picture is the interpolation's scene (nvn_mfx.inc)
 }
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, layer stride from SetCopyImageStride, 0 = tightly packed)
 // A copy at a level the host texture lacks (more levels declared than its size holds, tex_desc) is skipped: Metal does not check the level of a blit
@@ -12338,6 +12348,8 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
 enum { PRESENT_FAILED, PRESENT_STANDARD, PRESENT_METALFX };
 static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTexture> out, void (^done)(int));
 static int present_offscreen_wait(id<MTLTexture> src, const int crop[4], id<MTLTexture> out);
+static int present_crop_rect(id<MTLTexture> src, const int crop[4], NSUInteger r[4]);
+int dm_vi_hdr_out(int f16, float *to_edr, int *pq, int *bt2020);   // HDR output (DM_HDR; a weak default with the present below)
 // Game picture needed by the whole-window screenshot (front end window_shot; no longer does drawViewHierarchy on a Metal layer with the display link attached): at the next present, the present thread draws the same frame
 // with the same encoding as the present into an offscreen texture of the view's size, and after the GPU finishes hands out a CGImage in the completion callback. Guarded by g_shotq_mu
 static void (^g_grab_cb)(CGImageRef img);
@@ -12386,11 +12398,17 @@ static void shot(id<MTLTexture> src, const char *path, int screen, const int cro
         if (e && sscanf(e, "%d%c%d%c", &w, &sep, &h, &extra) == 3 && sep == 'x' && w > 0 && h > 0) { out_w = w; out_h = h; }
     }
     id<MTLTexture> read = src;
-    if (out_w && screen) {
-        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:out_w height:out_h mipmapped:NO];
+    int ow = out_w, oh = out_h;
+    // HDR output (DM_HDR): a 10-bit or half float window texture is drawn at its own size into 8 bits as the present draws it for an SDR screen (clipped at paper white)
+    if (!ow && screen && (src.pixelFormat == MTLPixelFormatRGB10A2Unorm || src.pixelFormat == MTLPixelFormatRGBA16Float)) {
+        float k; int pq, b; NSUInteger r[4];
+        if (dm_vi_hdr_out(0, &k, &pq, &b) >= 0 && present_crop_rect(src, crop, r)) { ow = (int)r[2]; oh = (int)r[3]; }
+    }
+    if (ow && screen) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:ow height:oh mipmapped:NO];
         d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
         id<MTLTexture> out = [g_dev newTextureWithDescriptor:d];
-        if (!out) { MLOG("[RED] cannot create the screenshot output texture %dx%d", out_w, out_h); return; }
+        if (!out) { MLOG("[RED] cannot create the screenshot output texture %dx%d", ow, oh); return; }
         if (g_q4) { if (!present_offscreen_wait(src, crop, out)) return; }
         else { id<MTLCommandBuffer> cb = q_cb(); if (!present_encode(cb, src, out, crop)) return; [cb commit]; [cb waitUntilCompleted]; }
         read = out;
@@ -12651,6 +12669,55 @@ static void present_pipeline(MTLPixelFormat format) {
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
     }
 }
+// ---------- HDR output (DM_HDR) ----------
+// hle_vi.c reports HDR on a screen with EDR headroom; the game then presents HDR content in RGB10A2 or RGBA16F (Donkey Kong Bananza: ST 2084 PQ, BT.2020). The present
+// decodes it (present.metal fs_hdr) to extended linear light with paper white at 1.0: into an RGBA16Float EDR layer (front_layer_hdr) when the screen has headroom, else clipped
+// at paper white into the 8-bit layer, screenshots and the whole-window grab. An SDR present drawn into the EDR layer (the frames while the game changes its format) is decoded
+// from sRGB the same way. DM_HDR unset: dm_vi_hdr_out answers -1 and the present is the standard pass, unchanged
+__attribute__((weak)) int dm_vi_hdr_out(int f16, float *to_edr, int *pq, int *bt2020) { (void)f16; (void)to_edr; (void)pq; (void)bt2020; return -1; }   // hle_vi.c
+__attribute__((weak)) void front_screen_edr(float *potential, float *current) { *potential = *current = 0; }   // front_mac.m; graphics unit tests and iOS have none
+__attribute__((weak)) void front_layer_hdr(int mode) { (void)mode; }   // front_mac.m; graphics unit tests and iOS have none
+static int pf_hdr_src(MTLPixelFormat pf) { return pf == MTLPixelFormatRGB10A2Unorm || pf == MTLPixelFormatRGBA16Float; }
+// fs_hdr's parameters (present.metal CropHdr.hdr) for src drawn into dst; 0 = the standard pass. *hdr_src: src is the game's HDR content
+static int present_hdr_params(MTLPixelFormat src, MTLPixelFormat dst, float hp[4], int *hdr_src) {
+    float k = 1; int pq = 1, b2020 = 1, st = dm_vi_hdr_out(src == MTLPixelFormatRGBA16Float, &k, &pq, &b2020);
+    int hs = st == 1 && pf_hdr_src(src), fd = dst == MTLPixelFormatRGBA16Float;
+    if (hdr_src) *hdr_src = hs;
+    if (st < 0 || (!hs && !fd)) return 0;
+    hp[0] = hs ? (pq ? 1 : 0) : 2; hp[1] = hs ? k : 1; hp[2] = hs && b2020; hp[3] = fd ? (b2020 ? 1 : 0) : 2;
+    return 1;
+}
+static id<MTLRenderPipelineState> present_hdr_pipeline(MTLPixelFormat format) {   // fs_hdr for an output format (two kept: the drawable's and a screenshot's)
+    static id<MTLRenderPipelineState> pso[2]; static MTLPixelFormat fmt[2]; static int next; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    id<MTLRenderPipelineState> p = nil;
+    for (int i = 0; i < 2 && !p; i++) if (pso[i] && fmt[i] == format) p = pso[i];
+    if (!p) {
+        NSError *e = nil; id<MTLLibrary> lib = host_lib("present", &e);
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs_hdr"];
+        pd.colorAttachments[0].pixelFormat = format;
+        if (!lib || !(p = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e])) MDIE("HDR present pipeline failed %s", e.localizedDescription.UTF8String);
+        pso[next] = p; fmt[next] = format; next ^= 1;
+    }
+    pthread_mutex_unlock(&mu);
+    return p;
+}
+// The layer for what the present shows (present thread): EDR when the game's HDR content goes to a screen with headroom, the layer as made otherwise; one line when it changes
+static void present_hdr_layer(MTLPixelFormat src) {
+    float k = 1, pot = 0, cur = 0; int pq = 1, b2020 = 1, st = dm_vi_hdr_out(src == MTLPixelFormatRGBA16Float, &k, &pq, &b2020);
+    if (st < 0) return;
+    front_screen_edr(&pot, &cur);
+    int hs = st == 1 && pf_hdr_src(src), mode = hs && pot > 1.01f ? (b2020 ? 1 : 2) : 0;
+    static int last = -1; static MTLPixelFormat last_src;
+    if (mode == last && src == last_src) return;
+    if (mode != last || hs || pf_hdr_src(last_src))
+        MLOG("present: HDR output, window texture format %lu %s → layer %s", (unsigned long)src,
+             hs ? (pq ? (b2020 ? "decoded as PQ, BT.2020" : "decoded as PQ, BT.709") : (b2020 ? "decoded as linear, BT.2020" : "decoded as linear (scRGB), BT.709")) : "SDR",
+             mode == 1 ? "EDR, extended linear BT.2020" : mode == 2 ? "EDR, extended linear sRGB" : hs ? "SDR (no EDR headroom: clipped at paper white)" : "SDR");
+    last = mode; last_src = src;
+    front_layer_hdr(mode);
+}
 // Present samples only the valid source rectangle declared by NVN; kept separate from the raw swapchain readback screenshot. Edges are clamped to the texel centers of the valid area, so bilinear does not read the black texels outside.
 // Present samples the raw bytes stored in the swapchain texture (the Switch's scan-out sends the stored bytes as they are): an sRGB source is replaced by a non-sRGB view of the same storage,
 // otherwise sampling decodes to linear first, the BGRA8Unorm layer does not encode again, and the whole picture comes out dark. Other formats are returned as they are (Mario's swapchain is RGBA8 and does not come here).
@@ -12706,11 +12773,12 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    int hdr = present_hdr_params(src.pixelFormat, dst.pixelFormat, uv + 8, NULL);   // HDR output: fs_hdr (DM_HDR)
+    [en setRenderPipelineState:hdr ? present_hdr_pipeline(dst.pixelFormat) : g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
-    [en setFragmentBytes:uv length:sizeof uv atIndex:0];
+    [en setFragmentBytes:uv length:(hdr ? 12 : 8) * sizeof(float) atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [en endEncoding];
     return 1;
@@ -12782,6 +12850,8 @@ static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTe
     [fx->sc encodeToCommandBuffer:cb];
     return fx->out;
 }
+int front_screen_max_fps(void);   // front_mac.m (a weak stand-in further on)
+#include "nvn_mfx.inc"   // MetalFX temporal upscaling and frame interpolation at the game's own upscaler (DM_UPSCALER=metalfx-temporal, DM_MFX_INTERP)
 // ---------- A game's own upscaler drawn by MetalFX (DM_UPSCALER) ----------
 // Donkey Kong Bananza upscales its frame with agl's NDSR network: one compute dispatch (agl_ndsr.pck, 24 variants; Splatoon Raiders ships 20) reading the scene colour (texture slot 0, R11G11B10F; see up_mfx_color)
 // and writing the output picture (image slot 1), between the render-resolution passes and the output-resolution ones, which draw the UI over it. Its push constants (c[24], S.push[1])
@@ -12798,13 +12868,16 @@ enum { UP_MFX_SCALERS = 4 };
 static up_mfx_scaler g_up_mfx[UP_MFX_SCALERS]; static int g_up_mfx_next;
 static uint64_t g_up_mfx_n, g_up_mfx_kept;   // dispatches drawn by MetalFX, dispatches of a named shader left to it
 void mtl_up_mfx_stats(uint64_t *n, uint64_t *kept) { *n = g_up_mfx_n; *kept = g_up_mfx_kept; }
-static int up_mfx_on(void) {
+static int up_mfx_on(void) {   // 0: the game's own upscaler; 1: MetalFX's spatial scaler (DM_UPSCALER=metalfx); 2: its temporal scaler (metalfx-temporal, nvn_mfx.inc)
     static int v = -1;
     if (v >= 0) return v;
-    const char *e = getenv("DM_UPSCALER"); v = e && !strcmp(e, "metalfx");
-    if (e && *e && strcmp(e, "metalfx") && strcmp(e, "game")) MLOG("[RED] DM_UPSCALER=%s: metalfx or game; keeping the game's", e);
+    const char *e = getenv("DM_UPSCALER"); v = !e ? 0 : !strcmp(e, "metalfx") ? 1 : !strcmp(e, "metalfx-temporal") ? 2 : 0;
+    if (e && *e && !v && strcmp(e, "game")) MLOG("[RED] DM_UPSCALER=%s: metalfx, metalfx-temporal or game; keeping the game's", e);
     if (v && !(g_q4 && [MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev])) { MLOG("upscaler: this GPU has no Metal 4 MetalFX spatial scaler; the game's own upscaler draws"); v = 0; }
-    if (v) MLOG("upscaler (DM_UPSCALER): metalfx, the game's upscaler shaders (%d, from the shader map) are drawn by MetalFX's spatial scaler", DM_GAME_UPSCALER_N);
+    if (v == 2 && !DM_GAME_CAM_MATS) { MLOG("[RED] upscaler: DM_UPSCALER=metalfx-temporal needs the profile's camera_mats (the camera for the motion vectors); MetalFX's spatial scaler draws"); v = 1; }
+    if (v == 2 && ![MTLFXTemporalScalerDescriptor supportsMetal4FX:g_dev]) { MLOG("upscaler: this GPU has no Metal 4 MetalFX temporal scaler; the spatial one draws"); v = 1; }
+    if (v) MLOG("upscaler (DM_UPSCALER): %s, the game's upscaler shaders (%d, from the shader map) are drawn by MetalFX's %s scaler", v == 2 ? "metalfx-temporal" : "metalfx", DM_GAME_UPSCALER_N,
+                v == 2 ? "temporal (the scene's depth and the camera's motion; the spatial one for a frame without them)" : "spatial");
     return v;
 }
 // The colour a variant of the network takes and writes, from the sRGB curves in its code (their constants are immediates, whole bytes in the code). The variants differ inside a pack, so this is the shader's and not the game's:
@@ -12879,8 +12952,8 @@ static int up_mfx_rect(const uint32_t v[4], NSUInteger w, NSUInteger h, NVNcopyR
     if (v[0] > INT_MAX || v[1] > INT_MAX || rw > INT_MAX || rh > INT_MAX || (uint64_t)v[0] + rw > w || (uint64_t)v[1] + rh > h) return 0;
     *r = (NVNcopyRegion){(int)v[0], (int)v[1], 0, (int)rw, (int)rh, 1}; return 1;
 }
-// The dispatch of upscaler cs as MetalFX's spatial scaler from its texture slot's rectangle to its image slot's (see above): 1 when drawn, 0 to run the shader
-static int up_mfx_encode(NvShader *cs) {
+// The textures and rectangles of a dispatch of upscaler cs (see above): 0 when they are not one input texture and one larger output image the scalers can take
+static int up_mfx_resolve(NvShader *cs, mfx_io *io) {
     int ti = -1, oi = -1;
     for (int i = 0; i < cs->rf.nb; i++) { int k = cs->rf.b[i].kind; if (k == NVN_RB_TEX && ti < 0) ti = i; else if (k == NVN_RB_IMG && oi < 0) oi = i; else if (k == NVN_RB_TEX || k == NVN_RB_IMG) return 0; }
     if (ti < 0 || oi < 0) { static int once; if (!once++) MLOG("[RED] upscaler %s: not one texture and one image; the shader draws", cs->key); return 0; }
@@ -12900,7 +12973,19 @@ static int up_mfx_encode(NvShader *cs) {
     NVNcopyRegion ir, orr;
     if (!in || !out || in == out || in.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D || in.sampleCount != 1 || out.sampleCount != 1 ||
         fmt_int_or_ds(in.pixelFormat) || fmt_int_or_ds(out.pixelFormat) || mtl_fmt_block(out.pixelFormat) || !up_mfx_rect(v, in.width, in.height, &ir) || !up_mfx_rect(v + 4, out.width, out.height, &orr) ||
-        orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) { g_up_mfx_kept++; return 0; }
+        orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) return 0;
+    io->in = in; io->out = out; io->ir = ir; io->orr = orr; io->out_ser = dout.serial;
+    return 1;
+}
+// After the game's own upscaler ran: its output is the interpolation's scene (nvn_mfx.inc)
+static void mfx_after_game(NvShader *cs) { mfx_io io; if (up_mfx_resolve(cs, &io)) mfx_after(&io); }
+// The dispatch of upscaler cs as MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal, nvn_mfx.inc) or spatial scaler from its texture slot's rectangle to its image slot's (see above):
+// 1 when drawn, 0 to run the shader. The temporal one falls back to the spatial one for a frame it lacks the depth or the camera of, and takes only a shader with linear input and output
+// (up_mfx_color: it reads the scene as linear HDR); a shader with sRGB input gets the spatial one in perceptual mode
+static int up_mfx_encode(NvShader *cs) {
+    mfx_io io; if (!up_mfx_resolve(cs, &io)) { g_up_mfx_kept++; return 0; }
+    if (up_mfx_on() == 2 && cs->up_color == UP_COLOR_LINEAR && mfx_temporal(&io)) { mfx_after(&io); return 1; }
+    id<MTLTexture> in = io.in, out = io.out; NVNcopyRegion ir = io.ir, orr = io.orr; uint64_t dout_ser = io.out_ser;
     int srgb = cs->up_color == UP_COLOR_SRGB;
     up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, srgb); if (!e) { g_up_mfx_kept++; return 0; }
     id<MTL4FXSpatialScaler> sc = e->sc;
@@ -12909,7 +12994,7 @@ static int up_mfx_encode(NvShader *cs) {
                  in.pixelFormat == MTLPixelFormatRGBA16Float && out.pixelFormat == MTLPixelFormatRGBA16Float && !ir.xoffset && !ir.yoffset && !orr.xoffset && !orr.yoffset && (NSUInteger)orr.width == out.width &&
                  (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage;
     if (!direct && !(out.usage & MTLTextureUsageRenderTarget)) { g_up_mfx_kept++; return 0; }
-    zskip_del(dout.serial);
+    zskip_del(dout_ser);
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     NVNcopyRegion at0 = {0, 0, 0, ir.width, ir.height, 1}, at0o = {0, 0, 0, orr.width, orr.height, 1};
@@ -12932,6 +13017,7 @@ static int up_mfx_encode(NvShader *cs) {
     if (!g_up_mfx_n++) MLOG("upscaler: first dispatch of %s drawn by MetalFX, %dx%d at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", cs->key, ir.width, ir.height, ir.xoffset, ir.yoffset,
                             (unsigned long)in.width, (unsigned long)in.height, (unsigned long)in.pixelFormat, orr.width, orr.height, orr.xoffset, orr.yoffset, (unsigned long)out.width, (unsigned long)out.height,
                             (unsigned long)out.pixelFormat, direct ? ", straight" : srgb ? ", through RGBA16F, decoded from sRGB" : ", through RGBA16F");
+    mfx_after(&io);
     return 1;
 }
 // The present pass: src's valid rectangle drawn into dst (the drawable, or a screenshot's texture) as present_encode draws it, through MetalFX first where fx_encode takes it
@@ -12959,8 +13045,10 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     uv[0] = (float)cx / tw; uv[1] = (float)cy / th; uv[2] = (float)cw / tw; uv[3] = (float)ch / th;
     uv[4] = (cx + 0.5f) / tw; uv[5] = (cy + 0.5f) / th; uv[6] = (cx + cw - 0.5f) / tw; uv[7] = (cy + ch - 0.5f) / th;
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
+    // HDR output (DM_HDR): fs_hdr, chosen by the game's texture (MetalFX's perceptual scaling keeps its encoding, PQ or sRGB, in the scaled picture) and the target
+    int hdr = present_hdr_params(src.pixelFormat, dst.pixelFormat, uv + 8, NULL);
     [g_present_args setAddress:uvb.gpuAddress atIndex:0];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:hdr ? present_hdr_pipeline(dst.pixelFormat) : g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     m4_end(en);
     return up ? PRESENT_METALFX : PRESENT_STANDARD;
@@ -12969,7 +13057,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
 // returns whether it was submitted. Completion reports the encoding kind, or PRESENT_FAILED on a GPU error. Resources remain resident and retained until GPU completion.
 static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTexture> out, void (^done)(int)) {
     id<MTL4CommandAllocator> al = [g_dev newCommandAllocator]; id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer];
-    id<MTLBuffer> uvb = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> uvb = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
     if (!al || !cb || !uvb) { MLOG("[RED] offscreen present: no command allocator or buffer"); return 0; }
     id<MTLTexture> raw = present_raw_src(src);
     fx_state fx = {0};
@@ -13007,7 +13095,7 @@ static void present_gpu_note(double s, int fx) {
     n[fx] = 0;
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
-static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
+static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, int interp) {   // interp: the interpolated picture in that slot, before the frame (nvn_mfx.inc), else -1
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
@@ -13018,8 +13106,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
              g_bp_up_bytes / 1048576.0, g_pkg_uploads, g_pkg_reuploads,
              g_up_total_ns / 1e6, g_bp_first_present / 1e9);
     }
-    PD("X ser=%llu", t->serial);
-    id<MTLTexture> src = tex_mtl(t);
+    PD("X ser=%llu%s", t->serial, interp >= 0 ? " (the interpolated picture before it)" : "");
+    id<MTLTexture> src = interp >= 0 ? mfx_slot_tex(interp) : tex_mtl(t);   // the interpolated picture has the window texture's size and format: the same crop and scaling
     if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
     // The picture's shape for the front end's layout (front.h front_picture_shape): reported when its width / height changes by more than 0.1 %, not on a size change of the same
     // shape (1280x720 handheld, 1920x1080 docked)
@@ -13070,13 +13158,14 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
 #endif
+    present_hdr_layer(src.pixelFormat);   // HDR output (DM_HDR): the layer for what this present shows; nothing without DM_HDR
     present_pipeline(layer.pixelFormat);   // Same as the original path: the first frame compiles the pipeline before taking the drawable
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize);   // Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
     if (!dr) return 0;
-    int alloc_i = (int)(ticket % 3);
+    int alloc_i = (int)(ticket % 3) + (interp >= 0 ? 3 : 0);
     if (g_present_alloc_fence[alloc_i]) {
         pthread_mutex_lock(&g_pq_mu);
         while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -13093,7 +13182,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) MLOG("[RED] display command buffer error: %s", f.error.description.UTF8String);
-        pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
+        pthread_mutex_lock(&g_pq_mu); if (interp < 0 && ticket > g_pq_done) g_pq_done = ticket; if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
         present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); pthread_mutex_unlock(&g_pq_mu);
     }];
     id<MTL4CommandBuffer> buffers[] = {cb};
@@ -13120,7 +13209,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     (void)period; [dr present];
 #else
     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
-    [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
+    if (interp < 0) [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base); the game's frames only
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
     }];
@@ -13138,14 +13227,14 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 // Swapchain texture return: before AcquireTexture gets a texture it waits for the ticket of that texture's previous present to be processed (mtl_present_wait), after which the commands the game draws into it
 // are necessarily ordered after that blit on the GPU queue.
 #define PQ 8
-typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; uint64_t ev_val, snap_v; } pq_item;   // snap_v: the snapshot copy this present shows (snap_commit_wait)   // t_in: the time the game handed this frame into the present queue (CACurrentMediaTime); ev_val: see g_ext_ev
+typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; uint64_t ev_val, snap_v; int interp, interp_shown; uint64_t mfx_v; } pq_item;   // interp: the slot of the interpolated picture shown before this frame (-1 none; DM_MFX_INTERP, nvn_mfx.inc), interp_shown: it is up, mfx_v: its commit (mfx_commit_wait)   // snap_v: the snapshot copy this present shows (snap_commit_wait)   // t_in: the time the game handed this frame into the present queue (CACurrentMediaTime); ev_val: see g_ext_ev
 // External producer (the Vulkan layer, dm/gfx/vk) renders on its own queue and signals this event when a frame's rendering is done: the present of that frame waits for the value on g_q4
 static id<MTLSharedEvent> g_ext_ev;
 static void ext_wait(uint64_t v) { if (v && g_ext_ev) [g_q4 waitForEvent:g_ext_ev value:v]; }
 static void snap_commit_wait(uint64_t v);
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
-static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double);
+static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, int);
 static double g_link_vperiod, g_link_vhalf;   // virtual ticks (link_range): seconds per counted tick (0 = every callback is a tick) and half a refresh of the screen
 
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -13201,19 +13290,28 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     // dropped the one before whenever two frames landed in the same refresh, as frames of a 60 fps game that take 16-17.5 ms do, and the next frame then stayed up 33 ms
     // (Dark Souls Remastered, from PR #31: presents within 14.7-18.7 ms 98.2 -> 99.98 %, about 2 ms more from enqueue to display). DM_PRESENT_FIFO=0 takes the newest, as before
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
-    if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
-    pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
-    g_pq_read = ticket;
+    // Frame interpolation (DM_MFX_INTERP): a frame with an interpolated picture goes up in two ticks, that picture first, and stays the next to take until its own is up. A frame whose
+    // picture is up is never dropped, and while the queue catches up (three or more waiting) no interpolated picture is shown (PR #301 found that taking the newer frames' pictures
+    // instead dropped nearly every game frame once the queue stayed that deep)
+    pq_item *fp = &g_pq[(first - 1) % PQ]; int behind = 0;
+    if (fp->interp >= 0 && fp->interp_shown) ticket = first;
+    else if (fifo && ticket > first) { behind = ticket - first >= 2; ticket = behind ? g_pq_in - 1 : first; }
+    pq_item *ip = &g_pq[(ticket - 1) % PQ]; int interp = !behind && ip->interp >= 0 && !ip->interp_shown ? ip->interp : -1;
+    if (interp >= 0) ip->interp_shown = 1;
+    pq_item it = *ip; g_link_it_tin = it.t_in;
+    g_pq_read = interp >= 0 ? ticket - 1 : ticket;
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     g_link_ring[ticket % PRING] = (link_ent){ticket, update.targetPresentationTimestamp, (update.targetPresentationTimestamp - cb) * 1e3, gap_max * 1e3, nticks}; nticks = 0; gap_max = 0;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
-    ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); }
-    g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
-    if (!submitted) {
+    ext_wait(it.ev_val); snap_commit_wait(it.snap_v); mfx_commit_wait(it.mfx_v);
+    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp, interp); }
+    // With frame interpolation's 120 Hz link (g_mfi_link) every frame keeps its interval, half for each of its two pictures: the link would otherwise take a 60 fps frame on the next tick
+    double shown = it.interp >= 0 && (interp >= 0 || it.interp_shown) ? it.period / 2 : it.period;
+    g_link_hold_until = submitted && (g_mfi_link ? shown > 0.006 : it.period > 0.025) ? update.targetPresentationTimestamp + shown : 0;
+    if (!submitted && interp < 0) {
         pthread_mutex_lock(&g_pq_mu);
         if (ticket > g_pq_done) g_pq_done = ticket;
         pthread_cond_broadcast(&g_pq_cv);
@@ -13284,6 +13382,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
     if (g_rescue_mode) want = 0;
     pthread_mutex_unlock(&g_pq_mu);
     if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
+    want = mfx_link_mode(want);   // frame interpolation: 120 Hz on a screen that has it (nvn_mfx.inc)
     if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
     // while its thread starts (after link_main read the rate) is not lost
@@ -13334,8 +13433,13 @@ static void *present_main(void *arg) {
         uint64_t ticket = ++g_pq_read; g_classic_busy = 1;
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
-        ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0); }
+        ext_wait(it.ev_val); snap_commit_wait(it.snap_v); mfx_commit_wait(it.mfx_v);
+        // Frame interpolation: the interpolated picture for half the frame's interval (at least a refresh), then the game frame for the other half; not when a newer frame is queued already
+        pthread_mutex_lock(&g_pq_mu); int behind = g_pq_read < g_pq_in; pthread_mutex_unlock(&g_pq_mu);
+        int show_interp = it.interp >= 0 && !behind;
+        if (show_interp) { int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);
+            @autoreleasepool { (void)present_now(&it.t, fmax(it.period / 2, tick), it.frame, ticket, it.crop, nil, 0, it.interp); } }
+        @autoreleasepool { submitted = present_now(&it.t, show_interp ? it.period / 2 : it.period, it.frame, ticket, it.crop, nil, 0, -1); }
         pthread_mutex_lock(&g_pq_mu); g_classic_busy = 0; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
         if (!submitted) {
             pthread_mutex_lock(&g_pq_mu);
@@ -13493,6 +13597,12 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
         else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL: resuming the display link (frame %llu)", (unsigned long long)atomic_load(&g_cur_frame)); }
     }
     if (ws_on()) { static uint64_t f0; uint64_t f = atomic_load(&g_cur_frame); if (!f0) f0 = f; else if (f >= f0 + 300) { ws_report(f, f - f0); f0 = f; } }
+    int islot = -1; uint64_t iv = 0;   // frame interpolation: the picture shown before this frame (nvn_mfx.inc), in a slot no queued present names
+    if (t && !ev_val && mfx_interp_on()) {
+        unsigned busy = 0;
+        pthread_mutex_lock(&g_pq_mu); for (uint64_t k = g_pq_done + 1; k <= g_pq_in; k++) { const pq_item *q = &g_pq[(k - 1) % PQ]; if (q->interp >= 0) busy |= 1u << q->interp; } pthread_mutex_unlock(&g_pq_mu);
+        islot = mfx_present_frame(t, period, busy, &iv);
+    }
     tex_t snap; uint64_t ss = 0; int slot = 0;
     if (t && !ev_val && mtl_snap_on()) {
         slot = (int)(atomic_load(&g_snap_next) % (uint64_t)g_snap_n);
@@ -13500,7 +13610,7 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
     }
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // Wait only when the queue is full; normally AcquireTexture blocks first
-    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), ev_val, ss ? g_snap[slot].ev : 0};
+    pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), ev_val, ss ? g_snap[slot].ev : 0, islot, 0, iv};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
     if (ss) { g_snap[slot].ticket = tk; atomic_fetch_add(&g_snap_next, 1); }

@@ -20,6 +20,11 @@ int front_screen_max_fps(void);
 int front_display_pixels(int *w, int *h);
 // Whether the window's current screen mode supports variable refresh (Mac front_mac.m; none on iOS). Any thread
 int front_screen_variable_refresh(void);
+// HDR output (DM_HDR=1; Mac front_mac.m, none on iOS): the window's screen's EDR headroom, potential (1 on an SDR screen) and current. Any thread
+void front_screen_edr(float *potential, float *current);
+// HDR output: the layer the present draws into, 0 as made (BGRA8, SDR), 1 RGBA16Float extended linear BT.2020 with EDR, 2 the same in sRGB primaries. Called from the present thread;
+// the front end changes the layer on its main thread, and the present draws by each drawable's format
+void front_layer_hdr(int mode);
 // The frame rate the display link paces the game at (60, 30, 120; nvn_mtl.m link_sync): in fullscreen, a screen whose refresh rate is not a multiple of it is switched, while the game runs,
 // to a mode of the same size whose rate is, and back when the window leaves fullscreen or that screen (front_mac.m; none on iOS). Called from the present thread
 void front_screen_match(int fps);

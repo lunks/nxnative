@@ -47,11 +47,18 @@ int front_display_pixels(int *w, int *h) {
 }
 static _Atomic int g_screen_variable_refresh;
 int front_screen_variable_refresh(void) { return g_screen_variable_refresh; }
+// The window's screen's EDR headroom (HDR output, DM_HDR=1: hle_vi.c reports HDR on a screen whose potential headroom is above 1 and sizes the peak by it): potential is the most
+// the screen can show above SDR white (an XDR or HDR screen in HDR mode; 1 on an SDR screen), current what it shows now
+static _Atomic float g_edr_potential, g_edr_current;
+void front_screen_edr(float *potential, float *current) { *potential = g_edr_potential; *current = g_edr_current; }
 static void screen_refresh(NSScreen *screen) {   // main thread: refresh capabilities of the current screen and mode, including a mode change without moving the window
     if (!screen) return;
     g_screen_fps = (int)screen.maximumFramesPerSecond;
     g_screen_id = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
     g_screen_variable_refresh = screen.minimumRefreshInterval > 0 && screen.maximumRefreshInterval > screen.minimumRefreshInterval;
+    float pot = (float)screen.maximumPotentialExtendedDynamicRangeColorComponentValue, cur = (float)screen.maximumExtendedDynamicRangeColorComponentValue;
+    if (pot != g_edr_potential && getenv("DM_HDR") && atoi(getenv("DM_HDR")) > 0) LOG("front end: screen EDR headroom %.2f potential, %.2f now", pot, cur);
+    g_edr_potential = pot; g_edr_current = cur;
 }
 static _Atomic int g_fullscreen;   // the window is in fullscreen (set when it has entered and when it has left)
 // The software keyboard input box is up (front_text_input). The game window is not key then, which is not a focus change the game should see: on hardware the inline keyboard is drawn inside
@@ -113,6 +120,28 @@ static void screen_match_apply(void) {   // main thread: on a new frame rate, on
 void front_screen_match(int fps) {
     if (!g_layer || g_match_want == fps) return;   // no window (a windowless run's main thread runs the guest), or the rate as before
     g_match_want = fps; dispatch_async(dispatch_get_main_queue(), ^{ screen_match_apply(); });
+}
+// HDR output (nvn_mtl.m present_now, from the present thread when what it shows changes): mode 0 is the layer as made (BGRA8, its own colour space, no EDR); 1 and 2 an EDR layer of
+// half floats in extended linear BT.2020 (1) or sRGB primaries (2), 1.0 = SDR white. Set on the main thread; the present draws by the drawable's format, so the frames before the
+// change takes effect are drawn for the layer as it was
+static _Atomic int g_layer_hdr;
+static CGColorSpaceRef g_layer_cs0; static int g_layer_cs0_kept;   // main thread: the layer's own colour space, put back in mode 0
+void front_layer_hdr(int mode) {
+    if (!g_layer || g_layer_hdr == mode) return;   // only the present thread calls it
+    g_layer_hdr = mode;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_layer_hdr != mode) return;   // a later change is on its way
+        if (!g_layer_cs0_kept) { g_layer_cs0 = CGColorSpaceRetain(g_layer.colorspace); g_layer_cs0_kept = 1; }
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        if (mode) {
+            CGColorSpaceRef cs = CGColorSpaceCreateWithName(mode == 1 ? kCGColorSpaceExtendedLinearITUR_2020 : kCGColorSpaceExtendedLinearSRGB);
+            g_layer.pixelFormat = MTLPixelFormatRGBA16Float; g_layer.colorspace = cs; g_layer.wantsExtendedDynamicRangeContent = YES; CGColorSpaceRelease(cs);
+        } else { g_layer.wantsExtendedDynamicRangeContent = NO; g_layer.colorspace = g_layer_cs0; g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm; }
+        [CATransaction commit];
+        if (g_win.screen) screen_refresh(g_win.screen);
+        LOG("front end: layer %s (screen EDR headroom %.2f potential, %.2f now)", mode == 1 ? "RGBA16Float, extended linear BT.2020, EDR" : mode == 2 ? "RGBA16Float, extended linear sRGB, EDR" : "BGRA8Unorm, SDR",
+            (double)g_edr_potential, (double)g_edr_current);
+    });
 }
 // The pointer hides on game input while it is over the picture of the active game window (issue #675): AppKit shows it again when the mouse moves, input_release when
 // the window loses focus. The title bar, other windows and other apps keep theirs; the mouse is the touch screen (DmGameView), and moving it shows the pointer

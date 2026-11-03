@@ -63,6 +63,11 @@ DM_GPU_CAPTURE	diagnostic	`=<frame>[:<frames>]` or `gpu:<ms>[:<after frame>]` wr
 DM_GPU_CAPTURE_DIR	path	Folder for `DM_GPU_CAPTURE`'s traces (default `gpu_captures/` in the working directory)
 DM_GPU_CAPTURE_KEEP	diagnostic	Before each GPU capture, prunes the capture folder's `dm_*.gputrace` entries so that the newest `KEEP - 1` stay (default 2)
 DM_GUEST_SPAWN_TEST	diagnostic	`=1` runs a self-test before `nnMain`: a host-started guest thread does SDK malloc / free and locks an `nn::os` mutex, and the result is logged; `=2` also keeps a resident thread
+DM_HDR	switch	`1` (Mac): on a screen with EDR headroom the display reports HDR to a Switch 2 game, which renders its own HDR path, and the present shows it in an EDR layer (`hle_vi.c`, `nvn_mtl.m`); off by default (SDR, as before)
+DM_HDR_ENCODING	diagnostic	With `DM_HDR=1`: how the present decodes the game's 10-bit or half float window textures, `auto` (the default: ST 2084 PQ), `pq` or `linear` (scRGB, 1.0 = 80 nits)
+DM_HDR_GAMUT	diagnostic	With `DM_HDR=1`: the primaries of the game's HDR window textures, `auto` (the default: BT.2020 for PQ, BT.709 for linear), `2020` or `709`
+DM_HDR_PAPER_WHITE	switch	With `DM_HDR=1`: the paper white the display reports to the game and the level the present shows as SDR white, 80 to 1000 nits (default 203)
+DM_HDR_PEAK	switch	With `DM_HDR=1`: the peak in nits the display reports to the game, paper white to 10000 (default: the screen's potential EDR headroom × paper white)
 DM_HID_LOG	diagnostic	`1` logs the HID button usage number of each button pressed on a raw HID gamepad (`pad_hid_mac.h`), to write a `DM_HID_MAP`
 DM_HID_MAP	switch	`=<map>` such as `A=1,B=2,X=4,Y=5`: which HID button usage presses each Switch button on a raw HID gamepad (names A B X Y LS RS L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN; default 8BitDo's D-input numbering by position, `pad_hid.h`); Mac only
 DM_HID_PADS	switch	`0` stops reading raw HID gamepads that GameController does not list, such as an 8BitDo in its own mode (`pad_hid_mac.h`); Mac only
@@ -93,6 +98,9 @@ DM_MEMSTAT_DUMP	diagnostic	`=<seconds>`: with `DM_MEMSTAT`, at that second write
 DM_MEM_CAP_GB	switch	`=<GB>`: the memory watchdog exits when resident memory exceeds that many GB (default 24 on the Mac, none on iOS; `0` turns it off)
 DM_METAL_CAPTURE	diagnostic	`=1` makes `build_ipa.sh` produce a build that can write GPU frame captures (`MetalCaptureEnabled` in `Info.plist`), for `DM_GPU_CAPTURE`
 DM_METAL_HUD	player	`1` shows Apple's Metal performance HUD over the game (frame rate, frame and GPU time, memory)
+DM_MFX_INTERP	player	`1` makes a MetalFX frame-interpolated picture between two game frames and shows it on the 120 Hz display link before each frame (Mac; a game with its own upscaler and the profile's `camera_mats`; paused below 25 fps or on a screen slower than twice the game's rate); `0` (the default) off
+DM_MFX_MV_DYN	diagnostic	`0` gives every pixel the camera's motion; by default a pixel whose depth at its previous place does not match moved by itself and gets none (MetalFX temporal scaling and frame interpolation)
+DM_MFX_PROBE	diagnostic	`1` logs, for the first three frames of the game's upscaler, its rectangles and every depth pass of the frame with the camera read there (projection rows, near / far, field of view, jitter): what `camera_mats` and the motion vectors work from
 DM_MOTION	switch	`0` ignores live motion: every six-axis sensor lies flat as before (a shake still plays), and neither controllers' motion sensors nor the phone's device motion are switched on (`hle_hid.c`, `motion_apple.h`, `DmGamepad.m`); the NSP script's `--no-motion` (`MOTION = False`) builds it in
 DM_MOTION_ACC_SIGN	switch	`-1` flips only GameController's acceleration, for a source that reports the specific force (+1 G up at rest) instead of the gravity direction (`motion_fusion.h`); phone and raw HID samples are already in the Switch frame
 DM_MOTION_AXES	switch	`=<map>` such as `x,-z,y`: maps Apple's controller axes to the Switch's, a signed permutation applied to acceleration and rotation alike, for a controller whose axes differ (default `x,y,z`; phone and raw HID samples are already in the Switch frame)
@@ -347,7 +355,7 @@ DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen read with touch points (samp
 DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store on private depth-stencil and RGBA8 textures (clear, Load + DontCare, read back) and logs one result line
 DM_UE_SHADERS	path	Folder of the Unreal shader code archives decoded by `uepak.py`, for `shader_split.py` (default `ue_shaders` beside the RomFS); needed when the RomFS has Unreal paks
 DM_UE_TEXTURE_POOL	switch	Megabytes Unreal's texture streaming pool (`r.Streaming.PoolSize`) is raised to, overriding the profile's `ue_texture_pool`; `0` keeps the game's own pool. On iOS only this switch turns it on (`Documents/env.txt`)
-DM_UPSCALER	player	`metalfx` draws the game's own upscaler shaders (agl's NDSR network, found by the shader map) with MetalFX's spatial scaler; `game` (the default) runs them
+DM_UPSCALER	player	`metalfx` draws the game's own upscaler shaders (agl's NDSR network, found by the shader map) with MetalFX's spatial scaler, `metalfx-temporal` with its temporal scaler (the scene's depth and the camera's motion vectors; needs the profile's `camera_mats`, the spatial scaler for a frame without them); `game` (the default) runs them
 DM_VK_CAPTURE	path	`=<dir>` (Mac) writes every SPIR-V module the game creates to `<dir>/<key>.spv`; the NSP script's Vulkan shader capture stage sets it
 DM_VK_LOG	diagnostic	`=1` logs Vulkan object creation in the Vulkan-on-Metal layer
 DM_VSYNC_HZ	switch	`=<Hz>`: rate at which a host thread fires the vi vsync event when the display link does not drive it (default 60)

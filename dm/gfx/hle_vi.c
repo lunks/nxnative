@@ -1,6 +1,8 @@
 // nn::vi (display layer): on a real device, the vi service is used to open the display, create a layer and get the native window handle; the handle is passed to NVN's window builder.
 // Host: returns host static objects; when hooking up Metal, the native window corresponds to the front end's CAMetalLayer (front_metal_layer()).
 #include "../host/hle.h"
+#include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 
 static struct { uint32_t magic; } g_display = {0x50534944}, g_layer = {0x5259414c};
@@ -83,13 +85,64 @@ HLE_FORCE("_ZN2nn2vi8FinalizeEv", "display service shutdown; the host has no vi 
 
 // ---------- Switch 2 SDKs: HDR, VRR and extended swap intervals ----------
 // The SDK's versions check the display against its own default display object and forward the layer to vi2, whose layer object the host never made (Donkey Kong Bananza: a call
-// through null from SetLayerNextHdrContentGamutMetadata, main+0x2036f4). The host's output is SDR at a fixed refresh rate: no HDR output, no VRR, and the layer metadata has
-// nothing to apply to. HdrOutputFormat 0 is SDR; paper white is the BT.2408 reference, 203 nits, read only when HDR is on
-HLE_FORCE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", "display HDR status: SDR output (the host presents SDR)", Result, h_vi_HdrStatus,
+// through null from SetLayerNextHdrContentGamutMetadata, main+0x2036f4). The host has no VRR, and by default its output is SDR: HdrOutputFormat 0, and paper white the BT.2408
+// reference, 203 nits, which a game reads only when HDR is on.
+// HDR output (DM_HDR=1, Mac): on a screen with EDR headroom (front_screen_edr) the display reports HDR on, HdrOutputFormat 1 (what the SDK's SetDisplayHdrCapabilityPrivate
+// passes for HDR), a peak of the screen's potential headroom times paper white (DM_HDR_PEAK overrides it) and a paper white of DM_HDR_PAPER_WHITE (203). The game then takes
+// its own HDR path: Bananza switches its window textures from RGBA8 to RGB10A2 (RGBA16F when its config byte asks, main+0x199e30) and encodes them as ST 2084 PQ in absolute
+// nits (agl's alColorSpaceConvert: a 3x3 matrix, x paper white / 10000, the PQ curve). The present (nvn_mtl.m, HDR output) decodes those presents to extended linear light with
+// paper white at 1.0, into a half float EDR layer (front_layer_hdr). On a screen without headroom the display reports SDR again and the game goes back to RGBA8
+static struct { int on, paper, peak, enc, gamut; } g_hdr;   // DM_HDR; DM_HDR_PAPER_WHITE; DM_HDR_PEAK (0 = from the screen); DM_HDR_ENCODING (0 auto, 1 pq, 2 linear); DM_HDR_GAMUT (0 auto, 709, 2020)
+static _Atomic int g_hdr_told;          // the game has been told HDR is on: from then on its RGB10A2 / RGBA16F presents are HDR content
+static _Atomic uint32_t g_hdr_state;    // the last status answered, on | peak << 1 (a log line when it changes)
+void front_screen_edr(float *potential, float *current);   // front_mac.m (a weak default in nvn_mtl.m: none on iOS)
+static void hdr_cfg_init(void) {
+    const char *e = getenv("DM_HDR"); g_hdr.on = e && atoi(e) > 0;
+    e = getenv("DM_HDR_PAPER_WHITE"); int pw = e ? atoi(e) : 0; g_hdr.paper = pw >= 80 && pw <= 1000 ? pw : 203;
+    if (e && g_hdr.paper != pw) LOG("[RED] DM_HDR_PAPER_WHITE=%s: 80 to 1000 nits; keeping %d", e, g_hdr.paper);
+    e = getenv("DM_HDR_PEAK"); int pk = e ? atoi(e) : 0; g_hdr.peak = pk >= g_hdr.paper && pk <= 10000 ? pk : 0;
+    if (e && pk && !g_hdr.peak) LOG("[RED] DM_HDR_PEAK=%s: paper white to 10000 nits; the peak follows the screen", e);   // 0: the screen's, as the settings window sets it
+    e = getenv("DM_HDR_ENCODING"); g_hdr.enc = e && !strcmp(e, "pq") ? 1 : e && !strcmp(e, "linear") ? 2 : 0;
+    if (e && *e && strcmp(e, "auto") && !g_hdr.enc) LOG("[RED] DM_HDR_ENCODING=%s: auto, pq or linear; keeping auto", e);
+    e = getenv("DM_HDR_GAMUT"); g_hdr.gamut = e && !strcmp(e, "709") ? 709 : e && !strcmp(e, "2020") ? 2020 : 0;
+    if (e && *e && strcmp(e, "auto") && !g_hdr.gamut) LOG("[RED] DM_HDR_GAMUT=%s: auto, 709 or 2020; keeping auto", e);
+    if (g_hdr.on) LOG("HDR output (DM_HDR=1): on a screen with EDR headroom the display reports HDR, paper white %d nits, peak %s; encoding %s, primaries %s", g_hdr.paper,
+                      g_hdr.peak ? "DM_HDR_PEAK" : "the screen's potential headroom x paper white", g_hdr.enc == 1 ? "PQ" : g_hdr.enc == 2 ? "linear" : "auto (PQ)",
+                      g_hdr.gamut == 709 ? "BT.709" : g_hdr.gamut == 2020 ? "BT.2020" : "auto (BT.2020 for PQ, BT.709 for linear)");
+}
+static int hdr_cfg(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, hdr_cfg_init); return g_hdr.on; }
+// The present's view (nvn_mtl.m has a weak default): -1 = DM_HDR off, the present as before; 0 = on, but the game has not been told HDR, so its presents are SDR; 1 = a present in
+// RGB10A2 or RGBA16F (f16) is HDR content: *pq 1 = ST 2084 code values (absolute nits / 10000), 0 = linear (scRGB, 1.0 = 80 nits); *to_edr scales the decoded value to extended
+// range with paper white at 1.0; *bt2020 its primaries (BT.2020, else BT.709)
+int dm_vi_hdr_out(int f16, float *to_edr, int *pq, int *bt2020) {
+    if (!hdr_cfg()) return -1;
+    if (!atomic_load_explicit(&g_hdr_told, memory_order_relaxed)) return 0;
+    // auto is PQ for both formats: the only HDR encode in Bananza's shaders is PQ (alColorSpaceConvert, agl_common), and its RGBA16F choice changes the window format only
+    // (main+0x199e30); not confirmed on an RGBA16F run (DM_HDR_ENCODING=linear is the other reading)
+    (void)f16; int lin = g_hdr.enc == 2;
+    *pq = !lin; *to_edr = (lin ? 80.0f : 10000.0f) / (float)g_hdr.paper;
+    *bt2020 = g_hdr.gamut ? g_hdr.gamut == 2020 : !lin;
+    return 1;
+}
+HLE_FORCE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", "display HDR status: SDR output, or with DM_HDR=1 HDR on a screen with EDR headroom", Result, h_vi_HdrStatus,
           uint8_t *on, uint32_t *fmt, uint16_t *peak, const void *disp) {
-    (void)disp; if (on) *on = 0; if (fmt) *fmt = 0; if (peak) *peak = 0; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", "display HDR paper white: 203 nits (BT.2408); HDR is off", Result, h_vi_PaperWhite, uint16_t *nits, const void *disp) {
-    (void)disp; if (nits) *nits = 203; return RES_OK; }
+    (void)disp;
+    if (!hdr_cfg()) { if (on) *on = 0; if (fmt) *fmt = 0; if (peak) *peak = 0; return RES_OK; }
+    float pot = 0, cur = 0; front_screen_edr(&pot, &cur);
+    int hdr = pot > 1.01f, pk = !hdr ? 0 : g_hdr.peak ? g_hdr.peak : (int)fminf(fmaxf(pot * (float)g_hdr.paper, (float)g_hdr.paper), 10000.0f);
+    if (on) *on = (uint8_t)hdr;
+    if (fmt) *fmt = hdr ? 1 : 0;
+    if (peak) *peak = (uint16_t)pk;
+    if (hdr) atomic_store(&g_hdr_told, 1);
+    uint32_t st = (uint32_t)hdr | (uint32_t)pk << 1;
+    if (atomic_exchange(&g_hdr_state, st) != st) {
+        if (hdr) LOG("vi::QueryDisplayHdrStatus: HDR on, peak %d nits, paper white %d nits (screen EDR headroom %.2f potential, %.2f now)", pk, g_hdr.paper, pot, cur);
+        else LOG("vi::QueryDisplayHdrStatus: HDR off, the window's screen has no EDR headroom (potential %.2f): SDR", pot);
+    }
+    return RES_OK;
+}
+HLE_FORCE("_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE", "display HDR paper white: 203 nits (BT.2408), or DM_HDR_PAPER_WHITE", Result, h_vi_PaperWhite, uint16_t *nits, const void *disp) {
+    (void)disp; if (nits) *nits = (uint16_t)(hdr_cfg() ? g_hdr.paper : 203); return RES_OK; }
 HLE_FORCE("_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE", "display VRR: not supported (fixed refresh rate)", Result, h_vi_VrrSupported, uint8_t *on, const void *disp) {
     (void)disp; if (on) *on = 0; return RES_OK; }
 HLE_FORCE("_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb", "display VRR capability: the host has no VRR", Result, h_vi_SetVrr, void *disp, unsigned on) {
@@ -115,18 +168,26 @@ HLE_FORCE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", "layer exten
           void *layer, int a, int b) {
     (void)layer; static atomic_int once; if (!atomic_exchange(&once, 1)) LOG("vi::SetLayerExtendedSwapInterval %d %d: no VRR on the host, the NVN swap interval stays", a, b); return RES_OK; }
 HLE_FORCE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", "layer extended swap interval cleared", Result, h_vi_ExtSwapClear, void *layer) { (void)layer; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrGamut, void *layer, int g) {
-    (void)layer; (void)g; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrToneMap, void *layer, int m) {
-    (void)layer; (void)m; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrExtLum,
-          void *layer, uint32_t lo, uint32_t hi) { (void)layer; (void)lo; (void)hi; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrStdLum,
-          void *layer, uint32_t lo, uint32_t hi) { (void)layer; (void)lo; (void)hi; return RES_OK; }
+// The layer's HDR metadata, set before presents in HDR mode (Bananza: content gamut 1 and tone mapping 0 every frame, main+0x2036f4; the standard range up to its scaled paper white
+// and the extended range up to its peak, main+0x199e60). The host's EDR layer takes none (the game's own tone map already targets the peak the display reported); with DM_HDR=1
+// each value is logged when it changes, naming what the game asked for
+static _Atomic uint32_t g_hdr_meta[4] = {~0u, ~0u, ~0u, ~0u};   // gamut, tone mapping, standard range lo | hi << 16, extended range likewise
+static void hdr_meta(int i, uint32_t v, const char *what) {
+    if (atomic_exchange(&g_hdr_meta[i], v) == v || !hdr_cfg()) return;
+    if (i < 2) LOG("vi::SetLayerNextHdr%s %u", what, v); else LOG("vi::SetLayerNextHdr%s %u..%u nits", what, v & 0xffff, v >> 16);
+}
+HLE_FORCE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", "layer HDR metadata: logged; the host's layer takes none", Result, h_vi_HdrGamut, void *layer, int g) {
+    (void)layer; hdr_meta(0, (uint32_t)g, "ContentGamutMetadata"); return RES_OK; }
+HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", "layer HDR metadata: logged; the host's layer takes none", Result, h_vi_HdrToneMap, void *layer, int m) {
+    (void)layer; hdr_meta(1, (uint32_t)m, "ToSdrToneMappingMetadata"); return RES_OK; }
+HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: logged; the host's layer takes none", Result, h_vi_HdrExtLum,
+          void *layer, uint32_t lo, uint32_t hi) { (void)layer; hdr_meta(3, (lo & 0xffff) | (hi & 0xffff) << 16, "ExtendedContentLuminanceRangeMetadata"); return RES_OK; }
+HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", "layer HDR metadata: logged; the host's layer takes none", Result, h_vi_HdrStdLum,
+          void *layer, uint32_t lo, uint32_t hi) { (void)layer; hdr_meta(2, (lo & 0xffff) | (hi & 0xffff) << 16, "StandardContentLuminanceRangeMetadata"); return RES_OK; }
 // The rest of SDK 22's layer HDR metadata calls (the Bezier tone curve and the clears): the SDK forwards them through a table its graphics system fills, which is null on the host, so
 // unanswered they call through null (Mario Kart World 1.8.0 sets the curve every frame, by pull request #1116)
-HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "layer HDR metadata: SDR output, nothing to apply", Result, h_vi_HdrBezier,
+HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "layer HDR metadata: the host's layer takes none", Result, h_vi_HdrBezier,
           void *layer, float a, float b, float c) { (void)layer; (void)a; (void)b; (void)c; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrBezierClear, void *layer) { (void)layer; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi37ClearLayerNextHdrContentGamutMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrGamutClear, void *layer) { (void)layer; return RES_OK; }
-HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerE", "layer HDR metadata cleared: SDR output", Result, h_vi_HdrToneMapClear, void *layer) { (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerE", "layer HDR metadata cleared: the host's layer takes none", Result, h_vi_HdrBezierClear, void *layer) { (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi37ClearLayerNextHdrContentGamutMetadataEPNS0_5LayerE", "layer HDR metadata cleared: the host's layer takes none", Result, h_vi_HdrGamutClear, void *layer) { (void)layer; return RES_OK; }
+HLE_FORCE("_ZN2nn2vi41ClearLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerE", "layer HDR metadata cleared: the host's layer takes none", Result, h_vi_HdrToneMapClear, void *layer) { (void)layer; return RES_OK; }

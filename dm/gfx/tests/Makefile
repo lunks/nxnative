@@ -175,6 +175,9 @@ t_present_alloc: t_present_alloc.m $(MTL_T_DEP)
 .PHONY: check_t_present_alloc
 check_t_present_alloc: t_present_alloc
 	MTL_DEBUG_LAYER=1 ./t_present_alloc
+t_present_hdr: t_present_hdr.m hdr_vi_stub.c $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_present_hdr.m hdr_vi_stub.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+check_t_present_hdr: RUN_ENV = MTL_DEBUG_LAYER=1
 t_present_snap: t_present_snap.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_present_snap.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 .PHONY: check_t_present_snap
@@ -419,6 +422,16 @@ check_t_upscaler_mfx: t_upscaler_mfx
 	DM_NVN_ENC_THREAD=0 DM_UPSCALER=metalfx ./t_upscaler_mfx
 	DM_NVN_ENC_THREAD=1 DM_UPSCALER=metalfx ./t_upscaler_mfx
 	MTL_DEBUG_LAYER=1 ./t_upscaler_mfx
+# MetalFX temporal upscaling and frame interpolation at the game's own upscaler (nvn_mfx.inc): built for Donkey Kong Bananza's profile (its upscaler shaders and camera_mats); the camera
+# alone, then the temporal scaler and the interpolated picture with the encoding thread off and on, and the interpolation after the spatial scaler (no Metal validation, as above)
+t_mfx: t_mfx.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_mfx.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_mfx
+check_t_mfx: t_mfx
+	./t_mfx
+	DM_NVN_ENC_THREAD=0 DM_UPSCALER=metalfx-temporal DM_MFX_INTERP=1 ./t_mfx
+	DM_NVN_ENC_THREAD=1 DM_UPSCALER=metalfx-temporal DM_MFX_INTERP=1 ./t_mfx
+	DM_NVN_ENC_THREAD=0 DM_UPSCALER=metalfx DM_MFX_INTERP=1 ./t_mfx
 # NVN2's DLSS on MetalFX's temporal scaler, with and without the encoding thread (MetalFX encodes into the real command buffer; validation stops its Metal 4 scalers, as above)
 t_dlss_mfx: t_dlss_mfx.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_dlss_mfx.m $(MTL_T_SRC) $(FW)

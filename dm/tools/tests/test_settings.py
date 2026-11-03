@@ -37,6 +37,14 @@ class UpscalerSetting(unittest.TestCase):
             for gid,shown in [('040074A01BF12000',True),('010056B015FE8000',False)]:   # Donkey Kong Bananza (its NDSR network), NieR:Automata (none)
                 up=[s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_UPSCALER']
                 self.assertEqual(bool(up),shown,gid)
-                if up:self.assertEqual((up[0]['default'],up[0]['options']),('game',[['game',"Game's own"],['metalfx','MetalFX']]))
+                if up:self.assertEqual((up[0]['default'],up[0]['options']),('game',[['game',"Game's own"],['metalfx','MetalFX'],['metalfx-temporal','MetalFX temporal']]))
+    def test_frame_interpolation_needs_the_camera_and_the_mac(self):   # DM_MFX_INTERP: an upscaler of the game's own and camera_mats (DM_GAME_MFX_FRAMES), on the Mac only
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
+            (Path(tmp)/'main.fixups.tsv').write_text('')
+            for gid,platform,shown in [('040074A01BF12000','mac',True),('040074A01BF12000','ios',False),('010056B015FE8000','mac',False)]:
+                with patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
+                    fi=[s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_MFX_INTERP']
+                self.assertEqual(bool(fi),shown,(gid,platform))
+                if fi:self.assertEqual((fi[0]['kind'],fi[0]['default']),('toggle','0'))
 
 if __name__=='__main__':unittest.main()

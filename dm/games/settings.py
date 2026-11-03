@@ -17,6 +17,7 @@ SCHEMA = 1   # launcher.json's version (docs/launcher.schema.json); it grows onl
 META = {
     'level': r'basic',                       # a setting a front end shows first; without it, the front end decides
     'needs': r'DM_[A-Z0-9_]+=[^;=]+',        # <VAR>=<value>: a sub-setting, drawn only while the row that sets <VAR> has that value
+    'conflicts': r'DM_[A-Z0-9_]+=[^;=]+',    # <VAR>=<value>: held at its default, and drawn disabled, while the row that sets <VAR> has that value
 }
 
 
@@ -73,6 +74,7 @@ def build(gid, patched, control):
         return macros[name].strip('"')
 
     def shown(cond, n):
+        if '&' in cond: return all(shown(c, n) for c in cond.split('&'))   # every one of them
         if cond == 'always': return True
         if cond == 'languages>1': return len(langs) > 1
         if cond.startswith('fixups:'): return cond[7:] in keys
@@ -101,11 +103,12 @@ def build(gid, patched, control):
     out, table, base = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g)
     for n, (var, kind, values, default, cond, section, label, note, extra) in rows():
         m = meta(extra, n)
-        if 'needs' in m:
-            need, want = m['needs'].split('=', 1)
-            if need not in table: sys.exit(f'settings.tsv:{n}: needs names a variable no row sets: {m["needs"]}')
+        for key in ('needs', 'conflicts'):
+            if key not in m: continue
+            need, want = m[key].split('=', 1)
+            if need not in table: sys.exit(f'settings.tsv:{n}: {key} names a variable no row sets: {m[key]}')
             can = table[need]
-            if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
+            if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: {key} a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
         if not shown(cond, n): continue
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen

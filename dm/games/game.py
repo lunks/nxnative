@@ -204,6 +204,9 @@ def header_one(g):
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     ups = upscaler_keys(g)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
+    cm = g.words('camera_mats', '')   # the scene camera's uniform block, for MetalFX's motion vectors (nvn_mfx.inc): <vertex | fragment> <slot> <view offset> <view-projection offset>
+    if cm and (len(cm) != 4 or cm[0] not in ('vertex', 'fragment') or not cm[1].isdigit() or int(cm[1]) > 15 or not all(re.fullmatch(r'0x[0-9a-fA-F]+|\d+', w) for w in cm[2:]) or any(int(w, 0) % 16 for w in cm[2:])):
+        sys.exit(f'{g.id}: camera_mats takes <vertex | fragment> <slot 0-15> <view offset> <view-projection offset> (offsets 16-byte aligned): {" ".join(cm)}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
@@ -262,6 +265,9 @@ def header_one(g):
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
+         f'#define DM_GAME_CAM_MATS {int(bool(cm))}', f'#define DM_GAME_CAM_MATS_STAGE {int(bool(cm) and cm[0] == "fragment")}',
+         f'#define DM_GAME_CAM_MATS_SLOT {int(cm[1]) if cm else 0}', f'#define DM_GAME_CAM_MATS_VIEW {int(cm[2], 0) if cm else 0:#x}', f'#define DM_GAME_CAM_MATS_VP {int(cm[3], 0) if cm else 0:#x}',
+         f'#define DM_GAME_MFX_FRAMES {int(bool(cm) and bool(ups))}',   # the launcher's frame interpolation: an upscaler of the game's own to take the scene from, and the camera
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']
     return '\n'.join(L)
