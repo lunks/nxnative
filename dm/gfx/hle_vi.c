@@ -124,12 +124,27 @@ int dm_vi_hdr_out(int f16, float *to_edr, int *pq, int *bt2020) {
     *bt2020 = g_hdr.gamut ? g_hdr.gamut == 2020 : !lin;
     return 1;
 }
+// The peak the display reports on a screen of this potential headroom: 0 without headroom (SDR), else DM_HDR_PEAK, or the headroom x paper white (paper white to 10000 nits)
+static int hdr_peak(float pot) {
+    return pot <= 1.01f ? 0 : g_hdr.peak ? g_hdr.peak : (int)fminf(fmaxf(pot * (float)g_hdr.paper, (float)g_hdr.paper), 10000.0f);
+}
+float front_launch_edr_potential(void);   // front_mac.m (a weak default in nvn_mtl.m: 0 on iOS)
+// At launch (the setting patches chosen by the HDR peak, hle_cheats.c sp_quantity): the peak and paper white the display will report once the game asks, from the screen the
+// window opens on. 0 when DM_HDR is off or that screen has no headroom: the game then stays SDR, and a patch fitted to an HDR peak must not apply. A window moved later to a
+// screen of another headroom changes what the display reports, not what was patched
+int dm_vi_hdr_launch_peak(int *peak, int *paper) {
+    if (!hdr_cfg()) return 0;
+    int pk = hdr_peak(front_launch_edr_potential());
+    if (!pk) return 0;
+    *peak = pk; *paper = g_hdr.paper;
+    return 1;
+}
 HLE_FORCE("_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE", "display HDR status: SDR output, or with DM_HDR=1 HDR on a screen with EDR headroom", Result, h_vi_HdrStatus,
           uint8_t *on, uint32_t *fmt, uint16_t *peak, const void *disp) {
     (void)disp;
     if (!hdr_cfg()) { if (on) *on = 0; if (fmt) *fmt = 0; if (peak) *peak = 0; return RES_OK; }
     float pot = 0, cur = 0; front_screen_edr(&pot, &cur);
-    int hdr = pot > 1.01f, pk = !hdr ? 0 : g_hdr.peak ? g_hdr.peak : (int)fminf(fmaxf(pot * (float)g_hdr.paper, (float)g_hdr.paper), 10000.0f);
+    int hdr = pot > 1.01f, pk = hdr_peak(pot);
     if (on) *on = (uint8_t)hdr;
     if (fmt) *fmt = hdr ? 1 : 0;
     if (peak) *peak = (uint16_t)pk;

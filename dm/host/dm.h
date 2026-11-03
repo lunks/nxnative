@@ -154,7 +154,8 @@ void dm_guest_heap_range(uint64_t *base, size_t *open_len);   // hle_svc.c: the 
 int dm_guest_heap_read(uint64_t addr, void *out, size_t len);    // hle_svc.c: hole-free guest heap read for the cheat VM (under the memory lock); 0 = ok, 1 = a byte outside the opened span
 int dm_guest_heap_write(uint64_t addr, const void *src, size_t len);   // hle_svc.c: hole-free guest heap write (the dirty tracking sees it first)
 // Cheats (hle_cheats.c): Atmosphère-format cheat code files applied to the running game (docs/development.md "Cheats")
-void dm_cheats_init(void);            // Called once in host_preload after loading the modules (main.c): reads DM_CHEATS and friends, loads the build's file
+void dm_cheats_init(void);            // Called once in host_preload after loading the modules (main.c): applies the profile's setting patches, reads DM_CHEATS and friends, loads the build's file
+int dm_vi_hdr_launch_peak(int *peak, int *paper);   // dm/gfx/hle_vi.c: 1 and the HDR peak and paper white (nits) the display will report, when DM_HDR=1 and the screen has HDR headroom at launch; else 0
 void dm_cheats_present(void);         // Per presented frame (hle_nvn.c presents): applies the enabled cheats once
 // The Cheats submenu's rows (front_mac.m, Mac window only). Readers of the list of cheats; the front end copies the strings out immediately
 int dm_cheats_found(void);            // A cheat file is loaded (this build's, or another build's on DM_CHEATS_ANY_BUILD)

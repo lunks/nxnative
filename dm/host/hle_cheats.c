@@ -46,6 +46,8 @@
 //   - <build>.enabled names a duplicate name's later entries "Name #2", "Name #3", ...; a compiled file (one with a meta
 //     file) of a build without <build>.enabled takes its toggles from the newest other build's compiled from the same source
 //   - a load report (dm_cheats_report): counts, duplicate names, skipped lines, Atmosphère's size limits
+// The same write path serves the game profile's setting patches (setting_patches.tsv): code words a launcher setting
+// changes, verified and written once at launch, before any cheat loads; a cheat never writes over them (section below).
 // Switches of this file:
 //   DM_CHEATS=<folder>      cheats folder (default <DM_ROOT>/cheats; the flat layout with the Atmosphère tree under it)
 //   DM_CHEATS_ANY_BUILD=1   with no file of this build, load the folder's single .txt of another build, with a warning
@@ -580,25 +582,45 @@ static int changed_hit(uint64_t off, uint64_t len) {
 // Data is written through the alias too when there is one, else directly (those pages are read + write). The checks
 // run in a dry run too (main_write_check, before the description), so the preview says the write would stop the cheat
 static uint64_t main_rx_end(void) { static long pg; if (!pg) pg = getpagesize(); return (g_main_mod->text_end + pg - 1) & ~(uint64_t)(pg - 1); }
-static int main_write_check(cheat_t *c, uint64_t addr, uint64_t len) {
-    module_t *m = g_main_mod; uint64_t off = addr - (uint64_t)(uintptr_t)m->base;
+
+// Words of main that a setting patch wrote at launch (dm_setting_patches_apply, below), each with the setting that holds
+// it: a cheat's write over one is refused (the setting wins), and a cheat that stores into one is turned off at load
+#define SP_HELD_MAX 64
+static struct { uint64_t off; char who[96]; } g_sp_held[SP_HELD_MAX]; static int g_sp_nheld;
+static int sp_held_hit(uint64_t off, uint64_t len) {
+    for (int i = 0; i < g_sp_nheld; i++) if (g_sp_held[i].off < off + len && off < g_sp_held[i].off + 4) return i;
+    return -1;
+}
+
+// Why a write of len bytes at main+off may not happen (written into why, -1), or 0: past the game's image, code without
+// the writable alias, code without the rewriter's list, or a word the rewriter changed or moved. One place for the
+// cheats (main_write_check) and the setting patches (sp_apply_group)
+static int main_refusal(uint64_t off, uint64_t len, char *why, size_t n) {
+    module_t *m = g_main_mod;
     if (off + len > m->key_page_off) {
-        cheat_kill(c, "write at main+0x%llX is past the game's image (the host's key page and patch area)", (unsigned long long)off);
+        snprintf(why, n, "write at main+0x%llX is past the game's image (the host's key page and patch area)", (unsigned long long)off);
         return -1;
     }
     if (off < main_rx_end()) {   // the text, to its last page as the loader sealed it
         if (!g_alias) {
-            cheat_kill(c, "%s", TARGET_OS_IPHONE ? "code writes are not possible on the iPhone (the app's signed code pages)" : "code write without the writable alias of main");
+            snprintf(why, n, "%s", TARGET_OS_IPHONE ? "code writes are not possible on the iPhone (the app's signed code pages)" : "code write without the writable alias of main");
             return -1;
         }
         int k = g_changed_state == 1 ? changed_hit(off, len) : -2;
-        if (k == -2) { cheat_kill(c, "code write refused: no rewriter list of changed words (main.changed.tsv) for this build"); return -1; }
+        if (k == -2) { snprintf(why, n, "code write refused: no rewriter list of changed words (main.changed.tsv) for this build"); return -1; }
         if (k >= 0) {
-            cheat_kill(c, "writes main+0x%llX, which the rewriter changed or moved (main+0x%X..+0x%X)", (unsigned long long)off,
-                       g_changed[k][0], g_changed[k][0] + g_changed[k][1]);
+            snprintf(why, n, "writes main+0x%llX, which the rewriter changed or moved (main+0x%X..+0x%X)", (unsigned long long)off,
+                     g_changed[k][0], g_changed[k][0] + g_changed[k][1]);
             return -1;
         }
     }
+    return 0;
+}
+static int main_write_check(cheat_t *c, uint64_t addr, uint64_t len) {
+    uint64_t off = addr - (uint64_t)(uintptr_t)g_main_mod->base; char why[160];
+    if (main_refusal(off, len, why, sizeof why)) { cheat_kill(c, "%s", why); return -1; }
+    int h = sp_held_hit(off, len);
+    if (h >= 0) { cheat_kill(c, "main+0x%llX is held by %s (the setting wins)", (unsigned long long)g_sp_held[h].off, g_sp_held[h].who); return -1; }
     return 0;
 }
 static void main_write_pages(uint64_t addr, uint64_t len, const void *src) {
@@ -1753,6 +1775,173 @@ static void sources_scan(void) {
     closedir(d);
 }
 
+// ---------- setting patches: words of the game's code a launcher setting changes, written once at launch ----------
+//
+// A game profile's setting_patches.tsv (dm/games/README.md, Setting patches; game.py turns its write rows into
+// DM_GAME_SETTING_PATCHES) lists, per environment variable and value, the words to write: module, build ID, offset, the
+// original word and the new one. At launch, before the game's code runs (dm_cheats_init, from host_preload right after the
+// modules are loaded), each variable's value selects its rows; the rows of the module's own build form one group, applied
+// whole or not at all: every word must hold its original and pass the cheats' own write checks (main_refusal: not past the
+// image, the writable alias for code, not a word the rewriter changed or moved), else nothing of the group is written and a
+// [RED] line says why. A value with rows for other builds only is refused the same way: fixed addresses never run on a
+// build they were not found in. A variable unset, or set to a value without rows (the game's own, "game"), writes nothing.
+// A row may carry a condition on a quantity the host knows at launch (sp_quantity: the HDR peak ratio it will report), so one
+// value can choose among words: only the rows whose condition holds are written, and two that hold for the same word refuse.
+// The words written are held: a cheat that stores into one is turned off at load, and any cheat write over one is refused
+// (main_write_check), so a cheat's on / off pair can never undo the setting or fight it. Only main's code is written (the
+// one module with a writable alias); on the iPhone no code page is writable, so a group with code words is refused there.
+// The settings are chosen before Play and hold for the whole session: there is no change while the game runs
+typedef struct { const char *var, *value, *label, *module, *build; uint64_t off; uint32_t orig, new_; const char *when; } setting_patch_t;
+
+// A quantity a row's condition (when) may test, as the host knows it at launch: 0 and its value, or -1 when it has none now.
+//   hdr_peak  the HDR peak / paper white the display will report to the game (hle_vi.c dm_vi_hdr_launch_peak: DM_HDR=1 and a screen with
+//             EDR headroom at launch; DM_HDR_PEAK or the screen's headroom x paper white), so a patch can fit what the game is told
+static int sp_quantity(const char *name, double *out, char *desc, size_t n) {
+    if (!strcmp(name, "hdr_peak")) {
+        int peak = 0, paper = 0;
+        if (!dm_vi_hdr_launch_peak(&peak, &paper) || paper <= 0) { snprintf(desc, n, "hdr_peak unknown: HDR off or no screen with HDR headroom at launch"); return -1; }
+        *out = (double)peak / paper;
+        snprintf(desc, n, "hdr_peak %.2f: peak %d / paper white %d nits", *out, peak, paper);
+        return 0;
+    }
+    snprintf(desc, n, "%s: no such quantity", name);
+    return -1;
+}
+
+// Does a row's condition hold ("" always; terms <quantity><op><number> joined by &, game.py WHEN)? desc names the quantity's value
+static int sp_when(const char *when, char *desc, size_t n) {
+    if (!when || !*when) return 1;
+    char buf[160]; snprintf(buf, sizeof buf, "%s", when);
+    for (char *save = NULL, *t = strtok_r(buf, "&", &save); t; t = strtok_r(NULL, "&", &save)) {
+        size_t k = strcspn(t, "<>"); if (!t[k]) return 0;
+        char name[32]; snprintf(name, sizeof name, "%.*s", (int)k, t);
+        int le = t[k] == '<', eq = t[k + 1] == '='; double lim = atof(t + k + 1 + eq), v;
+        if (sp_quantity(name, &v, desc, n)) return 0;
+        if (!(le ? (eq ? v <= lim : v < lim) : (eq ? v >= lim : v > lim))) return 0;
+    }
+    return 1;
+}
+
+// Turn off, at load, every cheat that stores into a word a setting holds (opcode 0 into main, the region the shadow /
+// HDR-style code patches use; a write computed at run time is refused by main_write_check instead). The cheat shows in
+// the menu as off with the setting's name, and one line per cheat says so
+static void sp_cheats_yield(void) {
+    for (int i = 0; i < g_ncheat && g_sp_nheld; i++) {
+        cheat_t *c = &g_cheat[i];
+        if (c->label || c->broken || c->nd) continue;
+        for (int k = 0; k < c->nins;) {
+            ins_t in; int len = ins_dec(c, c->ins + k, c->nins - k, &in);
+            if (len <= 0) break;
+            k += len;
+            if (in.op != 0 || (in.m != 0 && in.m < 5)) continue;   // a store into main (5..F are main's too)
+            int h = sp_held_hit(in.rel, in.t);
+            if (h < 0) continue;
+            c->broken = 1;
+            snprintf(c->why, sizeof c->why, " (off: %s holds main+0x%llX)", g_sp_held[h].who, (unsigned long long)g_sp_held[h].off);
+            LOG("cheats: \"%s\" writes main+0x%llX, which %s holds: the cheat is off for this session (the setting wins; set it back to the game's default to use the cheat)",
+                c->name, (unsigned long long)g_sp_held[h].off, g_sp_held[h].who);
+            break;
+        }
+    }
+}
+
+// The module of the loader's table by name (not an NRO), NULL when the profile has none
+static module_t *sp_module(const char *name) {
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, name) && !g_mod[i].nro) return &g_mod[i];
+    return NULL;
+}
+
+// One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written
+static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val) {
+    const setting_patch_t *g[SP_HELD_MAX], *first = NULL; int ng = 0, nbuild = 0, conds = 0; char cond[160] = "";
+    for (int i = 0; i < n; i++) {
+        if (strcmp(t[i].var, var) || strcmp(t[i].value, val)) continue;
+        if (!first) first = &t[i];
+        module_t *m = sp_module(t[i].module);
+        if (!m || strcasecmp(m->build_id, t[i].build)) continue;
+        nbuild++;
+        if (t[i].when && *t[i].when) conds = 1;
+        if (sp_when(t[i].when, cond, sizeof cond) && ng < SP_HELD_MAX) g[ng++] = &t[i];   // rows whose condition does not hold now are not this launch's
+    }
+    if (!first) {   // a value without rows: the game's own code ("game", the default), or one this profile does not patch
+        LOG("setting %s=%s: no patch for this value, the game's own code runs", var, val);
+        return 0;
+    }
+    if (!nbuild) {   // rows for other builds only (another version of the game, or a module without a build ID)
+        module_t *m = sp_module(first->module);
+        LOG("[RED] setting %s=%s (%s): not applied: its patch is for %s build %s, and this %s is build %s (fixed addresses run only on the build they were found in)",
+            var, val, first->label, first->module, first->build, first->module, m && m->build_id[0] ? m->build_id : "unknown");
+        return 0;
+    }
+    if (!ng) {   // conditions none of which holds at this launch (HDR on, but no screen with HDR headroom): the game's own code, as intended
+        LOG("setting %s=%s: no patch row's condition holds (%s): nothing written, the game's own code runs", var, val, cond[0] ? cond : "?");
+        return 0;
+    }
+    const char *label = g[0]->label;   // the chosen row's (a value with conditions: the one whose condition holds)
+    for (int i = 0; i < ng; i++) for (int k = 0; k < i; k++) if (g[i]->off == g[k]->off) {
+        LOG("[RED] setting %s=%s: not applied, nothing written: two rows for main+0x%llX hold together (%s; %s): their conditions overlap", var, val, (unsigned long long)g[i]->off, g[k]->label, g[i]->label);
+        return 0;
+    }
+    for (int i = 0; i < ng; i++) if (strcmp(g[i]->module, "main") || !g_main_mod) {
+        LOG("[RED] setting %s=%s (%s): not applied: it writes module %s, and setting patches write only main's code", var, val, label, g[i]->module);
+        return 0;
+    }
+    if (!g_alias) {   // the writable alias of main, mapped once (as for a picked cheat file), and the rewriter's list beside it
+        alias_setup();
+        if (g_alias) LOG("setting patches: writable alias of main mapped");
+    }
+    if (g_alias) changed_load();
+    char why[160]; int bad = 0;
+    for (int i = 0; i < ng && !bad; i++) {   // verify every word before writing any
+        uint64_t off = g[i]->off; uint32_t now;
+        if (main_refusal(off, 4, why, sizeof why)) { bad = 1; break; }
+        memcpy(&now, (uint8_t *)g_main_mod->base + off, 4);
+        if (now != g[i]->orig) { snprintf(why, sizeof why, "main+0x%llX holds %08X, not the original %08X the patch was made for", (unsigned long long)off, now, g[i]->orig); bad = 1; }
+        else if (sp_held_hit(off, 4) >= 0) { snprintf(why, sizeof why, "main+0x%llX is already written by %s", (unsigned long long)off, g_sp_held[sp_held_hit(off, 4)].who); bad = 1; }
+    }
+    if (bad || g_sp_nheld + ng > SP_HELD_MAX) {
+        LOG("[RED] setting %s=%s (%s): not applied, nothing written: %s", var, val, label, bad ? why : "too many held words");
+        return 0;
+    }
+    char list[1024]; size_t used = 0; list[0] = 0;
+    for (int i = 0; i < ng; i++) {
+        uint64_t off = g[i]->off; uint32_t w = g[i]->new_;
+        main_write_pages((uint64_t)(uintptr_t)g_main_mod->base + off, 4, &w);
+        g_sp_held[g_sp_nheld].off = off;
+        snprintf(g_sp_held[g_sp_nheld].who, sizeof g_sp_held[0].who, "the setting %s=%s", var, val);
+        g_sp_nheld++;
+        int k = snprintf(list + used, sizeof list - used, "%smain+0x%llX %08X -> %08X", i ? ", " : "", (unsigned long long)off, g[i]->orig, w);
+        if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
+    }
+    LOG("setting %s=%s (%s): %d word%s written: %s%s%s%s", var, val, label, ng, ng == 1 ? "" : "s", list, conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
+    return ng;
+}
+
+// Apply a table of setting patches (the profile's DM_GAME_SETTING_PATCHES; the unit test passes its own): each variable
+// once, by its value in the environment. Returns the words written
+static int sp_apply(const setting_patch_t *t, int n) {
+    int done = 0;
+    for (int i = 0; i < n; i++) {
+        int first = 1;
+        for (int k = 0; k < i; k++) if (!strcmp(t[k].var, t[i].var)) { first = 0; break; }
+        if (!first) continue;
+        const char *v = getenv(t[i].var);
+        if (v && *v) done += sp_apply_group(t, n, t[i].var, v);
+    }
+    return done;
+}
+
+#if DM_GAME_SETTING_PATCHES_N
+static const setting_patch_t k_setting_patches[] = DM_GAME_SETTING_PATCHES;
+#endif
+
+// The profile's setting patches, at launch (dm_cheats_init: the modules are loaded, the game's code has not run)
+static void setting_patches_init(void) {
+#if DM_GAME_SETTING_PATCHES_N
+    sp_apply(k_setting_patches, DM_GAME_SETTING_PATCHES_N);
+#endif
+}
+
 // (Re)load: choose the file, note the other builds, parse, read the meta file and the values, link pairs, restore the
 // states, build the report. Called at init and from "Reload cheats" (safe mode and the master switch stay as they are)
 static void load_all(void) {
@@ -1814,6 +2003,7 @@ static void load_all(void) {
     parse_file(g_path);
     meta_load(g_path);
     pairs_link();
+    sp_cheats_yield();   // a cheat storing into a word a setting patch holds is off (the setting wins)
     values_load();
     states_load();
     // the summary: masters are always on, a broken / empty cheat never runs, the rest keep the menu's saved state
@@ -1874,9 +2064,11 @@ void dm_cheats_init(void) {
         }
         free(dup);
     }
+    // for the main module the pass needs its base: the loader's g_mod tables them by name
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !g_mod[i].nro) { g_main_mod = &g_mod[i]; break; }
+    setting_patches_init();   // the launcher settings' code patches, before any cheat is loaded (whose writes over them are then refused)
     if (!g_dir[0]) { LOG("cheats: off (neither DM_CHEATS nor DM_ROOT is set)"); }
-    else {   // for the main module the pass needs its base: the loader's g_mod tables them by name
-        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !g_mod[i].nro) { g_main_mod = &g_mod[i]; break; }
+    else {
         folder_flags();
         if (g_main_mod) { pthread_mutex_lock(&g_lock); load_all(); pthread_mutex_unlock(&g_lock); }   // load_all maps the writable alias once a file is picked
         atexit(dm_cheats_exit);   // exit() paths (⌘Q, closing the window); dm_host_exit's _exit calls it itself

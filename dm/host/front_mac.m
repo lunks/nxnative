@@ -51,6 +51,13 @@ int front_screen_variable_refresh(void) { return g_screen_variable_refresh; }
 // the screen can show above SDR white (an XDR or HDR screen in HDR mode; 1 on an SDR screen), current what it shows now
 static _Atomic float g_edr_potential, g_edr_current;
 void front_screen_edr(float *potential, float *current) { *potential = g_edr_potential; *current = g_edr_current; }
+// At launch (host_preload, on the main thread before front_run makes the window, which opens on the main screen): the main screen's potential headroom, for the setting
+// patches chosen by the HDR peak (hle_cheats.c, hle_vi.c dm_vi_hdr_launch_peak). Once the window is up, its own screen's
+float front_launch_edr_potential(void) {
+    if (g_edr_potential > 0) return g_edr_potential;
+    if (!pthread_main_np()) return 0;   // AppKit's screens from the main thread only (an early background preload has none)
+    @autoreleasepool { NSScreen *s = NSScreen.mainScreen; return s ? (float)s.maximumPotentialExtendedDynamicRangeColorComponentValue : 0; }
+}
 static void screen_refresh(NSScreen *screen) {   // main thread: refresh capabilities of the current screen and mode, including a mode change without moving the window
     if (!screen) return;
     g_screen_fps = (int)screen.maximumFramesPerSecond;

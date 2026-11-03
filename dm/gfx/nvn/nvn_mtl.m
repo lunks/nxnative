@@ -12679,6 +12679,7 @@ static void present_pipeline(MTLPixelFormat format) {
 // from sRGB the same way. DM_HDR unset: dm_vi_hdr_out answers -1 and the present is the standard pass, unchanged
 __attribute__((weak)) int dm_vi_hdr_out(int f16, float *to_edr, int *pq, int *bt2020) { (void)f16; (void)to_edr; (void)pq; (void)bt2020; return -1; }   // hle_vi.c
 __attribute__((weak)) void front_screen_edr(float *potential, float *current) { *potential = *current = 0; }   // front_mac.m; graphics unit tests and iOS have none
+__attribute__((weak)) float front_launch_edr_potential(void) { return 0; }   // front_mac.m (hle_vi.c dm_vi_hdr_launch_peak); iOS has none: no HDR output there
 __attribute__((weak)) void front_layer_hdr(int mode) { (void)mode; }   // front_mac.m; graphics unit tests and iOS have none
 static int pf_hdr_src(MTLPixelFormat pf) { return pf == MTLPixelFormatRGB10A2Unorm || pf == MTLPixelFormatRGBA16Float; }
 // fs_hdr's parameters (present.metal CropHdr.hdr) for src drawn into dst; 0 = the standard pass. *hdr_src: src is the game's HDR content

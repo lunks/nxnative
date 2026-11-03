@@ -89,6 +89,58 @@ class CameraMats(unittest.TestCase):   # camera_mats: the scene camera for Metal
             self.assertIn('camera_mats takes', header_with(f'camera_mats\t{bad}\n'), bad)
 
 
+BID = '0123456789abcdef0123456789abcdef'
+
+
+def with_patches(table):
+    """The synthetic profile (one main build, BID) with this setting_patches.tsv: its DM_GAME_SETTING_PATCHES lines, or the exit message"""
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, ID).mkdir()
+        (Path(d, ID) / 'game.tsv').write_text(TSV + f'build\tv1\t1.0\tmain={BID}\n')
+        (Path(d, ID) / 'setting_patches.tsv').write_text(table)
+        r = subprocess.run([sys.executable, str(GAME), 'header', ID, str(Path(d, ID) / 'game.h')], env={**os.environ, 'DM_GAMES_DIR': d}, capture_output=True, text=True)
+        return [l for l in (Path(d, ID) / 'game.h').read_text().splitlines() if 'SETTING_PATCHES' in l] if r.returncode == 0 else r.stderr
+
+
+class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes at launch for a variable's value, keyed by the module's build ID (hle_cheats.c)
+    def test_macros(self):
+        self.assertEqual(header_with('').count('#define DM_GAME_SETTING_PATCHES_N 0'), 1)   # no table: no rows, no array
+        self.assertNotIn('#define DM_GAME_SETTING_PATCHES {', header_with(''))
+        rows = with_patches('# comment\nDM_X\tgame\tGame default\t-\n'
+                            f'DM_X\tbig\tBig\tmain\t{BID.upper()}\t0x1000\t5281001A\t5282001a\n'
+                            f'DM_X\tbig\tBig\tmain\t{BID}\t0x1004\tF2C1001A\tF2C2001A\n')
+        self.assertEqual(rows, ['#define DM_GAME_SETTING_PATCHES_N 2',
+                                f'#define DM_GAME_SETTING_PATCHES {{{{"DM_X", "big", "Big", "main", "{BID}", 0x1000, 0x5281001Au, 0x5282001Au, ""}}, '
+                                f'{{"DM_X", "big", "Big", "main", "{BID}", 0x1004, 0xF2C1001Au, 0xF2C2001Au, ""}}}}'])
+
+    def test_refused(self):
+        w = f'main\t{BID}\t0x1000\t5281001A\t5282001A'
+        for table, why in [(f'DM_X\tbig\tBig\tmain\t{"f" * 32}\t0x1000\t5281001A\t5282001A\n', 'is not one of the profile\'s build rows'),
+                           (f'DM_X\tbig\tBig\tsdk\t{BID}\t0x1000\t5281001A\t5282001A\n', 'is not one of the profile\'s modules'),
+                           (f'DM_X\tbig\tBig\tmain\t{BID}\t0x1002\t5281001A\t5282001A\n', '4-aligned'),
+                           (f'DM_X\tbig\tBig\tmain\t{BID}\t0x1000\t5281001A\t5281001A\n', 'two different 32-bit words'),
+                           (f'DM_X\tbig\tBig\tmain\t{BID}\t0x1000\t5281001\t5282001A\n', 'two different 32-bit words'),
+                           (f'DM_X\tbig\tBig\t{w}\nDM_Y\t1\tY\t{w}\n', 'already written by DM_X'),
+                           (f'DM_X\tbig\tBig\t{w}\nDM_X\tbig\tBig\t{w}\n', 'written twice'),
+                           (f'X\tbig\tBig\t{w}\n', 'DM_<NAME>'), (f'DM_X\tbig\t\t{w}\n', 'no label'), ('DM_X\tbig\tBig\tmain\n', '8 or 9 columns expected')]:
+            with self.subTest(why=why):
+                self.assertIn(why, with_patches(table))
+        self.assertEqual(len(with_patches(f'DM_X\tbig\tBig\t{w}\nDM_X\thuge\tHuge\tmain\t{BID}\t0x1000\t5281001A\t5283001A\n')), 2)   # two values of one variable may share a word
+
+    def test_conditions(self):   # one value choosing its word by a quantity the host knows at launch (hdr_peak: the HDR peak / paper white)
+        w = f'main\t{BID}\t0x1000\tBD401961'
+        rows = with_patches(f'DM_HDR\t1\tK 0.25\t{w}\t1E2A1001\thdr_peak<=3.31\nDM_HDR\t1\tK 0.125\t{w}\t1E281001\thdr_peak>3.31\n')
+        self.assertEqual(rows[0], '#define DM_GAME_SETTING_PATCHES_N 2')
+        self.assertIn('0xBD401961u, 0x1E2A1001u, "hdr_peak<=3.31"}', rows[1])
+        self.assertIn('"hdr_peak>3.31"}', rows[1])
+        for table, why in [(f'DM_HDR\t1\tA\t{w}\t1E2A1001\thdr_peak<=3\nDM_HDR\t1\tB\t{w}\t1E281001\n', 'written twice'),   # a row without a condition shares no word
+                           (f'DM_HDR\t1\tA\t{w}\t1E2A1001\thdr_peak<=3\nDM_HDR\t1\tB\t{w}\t1E281001\thdr_peak<=3\n', 'written twice'),
+                           (f'DM_HDR\t1\tA\t{w}\t1E2A1001\tpeak<=3\n', 'when is <quantity><op><number>'),
+                           (f'DM_HDR\t1\tA\t{w}\t1E2A1001\thdr_peak=3\n', 'when is <quantity><op><number>')]:
+            with self.subTest(why=why, table=table):
+                self.assertIn(why, with_patches(table))
+
+
 if __name__ == '__main__':
     unittest.main()
 

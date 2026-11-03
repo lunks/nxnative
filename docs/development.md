@@ -61,7 +61,9 @@ On top of the format (`hle_cheats.c`; the `dm_cheat*` calls of `dm.h` give them 
 - **Safe mode** (Mac only: an iOS app usually ends killed). While some cheat runs, the folder holds `.cheats-running-<title ID>`; a clean exit (`exit`, or `dm_host_exit` before its `_exit`) removes it. A launch that finds it starts with every cheat off, masters too, with a `[RED]` line. The saved toggles are kept, and come back when the player restores them or turns a cheat on.
 - **Load report.** `dm_cheats_report` gives the counts, duplicate names, ignored or split lines, carried-over toggles, safe mode, the master switch, left-out cheats, and Atmosphère's limits (0x80 cheats, 0x100 words per cheat, 0x400 enabled words: a Switch refuses past them, this host does not).
 
-`dm/host/tests/t_cheats.c` covers the opcodes and this layer on a synthetic image.
+- **Setting patches.** A game profile's `setting_patches.tsv` turns a code patch into a launcher setting: written once at launch, before the cheat file loads, through the same write path and checks, whole or not at all, keyed by the module's full build ID. A cheat that would write over its words is turned off; the setting wins ([Setting patches](reference/cheats.md#setting-patches); format in [dm/games/README.md](../dm/games/README.md#setting-patches)).
+
+`dm/host/tests/t_cheats.c` covers the opcodes and this layer on a synthetic image, the setting patches included.
 
 ### Cheats that survive game updates
 

@@ -47,4 +47,27 @@ class UpscalerSetting(unittest.TestCase):
                 self.assertEqual(bool(fi),shown,(gid,platform))
                 if fi:self.assertEqual((fi[0]['kind'],fi[0]['default']),('toggle','0'))
 
+class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches: the profile's setting_patches.tsv, for the build being packed (main's BUILD_ID), on the Mac
+    DKB,DKB_MAIN='040074A01BF12000','e25c90c1c136638885659fd55bf8a03b'
+    def rows(self,gid,fixups,platform='mac'):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
+            (Path(tmp)/'main.fixups.tsv').write_text(fixups)
+            return {s['env']:s for s in settings.build(gid,tmp,'unused')['settings'] if s['env'] in ('DM_SHADOW_RES','DM_SHADOW_MAP_SIZE')}
+    def test_bananza_shadow_rows(self):
+        r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')
+        self.assertEqual(list(r),['DM_SHADOW_RES','DM_SHADOW_MAP_SIZE'])
+        self.assertEqual((r['DM_SHADOW_RES']['kind'],r['DM_SHADOW_RES']['section'],r['DM_SHADOW_RES']['default']),('choice','Game','game'))
+        self.assertEqual(r['DM_SHADOW_RES']['options'],[['game','Game default'],['full','Full (no dynamic scaling)']])
+        self.assertEqual((r['DM_SHADOW_MAP_SIZE']['default'],r['DM_SHADOW_MAP_SIZE']['options']),('game',[['game','Game default (2048)'],['3072','3072'],['4096','4096']]))
+        self.assertIn('crash',r['DM_SHADOW_MAP_SIZE']['note'])
+        self.assertNotIn('level',r['DM_SHADOW_RES'])   # advanced settings
+    def test_hidden_without_a_patch_for_the_build(self):
+        for gid,fixups,platform in [(self.DKB,'# BUILD_ID\t'+'0'*32+'\n','mac'),(self.DKB,'','mac'),(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n','ios'),('010056B015FE8000','# BUILD_ID\t3c10ec35c5ef4c3686b4053afb0e58e7\n','mac')]:
+            self.assertEqual(self.rows(gid,fixups,platform),{},(gid,fixups,platform))   # another build, no build ID, the iPhone (no code writes), a game without setting patches
+    def test_patches_values_need_their_condition(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
+            (Path(tmp)/'settings.tsv').write_text('DM_SHADOW_RES\tchoice\tpatches\tgame\talways\tGame\tShadow resolution\n')
+            with patch.object(settings,'HERE',Path(tmp)),self.assertRaisesRegex(SystemExit,'values patches needs the condition patches:DM_SHADOW_RES'):
+                settings.build('010056B015FE8000',tmp,'unused')
+
 if __name__=='__main__':unittest.main()

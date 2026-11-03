@@ -1,0 +1,25 @@
+# Setting patches (dm/games/README.md, Setting patches): words of the game's code the host writes at launch when a setting has a value, each after checking the original word on the build it was found in.
+# variable	value	label	module	build	offset	original	new	[when]   (a label row: variable value label -)
+# Shadows (static analysis of main e25c90c1… / v458752, checked against the rewriter's main.changed.tsv: no word is one the rewriter changed; README.md, Shadow settings)
+# Shadow resolution: the per-frame shadow size (main+0x8186c) scales the preset size by max(renderW / 1920, renderH / 1080); fcsel s0,s0,s1,gt -> fmov s0,#1.0 keeps the full preset size
+DM_SHADOW_RES	game	Game default	-
+DM_SHADOW_RES	full	Full (no dynamic scaling)	main	e25c90c1c136638885659fd55bf8a03b	0x81914	1E21CC00	1E2E1000
+# Shadow map size: the quality presets built at stage start (main+0x6edda4) all ask for 2048: mov w26,#0x800 (Console, Handheld) and movk x26,#0x800,lsl #32 (UltraQuality, HighQuality)
+DM_SHADOW_MAP_SIZE	game	Game default (2048)	-
+DM_SHADOW_MAP_SIZE	3072	3072	main	e25c90c1c136638885659fd55bf8a03b	0x6edf74	5281001A	5281801A
+DM_SHADOW_MAP_SIZE	3072	3072	main	e25c90c1c136638885659fd55bf8a03b	0x6ee01c	F2C1001A	F2C1801A
+DM_SHADOW_MAP_SIZE	4096	4096	main	e25c90c1c136638885659fd55bf8a03b	0x6edf74	5281001A	5282001A
+DM_SHADOW_MAP_SIZE	4096	4096	main	e25c90c1c136638885659fd55bf8a03b	0x6ee01c	F2C1001A	F2C2001A
+# HDR highlights (DM_HDR=1, the HDR setting; no row of its own; README.md, HDR highlights): agl's alHdrCompose takes each channel through a normalised logistic of steepness K before its
+# shoulder (n(c) = (s(K(c-w)) - s(-Kw)) / (s(K(1-w)) - s(-Kw)), w = DRSigmoidMid 0.5, L = 1 - exp(-luma(n)), shoulder knee 0.65, exponent 0.75, top M = peak / paper white).
+# main+0x1b9af0 ldr s1,[x11,#0x18] loads K (DRSigmoidGain, the stage environment's env+0x708: the class default 1.0 in every Env archive of v458752, written by nothing at run time),
+# which caps the brightest pixel at 1.33 x paper white whatever the peak. fmov s1,#K sets it: for each band of hdr_peak (the reported peak / paper white), the largest K fmov encodes
+# whose modelled ceiling is at least 98 % of the peak (edges from the captured frame's fit, w 0.484, rounded down: up to 0.06 below w 0.5's, and at least 98 % for both)
+DM_HDR	1	K 0.5 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E2C1001	hdr_peak<=1.08
+DM_HDR	1	K 0.4375 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E2B9001	hdr_peak>1.08&hdr_peak<=1.19
+DM_HDR	1	K 0.375 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E2B1001	hdr_peak>1.19&hdr_peak<=1.38
+DM_HDR	1	K 0.3125 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E2A9001	hdr_peak>1.38&hdr_peak<=1.81
+DM_HDR	1	K 0.25 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E2A1001	hdr_peak>1.81&hdr_peak<=3.31
+DM_HDR	1	K 0.21875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E299001	hdr_peak>3.31&hdr_peak<=5.98
+DM_HDR	1	K 0.1875 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E291001	hdr_peak>5.98&hdr_peak<=15.6
+DM_HDR	1	K 0.15625 (modelled ceiling at least 98 % of the peak)	main	e25c90c1c136638885659fd55bf8a03b	0x1b9af0	BD401961	1E289001	hdr_peak>15.6

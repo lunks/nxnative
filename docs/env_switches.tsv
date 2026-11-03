@@ -63,7 +63,7 @@ DM_GPU_CAPTURE	diagnostic	`=<frame>[:<frames>]` or `gpu:<ms>[:<after frame>]` wr
 DM_GPU_CAPTURE_DIR	path	Folder for `DM_GPU_CAPTURE`'s traces (default `gpu_captures/` in the working directory)
 DM_GPU_CAPTURE_KEEP	diagnostic	Before each GPU capture, prunes the capture folder's `dm_*.gputrace` entries so that the newest `KEEP - 1` stay (default 2)
 DM_GUEST_SPAWN_TEST	diagnostic	`=1` runs a self-test before `nnMain`: a host-started guest thread does SDK malloc / free and locks an `nn::os` mutex, and the result is logged; `=2` also keeps a resident thread
-DM_HDR	switch	`1` (Mac): on a screen with EDR headroom the display reports HDR to a Switch 2 game, which renders its own HDR path, and the present shows it in an EDR layer (`hle_vi.c`, `nvn_mtl.m`); off by default (SDR, as before)
+DM_HDR	switch	`1` (Mac): on a screen with EDR headroom the display reports HDR to a Switch 2 game, which renders its own HDR path, and the present shows it in an EDR layer (`hle_vi.c`, `nvn_mtl.m`); also selects the profile's setting patches of `DM_HDR` `1` (`setting_patches.tsv`: Donkey Kong Bananza's HDR highlights, chosen by the peak at launch); off by default (SDR, as before)
 DM_HDR_ENCODING	diagnostic	With `DM_HDR=1`: how the present decodes the game's 10-bit or half float window textures, `auto` (the default: ST 2084 PQ), `pq` or `linear` (scRGB, 1.0 = 80 nits)
 DM_HDR_GAMUT	diagnostic	With `DM_HDR=1`: the primaries of the game's HDR window textures, `auto` (the default: BT.2020 for PQ, BT.709 for linear), `2020` or `709`
 DM_HDR_PAPER_WHITE	switch	With `DM_HDR=1`: the paper white the display reports to the game and the level the present shows as SDR white, 80 to 1000 nits (default 203)
@@ -315,6 +315,8 @@ DM_SCREEN_FOV	diagnostic	`off` with DM_SCREEN_ASPECT: the scene keeps the game's
 DM_SCREEN_HUD	diagnostic	`=<edge>,<listed>,<full width>,<full height>[,<tallest>]` with DM_SCREEN_ASPECT: the layout rules' distances and sizes in the 1280x720 space (default 280,100,1270,710,1300)
 DM_SCREEN_MATCH	switch	`0` keeps the screen's refresh rate in fullscreen; by default a Mac screen whose rate is not a multiple of the game's frame rate switches to one that is (144 → 120 Hz)
 DM_SF_TRACE	diagnostic	`=1` logs every request on the game's own HIPC client sessions that the host answers (`hle_sf.c`)
+DM_SHADOW_MAP_SIZE	player	A game's setting patch (its profile's `setting_patches.tsv`, written at launch, Mac only): the shadow map size its quality presets ask for, `game` (the default: the game's own) or a size the profile patches (Donkey Kong Bananza: `3072`, `4096`)
+DM_SHADOW_RES	player	A game's setting patch (its profile's `setting_patches.tsv`, written at launch, Mac only): `full` keeps the shadow map at its preset size when the game lowers its render resolution; `game` (the default) scales it as the game does (Donkey Kong Bananza)
 DM_SHAKE_G	switch	`=<G>`: on iOS, the acceleration beyond gravity above which a flick of the phone shakes the controller's six-axis sensor (default 1.5)
 DM_SHARED_FONT	path	Font file served for every shared-font type except the Nintendo extension (default `$DM_FONT_DIR/standard.ttf`, then macOS's Arial Unicode)
 DM_SHARED_FONT_EXT	path	Font file served for shared-font type 5, the Nintendo extension with the button icons (default `$DM_FONT_DIR/nintendo_ext.ttf`, made by `make_ext_font.py`)

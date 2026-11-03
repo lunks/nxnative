@@ -116,6 +116,50 @@ def upscaler_keys(g):
     return sorted(keys)
 
 
+SETTING_PATCHES = 'setting_patches.tsv'
+WHEN_QUANTITIES = ('hdr_peak',)   # what a setting patch row's condition may test, as the host knows it at launch (hle_cheats.c sp_quantity): hdr_peak = the HDR peak / paper white it reports
+WHEN = re.compile(r'(' + '|'.join(WHEN_QUANTITIES) + r')(<=|>=|<|>)(\d+(?:\.\d+)?)')
+
+
+def setting_patches(g):
+    """The profile's setting patches (setting_patches.tsv; dm/games/README.md, Setting patches): memory writes the host makes at launch when an
+    environment variable has a value, each verified against its original word on the module build it was found in. A list of dicts, in table order:
+    var, value, label and, for a write row, module, build (32 hex digits, lower case), offset, orig, new (ints) and when (a condition on a quantity the
+    host knows at launch, '' for none); a label row (module "-") has no write. Every write row's build must be one of the profile's build rows for that
+    module, so no fixed address reaches a build it was not found in; one word is written by one variable only (two values of one variable may write the
+    same word: only one value is ever chosen), and once per value unless each of its rows has a condition (the host refuses two that hold together)"""
+    p = g.table(SETTING_PATCHES)
+    if not p.exists(): return []
+    builds = {(m, b) for row in g.builds().values() for m, b in row.items() if m != 'display'}
+    out, owner, seen = [], {}, {}
+    for n, line in enumerate(p.read_text(encoding='utf-8').splitlines(), 1):
+        if not line.strip() or line.startswith('#'): continue
+        c = [v.strip() for v in line.split('\t')]
+        where = f'{p}:{n}'
+        if len(c) == 4 and c[3] == '-': c += [''] * 4
+        if len(c) == 8: c.append('')
+        if len(c) != 9: sys.exit(f'{where}: 8 or 9 columns expected (variable value label module build offset original new [when]), or 4 for a label row (module -): {len(c)} found')
+        var, value, label, mod, build, off, orig, new, when = c
+        if when and not all(WHEN.fullmatch(t) for t in when.split('&')): sys.exit(f'{where}: when is <quantity><op><number>, joined by &, the quantities {", ".join(WHEN_QUANTITIES)}, the ops < <= > >=: {when}')
+        if not re.fullmatch(r'DM_[A-Z0-9_]+', var): sys.exit(f'{where}: the variable is DM_<NAME>: {var}')
+        if not re.fullmatch(r'[A-Za-z0-9_.+-]+', value): sys.exit(f'{where}: the value is one word of letters, digits, _ . + -: {value}')
+        if not label: sys.exit(f'{where}: no label (the option\'s name in the settings window, and the host\'s log line)')
+        r = {'var': var, 'value': value, 'label': label}
+        if mod != '-':
+            if mod not in g.words('modules'): sys.exit(f'{where}: module {mod} is not one of the profile\'s modules ({g.get("modules")})')
+            if (mod, build.lower()) not in builds: sys.exit(f'{where}: {mod} build {build} is not one of the profile\'s build rows: fixed addresses only run on a build they were found in')
+            if not re.fullmatch(r'0x[0-9a-fA-F]+', off) or int(off, 16) % 4: sys.exit(f'{where}: the offset is a 4-aligned hex image offset (0x...): {off}')
+            if not all(re.fullmatch(r'[0-9a-fA-F]{8}', w) for w in (orig, new)) or orig.upper() == new.upper(): sys.exit(f'{where}: original and new are two different 32-bit words, 8 hex digits each: {orig} {new}')
+            r.update(module=mod, build=build.lower(), offset=int(off, 16), orig=int(orig, 16), new=int(new, 16), when=when)
+            word = (mod, r['build'], r['offset'])
+            if owner.setdefault(word, var) != var: sys.exit(f'{where}: {mod}+{off} is already written by {owner[word]}: one word, one variable (the two would fight)')
+            prev = seen.get((var, value) + word)
+            if prev is not None and (not prev or not when or prev == when): sys.exit(f'{where}: {mod}+{off} is written twice by {var}={value} (only rows with different conditions may share a word)')
+            seen[(var, value) + word] = when
+        out.append(r)
+    return out
+
+
 def header(g):
     """game_profile.h of a profile: one profile's constants, or with the key programs (a multi-program application packed as one game: Super Mario 3D All-Stars) a table of its programs' profiles"""
     return header_multi([(0, g)] + [(int(n), load(i)) for n, i in g.pairs('programs')]) if g.get('programs', '') else header_one(g)
@@ -218,6 +262,8 @@ def header_one(g):
     if dmo not in ('gl', 'zero'): sys.exit(f'{g.id}: depth_mode must be gl or zero: {dmo}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
+    sp = [r for r in setting_patches(g) if 'module' in r]   # the write rows, in table order (hle_cheats.c sp_apply)
+    spi = ', '.join('{' + ', '.join((q(r['var']), q(r['value']), q(r['label']), q(r['module']), q(r['build']), f'{r["offset"]:#x}', f'0x{r["orig"]:08X}u', f'0x{r["new"]:08X}u', q(r['when']))) + '}' for r in sp)
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
     L = [f'// Generated by dm/games/game.py from {src}/game.tsv; do not edit',
          '#pragma once',
@@ -269,6 +315,9 @@ def header_one(g):
          f'#define DM_GAME_CAM_MATS_SLOT {int(cm[1]) if cm else 0}', f'#define DM_GAME_CAM_MATS_VIEW {int(cm[2], 0) if cm else 0:#x}', f'#define DM_GAME_CAM_MATS_VP {int(cm[3], 0) if cm else 0:#x}',
          f'#define DM_GAME_MFX_FRAMES {int(bool(cm) and bool(ups))}',   # the launcher's frame interpolation: an upscaler of the game's own to take the scene from, and the camera
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
+         # setting patches (setting_patches.tsv): {variable, value, label, module, build ID, offset, original word, new word, condition} per write, applied at launch (hle_cheats.c)
+         f'#define DM_GAME_SETTING_PATCHES_N {len(sp)}',
+         *([f'#define DM_GAME_SETTING_PATCHES {{{spi}}}'] if sp else []),
          '']
     return '\n'.join(L)
 

@@ -60,6 +60,27 @@ def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
 UNKNOWN_LANGUAGES = 'This game\'s files do not list its languages, so some of these may not be in the game. It may then show another one.'
 
 
+def fixups_build(path):   # the module's build ID (lower case) from its rewriter table's BUILD_ID row, '' without one
+    if not path.is_file(): return ''
+    m = re.search(r'^# BUILD_ID\t([0-9a-fA-F]+)', path.read_text(encoding='utf-8'), re.M)
+    return m[1].lower() if m else ''
+
+
+def patch_options(g, patched):
+    """{variable: [[value, label], ...]}: the values the profile's setting patches (game.setting_patches) offer for the build being packed, in table
+    order: its label rows (the game's own value, no write) and the values with writes for that build of their module (each module's rewriter table names
+    its build). A variable with no write for this build is absent: its setting is not shown (the host would refuse every value)"""
+    builds, out, writes = {}, {}, set()
+    for r in game.setting_patches(g):
+        if 'module' in r:
+            if r['module'] not in builds: builds[r['module']] = fixups_build(Path(patched) / f'{r["module"]}.fixups.tsv')
+            if builds[r['module']] != r['build']: continue
+            writes.add(r['var'])
+        opts = out.setdefault(r['var'], [])
+        if r['value'] not in [o[0] for o in opts]: opts.append([r['value'], r['label']])
+    return {v: o for v, o in out.items() if v in writes}
+
+
 def build(gid, patched, control):
     platform = os.environ.get('SETTINGS_PLATFORM') or 'ios'
     if platform not in ('ios', 'mac'): sys.exit(f'SETTINGS_PLATFORM must be ios or mac: {platform}')
@@ -68,6 +89,7 @@ def build(gid, patched, control):
     keys = fixups_keys(Path(patched) / 'main.fixups.tsv')
     have = nacp.languages(control)
     langs = [(c, n) for c, n in nacp.LANGUAGES if not have or c in have]   # no list (a dump or a NUP has no control data, none of its packages may): any language may be the game's, as DM_LANG and the NSP script's check take it
+    popts = patch_options(g, patched)   # the values of the profile's setting patches for this build (patches:<VAR>, values patches)
 
     def macro(name, n):
         if name not in macros: sys.exit(f'settings.tsv:{n}: no {name} in the game profile header (game.py header)')
@@ -78,6 +100,7 @@ def build(gid, patched, control):
         if cond == 'always': return True
         if cond == 'languages>1': return len(langs) > 1
         if cond.startswith('fixups:'): return cond[7:] in keys
+        if cond.startswith('patches:'): return cond[8:] in popts
         if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
         if cond.startswith('platform:'): return platform == cond[9:]
         m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
@@ -97,7 +120,7 @@ def build(gid, patched, control):
 
     def takes(kind, values):   # the values a row's variable can take, for needs; None when any (a range, the game's languages)
         if kind == 'toggle': return {'1', '0'} if values == '-' else set(values.split('/'))
-        if kind == 'choice' and values != 'languages': return {v.split('?', 1)[0].split('=', 1)[0] for v in values.split(',')}
+        if kind == 'choice' and values not in ('languages', 'patches'): return {v.split('?', 1)[0].split('=', 1)[0] for v in values.split(',')}
         return None
 
     out, table, base = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g)
@@ -116,7 +139,8 @@ def build(gid, patched, control):
             def offered(v):   # value=label?cond&cond: an option only some games or platforms have
                 parts = v.split('?', 1)
                 return len(parts) == 1 or all(shown(c, n) for c in parts[1].split('&'))
-            opts = [list(l) for l in langs] if values == 'languages' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
+            if values == 'patches' and var not in popts: sys.exit(f'settings.tsv:{n}: values patches needs the condition patches:{var} (the profile\'s setting patches for this build)')
+            opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first
             s['options'] = opts

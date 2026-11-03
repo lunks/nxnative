@@ -19,6 +19,7 @@
 #   cheat_anchor.py import  <cheats.txt> --nso <ExeFS/main of the file's build> -o <game>.cheats.toml
 #   cheat_anchor.py compile <game>.cheats.toml --nso <ExeFS/main of the target build> -o <cheats folder> [--plain] [--replace]
 #   cheat_anchor.py check   <game>.cheats.toml --nso <ExeFS/main of the target build>
+#   cheat_anchor.py settings <base game title ID> --nso <ExeFS/main>   (the profile's setting_patches.tsv rows of that build: original words, rewritten words)
 # Needs Python 3.11+ (tomllib) and the README's packages (lz4, capstone). Exit status: 0 everything resolved, 2 some cheats
 # were skipped or kept bound to one build (the file is still written; the report says why), 1 an error (nothing written).
 import argparse, bisect, datetime, hashlib, re, struct, sys, tomllib
@@ -1405,6 +1406,35 @@ def write_compiled(out_dir, src_path, build, entries, src, replace):
     return lines
 
 
+def check_setting_patches(gid, build):
+    """The game profile's setting patches (dm/games/<gid>/setting_patches.tsv, game.setting_patches) for this NSO's build, held to the checks a
+    compiled patch gets: each word in the text, holding its original in this build, and not one the rewriter changed (its output beside the NSO,
+    when the NSP script's layout has one). Returns (report lines, problems); a build without rows is reported, not a problem."""
+    sys.path.insert(0, str(TOOLS.parent / 'games'))
+    import game
+    full = Path(build.path).read_bytes()[0x40:0x50].hex()   # the module build ID the profile and the host key by (32 hex digits)
+    rows = [r for r in game.setting_patches(game.load(gid)) if 'module' in r and r['module'] == 'main' and r['build'] == full]
+    if not rows: return [f'setting patches: no write for main build {full} in {gid}'], 0
+    out, bad, runs = [], 0, []
+    changed = build.patched.with_name('main.changed.tsv') if build.patched else None   # the words the rewriter changed or moved (the host's own refusal list)
+    if changed and changed.is_file():
+        runs = [tuple(int(v, 16) for v in l.split('\t')[:2]) for l in changed.read_text().splitlines() if l.startswith('0x')]
+    for r in rows:
+        a = r['offset']; what = f'{r["var"]}={r["value"]} at {hexu(a)}'
+        now = build.word(a) if build.where(a, 4) == 'text' else None
+        rw = build.rewritten(a, 4)
+        moved = next((o for o, n in runs if o < a + 4 and a < o + n), None)
+        if now is None: why = 'not in the text'
+        elif now != r['orig']: why = f'holds {now:08X}, not the original {r["orig"]:08X}'
+        elif rw is not None and int.from_bytes(rw, 'little') != now: why = f'the rewriter changed it ({rw[::-1].hex().upper()}): the host refuses it'
+        elif moved is not None: why = f'the rewriter changed or moved the run at {hexu(moved)} (main.changed.tsv): the host refuses it'
+        else: why = ''
+        bad += bool(why)
+        ok = '%08X -> %08X checked' % (r['orig'], r['new']) + ('' if rw is not None else ' (no rewriter output beside the NSO: rewritten words not checked)')
+        out.append(f'[RED] setting patch {what}: {why}' if why else f'setting patch {what}: {ok}')
+    return out, bad
+
+
 def main(argv=None):
     """The command line: import, compile or check (see the header); returns the exit status."""
     ap = argparse.ArgumentParser(description='Anchor Atmosphère cheats to the game\'s code (import) and compile them for any build (compile, check).')
@@ -1420,9 +1450,15 @@ def main(argv=None):
         if name == 'compile':
             p.add_argument('-o', required=True, help='the cheats folder')
             p.add_argument('--replace', action='store_true', help='replace a <build>.txt this tool did not write, kept as .orig')
+    p = sub.add_parser('settings', help='check a game profile\'s setting patches (setting_patches.tsv) against the NSO\'s build')
+    p.add_argument('game', help='the profile, by base game title ID'); p.add_argument('--nso', required=True, help='ExeFS/main of the build')
     a = ap.parse_args(argv)
     try:
         build = Build(a.nso)
+        if a.cmd == 'settings':
+            report, bad = check_setting_patches(a.game, build)
+            print('\n'.join(report))
+            return 1 if bad else 0
         if a.cmd == 'import':
             if Path(a.o).exists() and not a.force: raise AnchorError(f'{Path(a.o).resolve()} exists (--force overwrites it)')
             src, report, bound = import_file(a.txt, build, a.assume_build)

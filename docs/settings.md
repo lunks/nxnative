@@ -3,7 +3,7 @@
 The screen before the game starts shows the settings the game supports. A setting that only matters while another is on appears under it and disappears when that one is turned off. Tap **Play** to start; the app remembers your choices for the next start. All settings are on one scrollable screen, under **Game**, **Controls** and **Performance**. Tap a menu or move a slider there; no settings page needs opening. **Upscaling** is in **Game**, beside **Console mode**. A Mac app shows the same settings in a [window of its own](#the-mac-settings-window).
 
 - [Tested defaults](#tested-defaults)
-- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Frame interpolation](#frame-interpolation), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
+- [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Frame interpolation](#frame-interpolation), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -82,6 +82,16 @@ On the Mac, for games whose profile names their own upscaler and their camera (D
 - **Cost:** about 3 ms of GPU time per interpolated picture on an M5 Pro (measured at 2304x1296; it now works at the window's size), and about half a game frame more latency (the newer frame waits one refresh behind its interpolated picture). Moving characters and transparent effects can show small artefacts where the motion is only the camera's.
 - In `env.txt`: `DM_MFX_INTERP=1`.
 
+### Shadow resolution
+
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** lets the shadows lose detail when the game lowers its resolution in busy scenes, as on a Switch. **Full (no dynamic scaling)** keeps them at their full size, for a little more GPU time. It changes the game's code when the game starts.
+
+### Shadow map size
+
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: shadows may be cut off, or the game may crash, most likely when the map opens. If that happens, set it back to **Game default**. It changes the game's code when the game starts.
+
+The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
+
 ### Game language
 
 The game's own languages. The app was packed with one of them; pick another here without repacking. A game packed from a dump or a NUP may come without its list: every language is offered then, with a note, and a game that lacks the one you pick may show another.
@@ -105,6 +115,7 @@ Mac only: **HDR** in the settings window's Advanced settings, or `DM_HDR=1` in t
 - `DM_HDR_PAPER_WHITE` (80 to 1000 nits, default 203): the game's white for its HUD and menus, shown as the Mac's SDR white. Raise it if the game looks dim next to other windows, or lower it if it looks too bright.
 - `DM_HDR_PEAK` (nits): the brightest level the game aims for. By default the app works it out from what the screen reports (its EDR headroom × paper white).
 - Moving the window to an SDR screen turns the game back to SDR within a frame or two, and moving it back turns HDR on again.
+- Donkey Kong Bananza: with HDR on, the app also changes one value of the game's code when the game starts, so that highlights reach the peak instead of stopping near 300 nits. It is chosen from the peak (**HDR peak**, or the screen's) and the screen the window opens on. Without HDR, or on a screen without HDR at start, nothing changes.
 - [How it works, and what wrong colours mean](reference/rendering.md#hdr-output-from-the-games-own-hdr-path).
 
 ## Controls
@@ -287,6 +298,8 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
+| Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
+| Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
 | Metal 4 pipelines | `DM_PSO_MTL4` | `1`, `0` |
 | Pipeline prebuild | `DM_PSO_PREBUILD` | `1`, `0` |

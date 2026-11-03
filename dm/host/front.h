@@ -22,6 +22,9 @@ int front_display_pixels(int *w, int *h);
 int front_screen_variable_refresh(void);
 // HDR output (DM_HDR=1; Mac front_mac.m, none on iOS): the window's screen's EDR headroom, potential (1 on an SDR screen) and current. Any thread
 void front_screen_edr(float *potential, float *current);
+// HDR output at launch, before the window exists: the screen the window will open on's potential EDR headroom (front_screen_edr's once the window is up; the main screen's
+// before, read on the main thread only, else 0). Mac front_mac.m; 0 on iOS
+float front_launch_edr_potential(void);
 // HDR output: the layer the present draws into, 0 as made (BGRA8, SDR), 1 RGBA16Float extended linear BT.2020 with EDR, 2 the same in sRGB primaries. Called from the present thread;
 // the front end changes the layer on its main thread, and the present draws by each drawable's format
 void front_layer_hdr(int mode);

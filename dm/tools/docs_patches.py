@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Writes docs/agents/game-patches.md, the index of game-specific code: per game, the rewriter's patches of its builds (CUTS, OBS, FRAME_STEP sites, MATCH_CUTS and CAPABILITIES of its
-# dm/games/<id>/patches.py, with each patch's reason), the host's rows keyed by its build IDs (32-hex string literals in dm/host and dm/gfx), and each patch's binding (below); then the SDK
+# dm/games/<id>/patches.py, with each patch's reason), its setting patches (setting_patches.tsv), the host's rows keyed by its build IDs (32-hex string literals in dm/host and dm/gfx), and each patch's binding (below); then the SDK
 # cuts of dm/tools/sdk_patches.py by sdk build and the games that ship it, the SDK-wide function-matched rules, translator rules keyed by a shader's code hash, and the profile keys that switch
 # host behaviour away from their default, with the games that set them. The gaps (patches bound tighter than they could be) are listed first: the work list. Frame-step sites are found by running each
 # FRAME_STEP function against a recording context (no game files). Run it after changing a patch file, a build-keyed host table or a profile key; --check only reports whether the page is
@@ -89,6 +89,9 @@ SHADER_BINDING = [
     ('Tears of the Kingdom 1.4.3 visibility counter', {'what': 'one vertex shader\'s visibility counter (VertexCounterLowering)', 'now': 'game', 'goal': 'host', 'purpose': 'shaders',
      'why': 'a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way'}),
 ]
+# A profile's setting patches (setting_patches.tsv, game.setting_patches): code words a launcher setting changes, written by the host at launch on the build they were found in
+SETTING_BINDING = {'what': 'setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
+                   'why': "fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function"}
 # Profile switches: (key, the start of its value ('' = any), entry). A key is per-game data, so `game`; its goal is `host` where it is the semantics every game should get
 DEFAULT_SOON = 'a default for every game after `regress.py check` on the games'
 SWITCH_BINDING = [
@@ -273,12 +276,14 @@ def page():
     summary, sections = [], []
     for g in gs:
         m = mods.get(g.id)
-        if not m and g.id not in host_games: continue
+        sp = [r for r in game.setting_patches(g) if 'module' in r]   # the write rows of its setting patches
+        if not m and g.id not in host_games and not sp: continue
         text = files[g.id].read_text() if m else ''
         cuts, obs, fs, mc, caps = (getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP', 'MATCH_CUTS', 'CAPABILITIES'))
-        bids = list(dict.fromkeys([*cuts, *obs, *fs, *caps, *sorted(host_games.get(g.id, ()))]))
+        bids = list(dict.fromkeys([*cuts, *obs, *fs, *caps, *(r['build'] for r in sp), *sorted(host_games.get(g.id, ()))]))
         n_fs = 0; lines = [f'### {name(g)}', '', f'{note(g)}, `{g.id}`' + (f', {link(files[g.id])}' if m else '') + '.', '']
         es = list(bound(m, rel(files[g.id]), own=True)) if m else []
+        if sp: es.append(SETTING_BINDING)
         for b in sorted(host_games.get(g.id, ())):
             for _, _, _, e in host.get(b, []):
                 if not any(same(x) == same(e) for x in es): es.append(e)
@@ -300,6 +305,8 @@ def page():
                 if fold: lines += ['', '  </details>', '']
                 if scale: lines.append('  - render scale stub (the launcher offers DM_RENDER_SCALE)')
             if caps.get(bid): lines.append(f'  - launcher capabilities: {", ".join(caps[bid])}')
+            for r in (r for r in sp if r['build'] == bid):
+                lines.append(f'  - setting patch `{r["module"]}+{r["offset"]:#x}` (`{r["var"]}={r["value"]}`, {r["label"]}): `{r["orig"]:08X}` → `{r["new"]:08X}` ({link(g.table(game.SETTING_PATCHES))})')
             for p, n, what, _ in host.get(bid, []): lines.append(f'  - host {link(p, n)}: {what}')
         for module, rules in mc.items():
             for r in rules:
@@ -310,7 +317,7 @@ def page():
         kinds = {}
         for e in es: kinds[arrow(e)] = kinds.get(arrow(e), 0) + 1
         summary.append(f'| [{name(g)}](#{slug(name(g))}) | {sum(map(len, cuts.values()))} | {sum(map(len, obs.values()))} | {n_fs} | '
-                       f'{sum(len(v) for v in mc.values())} | {n_host} | {", ".join(k + (f" ×{n}" if n > 1 else "") for k, n in kinds.items())} |')
+                       f'{sum(len(v) for v in mc.values())} | {n_host} | {len(sp)} | {", ".join(k + (f" ×{n}" if n > 1 else "") for k, n in kinds.items())} |')
 
     orphans = [f'- {short(bid)}: {link(p, n)}: {what}' for bid, rows in host.items() if bid not in builds for p, n, what, _ in rows]
     sdk_bind = bound(sdk, rel(SDK))
@@ -373,7 +380,7 @@ def page():
          '| Now → goal | Patch | Purpose | Status | Evidence | Games | Where | Why |', '|---|---|---|---|---|---|---|---|',
          *[f'| {arrow(e)} | {e["what"]} | {e["purpose"]} | {status(e)} | {checked(e)} | {len(ids) or "—"} | {"; ".join(w)} | {e["why"]} |' for e, w, ids in gaps], '',
          '## Summary', '',
-         '| Game | Cuts | Gates | Frame-step sites | Function-matched rules | Host rows | Binding |', '|---|---|---|---|---|---|---|',
+         '| Game | Cuts | Gates | Frame-step sites | Function-matched rules | Host rows | Setting patches | Binding |', '|---|---|---|---|---|---|---|---|',
          *summary, '',
          '## Games', '', *sections,
          '## SDK cuts', '',
