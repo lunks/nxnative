@@ -71,6 +71,48 @@ int main(void) {
         linit(local, 4000, 216, 3, NULL, n);
         CHECK(blanks_live == 0 && !limg(local, 0), "a size out of the SDK's range makes no image");
     }
+    // GameChat with no chat (Star Fox, SDK 21.4.4): nobody chatting, no room, applets closed, no remote streams, an inert virtual camera
+    typedef struct { uint64_t v[2]; } uid_t16;
+    uid_t16 (*chatting)(void) = hook("_ZN2nn4chat14GetChattingUidEv");
+    Result (*room)(void *) = hook("_ZN2nn4chat11GetRoomInfoEPNS0_8RoomInfoE");
+    void (*levels)(float *, int, const void *, int) = hook("_ZN2nn4chat22GetRealtimeAudioLevelsEPNS0_10AudioLevelEiPKNS_7account23NetworkServiceAccountIdEi");
+    Result (*start)(const void *) = hook("_ZN2nn4chat13ShowChatStartERKNS_7account3UidE");
+    Result (*camcfg)(int) = hook("_ZN2nn4chat28ShowLocalCameraConfigurationENS0_25CameraImageProcessingModeE");
+    Result (*rstart)(const uint64_t *) = hook("_ZN2nn4chat26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE");
+    void (*lnext)(uint64_t *, void *, int, uint64_t, uint64_t) = hook("_ZN2nn4chat27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_");
+    void (*vinit)(void *) = hook("_ZN2nn4chat23InitializeVirtualCameraEPNS0_17VirtualCameraTypeE");
+    void *(*vwin)(const void *) = hook("_ZN2nn4chat34GetVirtualCameraNativeWindowHandleEPKNS0_17VirtualCameraTypeE");
+    void (*vfini)(void *) = hook("_ZN2nn4chat21FinalizeVirtualCameraEPNS0_17VirtualCameraTypeE");
+    const char *const others[] = {"_ZN2nn4chat13SetSharingKeyERKNS0_10SharingKeyE", "_ZN2nn4chat15ClearSharingKeyEv", "_ZN2nn4chat22ShowCameraSharingGuideEv",
+        "_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", "_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", "_ZN2nn4chat25StartLocalCameraStreamingEv",
+        "_ZN2nn4chat24StopLocalCameraStreamingEv", "_ZN2nn4chat25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE",
+        "_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE",
+        "_ZN2nn4chat19EnableVirtualCameraEPNS0_17VirtualCameraTypeE", "_ZN2nn4chat20DisableVirtualCameraEPNS0_17VirtualCameraTypeE",
+        "_ZN2nn4chat43SetVirtualCameraContainPhotographedContentsEPNS0_17VirtualCameraTypeEb", "_ZN2nn4chat44GetCameraImageProcessingModeForVirtualCameraEv"};
+    for (size_t i = 0; i < sizeof others / sizeof *others; i++) hook(others[i]);
+    if (chatting) { uid_t16 u = chatting(); CHECK(!u.v[0] && !u.v[1], "nobody chatting: the invalid uid"); }
+    if (room) {
+        uint8_t info[0xf0 + 16]; memset(info, 0xcc, sizeof info);
+        CHECK(room(info) == 0x4e2, "no room: 0x4e2, as the SDK reports no chat");
+        int zero = 1; for (int i = 0; i < 0xf0; i++) zero &= !info[i];
+        CHECK(zero && info[0xf0] == 0xcc, "the 0xf0-byte room info zeroed, nothing past it");
+    }
+    if (levels) {
+        float lv[13]; for (int i = 0; i < 13; i++) lv[i] = 1.0f;
+        uint64_t ids[12] = {0}; levels(lv, 12, ids, 12);
+        int silent = 1; for (int i = 0; i < 12; i++) silent &= lv[i] == 0.0f;
+        CHECK(silent && lv[12] == 1.0f, "every member asked for is silent, nothing past them");
+    }
+    if (start && camcfg) CHECK(start(NULL) == 0x32e2 && camcfg(1) == 0x32e2, "the chat applets are closed by the user (0x32e2)");
+    if (rstart) { uint64_t id = 0x1234; CHECK(rstart(&id) == 0x4e2, "a remote stream finds no member (0x4e2)"); }
+    if (lnext) { uint64_t sync[2] = {~0ull, ~0ull}; uint8_t lt[0xe0] = {0}; lnext(sync, lt, 0, 0, 0); CHECK(!sync[0] && !sync[1], "a local image request gives a zero sync handle"); }
+    if (vinit && vwin && vfini) {
+        uint8_t vc[0x590 + 16]; memset(vc, 0xcc, sizeof vc);
+        vinit(vc);
+        CHECK(vwin(vc) && vc[0] == 0 && vc[0x590] == 0xcc, "the virtual camera type zeroed but for a window handle, nothing past its 0x590 bytes");
+        vfini(vc);
+        CHECK(!vwin(vc), "Finalize drops the window handle");
+    }
     CHECK(unexpected == 0, "no guest symbol lookup or event binding");
     printf("pctl: %d checks, %d failed\n", checks, fails);
     return fails != 0;

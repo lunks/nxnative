@@ -285,3 +285,70 @@ HLE_FORCE("_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi
     return chat_video_image(type, i); }
 HLE_FORCE("_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi", "GameChat remote camera image: its blank native image", uint32_t, h_chat_RemoteImage, const void *type, int i) {
     return chat_video_image(type, i); }
+// Star Fox (SDK 21.4.4) imports 23 more GameChat calls. Each goes through the service object Initialize would have made, as its first load (GetChattingUid: a null read at
+// sdk+0x6be4d4, from main+0xba541a8 at boot). The answers below are read from the SDK's implementations (sdk+0x6be460 to sdk+0x6c2ec0) and from Star Fox's calls of them.
+// Room: GetChattingUid is the user field (+0x18) of the 0xf0-byte RoomInfo, or the invalid uid (zero) when the room query fails; Star Fox reads a member id at +0x28, a member count
+// at +0x38 and 16-byte members from +0x40 (main+0xb57aa60). With no room the query fails with 0x4e2 (module 226, description 2), the result the SDK's own calls give for no chat
+// (sdk+0x6c1194, and StartRemoteCameraStreaming below); which result the service itself sends is not known
+#define CHAT_NOT_AVAILABLE 0x4e2u
+#define CHAT_CANCELED 0x32e2u   // module 226, description 25: a chat applet that did not start or that the user closed (sdk+0x6c302c); Star Fox takes it as canceled (main+0xb59c2a0, main+0xb57b67c)
+typedef struct { uint64_t v[2]; } chat_uid_t;   // nn::account::Uid, returned in x0:x1
+HLE_FORCE("_ZN2nn4chat14GetChattingUidEv", "GameChat chatting user: none (the invalid uid)", chat_uid_t, h_chat_ChattingUid, void) { return (chat_uid_t){{0, 0}}; }
+HLE_FORCE("_ZN2nn4chat11GetRoomInfoEPNS0_8RoomInfoE", "GameChat room: none (0x4e2, the info zeroed)", Result, h_chat_RoomInfo, void *info) { memset(info, 0, 0xf0); return CHAT_NOT_AVAILABLE; }
+// Members' voice levels: AudioLevel is a float, one per member id asked for (Star Fox asks 12, main+0xb57ae48). Nobody talks: 0 for each
+HLE_FORCE("_ZN2nn4chat22GetRealtimeAudioLevelsEPNS0_10AudioLevelEiPKNS_7account23NetworkServiceAccountIdEi", "GameChat voice levels: silence (no members)", void, h_chat_AudioLevels,
+          float *out, int nout, const void *ids, int nids) { (void)ids; for (int i = 0; i < nout && i < nids; i++) out[i] = 0.0f; }
+// The sharing key names what the game shares with the chat; void in the SDK (it aborts on a service error). Nobody to share with
+HLE_FORCE("_ZN2nn4chat13SetSharingKeyERKNS0_10SharingKeyE", "GameChat sharing key: no chat to share with", void, h_chat_SetKey, const void *key) { (void)key; }
+HLE_FORCE("_ZN2nn4chat15ClearSharingKeyEv", "GameChat sharing key: no chat to share with", void, h_chat_ClearKey, void) {}
+// The system applets: ShowChatStart and ShowLocalCameraConfiguration return 0 when the service says no applet is needed or the user confirms, CHAT_CANCELED when it did not start or
+// the user closed it; ShowCameraSharingGuide returns nothing. The host shows none: each is the applet opened and closed by the user at once
+HLE_FORCE("_ZN2nn4chat13ShowChatStartERKNS_7account3UidE", "GameChat start applet: closed by the user (0x32e2, no GameChat)", Result, h_chat_ShowStart, const void *uid) {
+    DM_APPLET("GameChat start"); (void)uid; return CHAT_CANCELED; }
+HLE_FORCE("_ZN2nn4chat28ShowLocalCameraConfigurationENS0_25CameraImageProcessingModeE", "GameChat camera settings applet: closed by the user (0x32e2, no camera)", Result, h_chat_ShowCamCfg, int mode) {
+    DM_APPLET("GameChat camera settings"); (void)mode; return CHAT_CANCELED; }
+HLE_FORCE("_ZN2nn4chat22ShowCameraSharingGuideEv", "GameChat camera sharing guide applet: closed by the user", void, h_chat_ShowCamGuide, void) { DM_APPLET("GameChat camera sharing guide"); }
+// A full-screen section in which the local camera may show (sdk+0x6c1800): the SDK may show an applet, then waits for the service to confirm the section. No camera, nothing to wait for
+HLE_FORCE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", "GameChat full-screen camera section: entered at once (no camera)", void, h_chat_BeginFull, unsigned b) { (void)b; }
+HLE_FORCE("_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", "GameChat full-screen camera section: left", void, h_chat_EndFull, void) {}
+// Camera streams. Local: Start and Stop are void in the SDK (it aborts on a service error); Star Fox then marks the stream on (main+0xba573a8) and requests an image into it each pass,
+// waiting on the sync handle with nn::gs::WaitNativeSync (main+0xba5a864). No camera: the image stays blank, and the handle is zero, which the host's TryWaitNativeSync reads as
+// signalled (hle_codec_video.c); WaitNativeSync itself (nn::syncpt::sdk::WaitSyncPoint) is not taken over, so that path is open.
+// Remote: Start returns 0x4e2 for a member the service does not know (service descriptions 1, 3 and 10, sdk+0x6c2428); Star Fox then leaves the stream off (main+0xba573d4), so it
+// never requests or stops one (the SDK aborts both for a member it did not start)
+HLE_FORCE("_ZN2nn4chat25StartLocalCameraStreamingEv", "GameChat local camera stream: no camera, nothing streams", void, h_chat_LocalStart, void) {}
+HLE_FORCE("_ZN2nn4chat24StopLocalCameraStreamingEv", "GameChat local camera stream: no camera, nothing streams", void, h_chat_LocalStop, void) {}
+HLE_FORCE("_ZN2nn4chat27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_", "GameChat local camera image: stays blank (no camera), a zero sync handle",
+          void, h_chat_LocalNext, uint64_t *sync, void *type, int i, uint64_t s0, uint64_t s1) {
+    (void)type; (void)s0; (void)s1; sync[0] = sync[1] = 0;
+    static int once; if (!once++) LOG("[RED] chat: a local camera image (index %d) asked for: no camera, the image stays blank and its sync handle is zero", i);
+}
+HLE_FORCE("_ZN2nn4chat26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "GameChat remote camera stream: no such member (0x4e2)", Result, h_chat_RemoteStart, const uint64_t *id) {
+    (void)id; return CHAT_NOT_AVAILABLE; }
+HLE_FORCE("_ZN2nn4chat25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "GameChat remote camera stream: none was started", void, h_chat_RemoteStop, const uint64_t *id) {
+    static int once; if (!once++) LOG("[RED] chat: remote camera stream of %#llx stopped, though StartRemoteCameraStreaming never starts one", (unsigned long long)*id);
+}
+HLE_FORCE("_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE",
+          "GameChat remote camera image: no stream was started; stays blank, a zero sync handle", void, h_chat_RemoteNext, uint64_t *sync, void *type, int i, uint64_t s0, uint64_t s1, const uint64_t *id) {
+    (void)type; (void)i; (void)s0; (void)s1; sync[0] = sync[1] = 0;
+    static int once; if (!once++) LOG("[RED] chat: remote camera image of %#llx asked for, though StartRemoteCameraStreaming never starts a stream", (unsigned long long)*id);
+}
+// Virtual camera: a picture the game draws for the chat in place of the player's camera. InitializeVirtualCamera (sdk+0x6c2c00) zeroes the 0x590-byte type, makes a vi2 display,
+// endpoint and layer in it and keeps the layer's native window handle at +0x580, on which Star Fox makes its window (main+0xba54078). The host has no vi2 and no chat: the type holds
+// a host object as the window handle, and enabling the camera or marking its content changes nothing. Where that window's frames go is open: no game here has been seen to start
+// the virtual camera, and the host presents every NVN window to the screen
+static struct { uint32_t magic; } g_chat_vcam_window = {0x6d43764du};   // "MvCm"
+HLE_FORCE("_ZN2nn4chat23InitializeVirtualCameraEPNS0_17VirtualCameraTypeE", "GameChat virtual camera: a window handle nothing receives (no chat)", void, h_chat_VcamInit, void *type) {
+    memset(type, 0, 0x590); *(void **)((uint8_t *)type + 0x580) = &g_chat_vcam_window; ((uint8_t *)type)[0x588] = 1;
+    LOG("[RED] chat: virtual camera initialized: no chat receives its window, whose frames the host would present to the screen");
+}
+HLE_FORCE("_ZN2nn4chat21FinalizeVirtualCameraEPNS0_17VirtualCameraTypeE", "GameChat virtual camera: released", void, h_chat_VcamFini, void *type) { memset(type, 0, 0x590); }
+HLE_FORCE("_ZN2nn4chat34GetVirtualCameraNativeWindowHandleEPKNS0_17VirtualCameraTypeE", "GameChat virtual camera window: the host object in the type", void *, h_chat_VcamWindow, const void *type) {
+    return *(void *const *)((const uint8_t *)type + 0x580); }
+HLE_FORCE("_ZN2nn4chat19EnableVirtualCameraEPNS0_17VirtualCameraTypeE", "GameChat virtual camera: no chat to show it", void, h_chat_VcamOn, void *type) { (void)type; }
+HLE_FORCE("_ZN2nn4chat20DisableVirtualCameraEPNS0_17VirtualCameraTypeE", "GameChat virtual camera: no chat to show it", void, h_chat_VcamOff, void *type) { (void)type; }
+HLE_FORCE("_ZN2nn4chat43SetVirtualCameraContainPhotographedContentsEPNS0_17VirtualCameraTypeEb", "GameChat virtual camera content flag: no chat to show it", void, h_chat_VcamPhoto,
+          void *type, unsigned on) { (void)type; (void)on; }
+// The camera image processing mode for the virtual camera, a u8 (ShowLocalCameraConfiguration takes 0 to 2, sdk+0x6c1770; Star Fox maps it through a table, main+0xb57b748): 0, the
+// first. What the service answers with no camera is not known
+HLE_FORCE("_ZN2nn4chat44GetCameraImageProcessingModeForVirtualCameraEv", "GameChat virtual camera processing mode: 0 (no camera)", unsigned, h_chat_VcamMode, void) { return 0; }
