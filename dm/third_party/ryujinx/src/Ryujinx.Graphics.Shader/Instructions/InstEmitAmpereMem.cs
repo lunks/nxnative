@@ -47,6 +47,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0xb63, InstName.Tld4, ATex, InstProps.Tex);
             x(0xb69, InstName.Tmml, ATex, InstProps.Tex);
             x(0xb6c, InstName.Txd, ATex, InstProps.Tex);
+            x(0xf6c, InstName.Txd, ATex, InstProps.Tex);
             x(0xb6f, InstName.Txq, ATxq, InstProps.Tex);
             x(0x370, InstName.Txq, ATxq, InstProps.Tex);
             x(0xb97, InstName.Suld, ASurface, N);
@@ -653,12 +654,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // TEX through a handle in a register, not named by its offset: the compiler's form for a handle it read itself, usually from a table at a computed offset. BindlessElimination takes the
             // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60: a uniform register at 40..46. 0x361 (bit 59 set): a register, the first of the second source block,
-            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both
+            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both.
+            // 0xf6c is TXD the same way, its handle in a uniform register at 40..46 and the other fields 0xb6c's: Star Fox's material shaders (292 of its 2,826, e.g.
+            // a000041014127f6c: UR4, coordinates from R20, derivatives from R16)
             Operand boundHandle = null;
             bool handleInB = opcode == 0x361;
-            bool bindless = handleInB || opcode == 0xf60;
+            bool bindless = handleInB || opcode is 0xf60 or 0xf6c;
 
-            if (opcode == 0xf60)
+            if (opcode is 0xf60 or 0xf6c)
             {
                 int ur = x.Bits(40, 46);
 
@@ -667,7 +670,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (bindless)
             {
-                opcode = 0xb60;
+                opcode = opcode == 0xf6c ? 0xb6c : 0xb60;
             }
 
             TexDim dim = ATexDim(context, x.Bits(61, 64));
