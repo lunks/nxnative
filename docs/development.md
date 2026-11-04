@@ -371,7 +371,7 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --
 # a folder of the game's files instead of NSPs (a dump: base/, updates/<version>/, dlc/; scripts/pack_dump.py lists the layout): no prod.keys, and only a game with a profile, as the survey reads NSPs; no icon, and the name comes from the profile, as a dump has no control data
 python3 scripts/build_ipa_from_nsp.py ~/Games/DonkeyKongBananza --platform mac-app
 
-# the same game in one NUP container (https://github.com/a55uka/nup; scripts/pack_nup.py): the .nup file, or a folder that holds one; no prod.keys, and only a game with a profile, like a dump.
+# the same game in one NUP container (https://github.com/a55uka/nup; scripts/pack_nup.py): the .nup file, or a folder that holds one; no prod.keys; a game with no profile is surveyed from the container's own files (code modules, RomFS file headers, NROs), as NSPs are by nx_extract's manifest pass.
 # The RomFS images are written straight from the container (each file checked against its SHA-256); the NACP and icon come from the container when it carries them, else the name comes from the profile as for a dump
 # A NUP with no base game (an empty base record, or none and standalone_update on every update) packs the selected update, which needs its own ExeFS and RomFS, as the whole game; only its update versions are selectable (no v0)
 python3 scripts/build_ipa_from_nsp.py ~/Games/DonkeyKongBananza.nup --platform mac-app

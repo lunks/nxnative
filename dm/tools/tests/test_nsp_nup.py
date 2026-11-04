@@ -185,6 +185,53 @@ class Read(Base):
         self.assertIsNone(nsp.nup_file(self.dir))   # the packages win, as over a dump's layout
 
 
+class Head(Base):
+    def test_first_bytes_of_stored_and_compressed_files(self):   # the survey's manifest: a file of 200 bytes or more is zstd-compressed here, a shorter one stored
+        n = self.open(); base = next(k for k in n.packages if k.kind == pack_nup.BASE)
+        romfs = {name: i for name, _, i in n.children(base.romfs)}
+        big = n.child(romfs[b'dir'], b'old')   # dir/old: 400 bytes
+        self.assertEqual(n.files[big][5], 1)
+        self.assertEqual(n.head(big), (b'data' * 100)[:32])
+        self.assertEqual(n.head(big, 1000), b'data' * 100)   # never more than the file
+        self.assertEqual(n.head(romfs[b'empty']), b'')
+        write_nup(self.path, [(0, TID, 0, {'exefs': version()['exefs'], 'romfs': {'short': b'abc'}}, b'')])
+        n = self.open(); k = n.packages[0]
+        self.assertEqual(n.head(n.child(k.romfs, b'short')), b'abc')
+
+
+NEW = 0x0400000000123000   # a title no profile has
+
+
+class Survey(Base):
+    def test_files_as_the_manifest_pass_leaves_them(self):   # ExeFS, romfs_manifest.tsv (path, size, first 32 bytes), the NROs whole, the update's control data, else the base game's
+        nro = b'\0' * 16 + b'NRO0' + b'x' * 300
+        write_nup(self.path, [(0, NEW, 0, version(tid=NEW), META),
+                              (1, NEW, VER, {'exefs': version(main=b'new', tid=NEW)['exefs'], 'romfs': {'a/big': b'z' * 500, 'nro/m.nro': nro, 'empty': b''}}, b'')])
+        n = self.open(); app, base, vers, _ = pack_nup.scan(n)
+        out = self.dir / 'survey'
+        self.assertEqual(nsp.survey_nup(n, vers[VER], base, out), 3)
+        self.assertEqual((out / 'ExeFS/main').read_bytes(), b'new')
+        self.assertFalse((out / 'ExeFS/.listing').exists())
+        rows = (out / 'romfs_manifest.tsv').read_text().splitlines()
+        self.assertEqual(rows[0], nsp.MANIFEST_HEAD.rstrip('\n'))
+        self.assertEqual(sorted(rows[1:]), sorted([f'/a/big\t500\t{(b"z" * 32).hex()}', f'/empty\t0\t', f'/nro/m.nro\t{len(nro)}\t{nro[:32].hex()}']))
+        self.assertEqual((out / 'romfs_nro/nro/m.nro').read_bytes(), nro)
+        self.assertEqual(nacp.name(out / 'control.nacp'), 'Test Game')   # the update has none: the base game's
+
+    def test_a_nup_without_a_profile_is_surveyed(self):   # it used to stop: the survey that makes a provisional profile read NSPs only
+        write_nup(self.path, [(1, NEW, VER, version(tid=NEW), META)], update_flags=pack_nup.STANDALONE)
+        seen = {}
+        def survey(nsp_dir, app, fam, keys, repo, py, env):
+            seen.update(app=app, nup=fam['nup'], base=fam['base']); raise Stop()
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
+             mock.patch.object(nsp, 'survey', side_effect=survey), mock.patch.object(nsp, 'check_capstone'), mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
+             mock.patch.object(nsp, 'say'), mock.patch.object(nsp, 'build_nx_extract', side_effect=AssertionError('built nx_extract')), \
+             mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked for something')), mock.patch.object(nsp, 'package_title_reader', side_effect=AssertionError('read a package')):
+            with self.assertRaises(Stop): nsp.main(nsp.parse_args([str(self.path), '--survey-only']))
+        self.assertEqual(seen['app'], NEW)
+        self.assertIsNone(seen['base'])
+
+
 class Pack(Base):
     def out(self): return self.dir / 'out'
 
