@@ -29,6 +29,21 @@ class Brev(Alu):
         self.assertIn('reverse_bits', self.kept(self.BREV, srcs=(19,)))
 
 
+class Bmsk(Alu):
+    """BMSK R6, R4, R5 (0x01b, form 1: two registers; Star Fox's pixel shader encodes it as R5, R4, R5): ((1 << R5) - 1) << R4, clamped to 32 without .W (bit 75)"""
+    BMSK = (0x000fe40000000000, 0x000000050406721b)
+
+    def test_builds_the_mask(self):
+        msl = self.kept(self.BMSK, srcs=(4, 5))
+        self.assertRegex(msl, r'= 1 << ')            # the width's ones
+        self.assertRegex(msl, r'\? \w+ : \(-1\)')   # all ones for a width of 32 or more
+        self.assertRegex(msl, r'< 32u')               # a position of 32 or more gives 0
+
+    def test_wrap_masks_the_fields(self):
+        msl = self.kept((self.BMSK[0] | 1 << 11, self.BMSK[1]), srcs=(4, 5))   # .W
+        self.assertRegex(msl, r'& 31')
+
+
 class HalfImmediate(Alu):
     """HADD2 / HMUL2 Rd, Ra, imm (form 2): the second source is the immediate at bits 32..63, not the register field at 64 that HFMA2's B uses in that form. Pokopia's
     blur 85446a6753300fc8 steps its loop with HADD2 R6, R6, 2.0h; reading R0 there, the loop never ended and the GPU hung"""

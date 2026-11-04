@@ -90,6 +90,11 @@ class Sured(Translated):
         self.assertIn('atomic_fetch_add', msl)
         self.assertIn('texture2d', msl)
 
+    def test_or_at_the_coordinates(self):   # Star Fox's form (word 2 0310e000): operation 6, OR, on its 3D images
+        msl = self.translate(inst(self.FORM[0] | 6 << 23, self.FORM[1]) + inst(*EXIT))
+        self.assertIn('atomic_fetch_or', msl)
+        self.assertNotIn('atomic_fetch_add', msl)
+
     def test_another_form_is_refused(self):
         with self.assertRaises(AssertionError) as e: self.translate(inst(0x000fe200001ee000, self.FORM[1]) + inst(*EXIT))
         self.assertIn('SURED form', str(e.exception))

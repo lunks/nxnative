@@ -33,6 +33,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                 IoVariable.Position => (BuiltIn.Position, AggregateType.Vector4 | AggregateType.FP32),
                 IoVariable.PrimitiveId => (BuiltIn.PrimitiveId, AggregateType.S32),
                 IoVariable.SampleId => (BuiltIn.SampleId, AggregateType.S32),
+                IoVariable.SampleMask => (BuiltIn.SampleMask, AggregateType.Array | AggregateType.S32),   // nxnative: PIXLD.COVMASK reads word 0
                 IoVariable.SubgroupEqMask => (BuiltIn.SubgroupEqMask, AggregateType.Vector4 | AggregateType.U32),
                 IoVariable.SubgroupGeMask => (BuiltIn.SubgroupGeMask, AggregateType.Vector4 | AggregateType.U32),
                 IoVariable.SubgroupGtMask => (BuiltIn.SubgroupGtMask, AggregateType.Vector4 | AggregateType.U32),
@@ -57,6 +58,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             return ioVariable switch
             {
                 IoVariable.ClipDistance => 8,
+                IoVariable.SampleMask => 1,
                 IoVariable.TessellationLevelInner => 2,
                 IoVariable.TessellationLevelOuter => 4,
                 IoVariable.ViewportMask => 1,

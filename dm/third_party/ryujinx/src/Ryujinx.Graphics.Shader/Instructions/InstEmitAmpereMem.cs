@@ -48,6 +48,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0xb69, InstName.Tmml, ATex, InstProps.Tex);
             x(0xb6c, InstName.Txd, ATex, InstProps.Tex);
             x(0xf6c, InstName.Txd, ATex, InstProps.Tex);
+            x(0xf63, InstName.Tld4, ATex, InstProps.Tex);
             x(0xb6f, InstName.Txq, ATxq, InstProps.Tex);
             x(0x370, InstName.Txq, ATxq, InstProps.Tex);
             x(0xb97, InstName.Suld, ASurface, N);
@@ -485,12 +486,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         // SURED [Ra], Rb (0x59f): an image reduction through a handle, laid out as SUATOM with no result: the coordinates from Ra, the value in Rb, the handle at 40..59, the dimension
         // at 61..64, the size at 73..76 and the operation at 87..91 (Eglantine's lowering to Maxwell names the fields). Mario Kart World's compute shader adds 1 at (R4, R5) of a 2D
-        // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result. Only that form has been seen, so another is refused
+        // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result. Star Fox's compute shaders (6 of its 2,826) OR into a 3D image
+        // (word 2 0310e000: operation 6, Maxwell's RedOp.Or). Only those two operations have been seen, so another form is refused
         public static void ASured(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
 
-            if (x.Bits(64, 96) != 0x0010e000 || x.Bits(59, 61) != 0)
+            if ((x.Bits(64, 96) & ~(0x1f << 23)) != 0x0010e000 || x.Bits(87, 92) is not ((int)RedOp.Add or (int)RedOp.Or) || x.Bits(59, 61) != 0)
             {
                 throw AFail(context, $"SURED form {x.Bits(64, 96):x8}");
             }
@@ -502,7 +504,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 throw AFail(context, $"SURED handle in bank {cbufSlot}");
             }
 
-            EmitSured(context, (SuDim)x.Bits(61, 64), 0, RedOp.Add, SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false);
+            EmitSured(context, (SuDim)x.Bits(61, 64), 0, (RedOp)x.Bits(87, 92), SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false);
         }
 
         // SUATOM Rd, [Ra], Rb (0x593): an atomic on an image through a handle, laid out as SUST's (handle 40..59, dimension 61..64) and as ATOMG's (operation
@@ -656,12 +658,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
             // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60: a uniform register at 40..46. 0x361 (bit 59 set): a register, the first of the second source block,
             // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both.
             // 0xf6c is TXD the same way, its handle in a uniform register at 40..46 and the other fields 0xb6c's: Star Fox's material shaders (292 of its 2,826, e.g.
-            // a000041014127f6c: UR4, coordinates from R20, derivatives from R16)
+            // a000041014127f6c: UR4, coordinates from R20, derivatives from R16). 0xf63 is TLD4 the same way (Star Fox: 3000061a021a7f63, a 2D gather through UR6)
             Operand boundHandle = null;
             bool handleInB = opcode == 0x361;
-            bool bindless = handleInB || opcode is 0xf60 or 0xf6c;
+            bool bindless = handleInB || opcode is 0xf60 or 0xf6c or 0xf63;
 
-            if (opcode is 0xf60 or 0xf6c)
+            if (opcode is 0xf60 or 0xf6c or 0xf63)
             {
                 int ur = x.Bits(40, 46);
 
@@ -670,7 +672,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (bindless)
             {
-                opcode = opcode == 0xf6c ? 0xb6c : 0xb60;
+                opcode = opcode switch { 0xf6c => 0xb6c, 0xf63 => 0xb63, _ => 0xb60 };
             }
 
             TexDim dim = ATexDim(context, x.Bits(61, 64));

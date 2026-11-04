@@ -53,6 +53,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x012, InstName.Lop3, ALop3);
             alu(0x092, InstName.Lop3, ALop3, uniform: true);
             alu(0x019, InstName.Shf, AShf);
+            alu(0x01b, InstName.Shf, ABmsk);
             alu(0x099, InstName.Shf, AShf, uniform: true);
             alu(0x011, InstName.Lea, ALea);
             alu(0x091, InstName.Lea, ALea, uniform: true);
@@ -75,6 +76,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0xc82, InstName.Mov, AUMov, N, uniform: true);
             x(0x805, InstName.Cs2r, ACs2r, N);
             x(0x919, InstName.S2r, AS2r, N);
+            x(0x925, InstName.Pixld, APixld, N);
             x(0x9c3, InstName.S2r, AS2r, N, uniform: true);
             x(0x3c2, InstName.Mov, AR2ur, N);
             x(0xab9, InstName.Ldc, AUldc, N, uniform: true);
@@ -620,6 +622,29 @@ namespace Ryujinx.Graphics.Shader.Instructions
         }
 
         // S2R Rd, SR / S2UR URd, SR (72..80)
+        // PIXLD Rd (0x925): a value of the pixel the fragment runs for, its kind at 78..80 (Maxwell's PixMode), a predicate result at 81..83. COVMASK is the coverage mask
+        // (word 0 of the sample mask input, Metal's [[sample_mask]]), MYINDEX the sample index as Maxwell's PIXLD; Star Fox's pixel shaders (2 of its 2,826) start with
+        // PIXLD.COVMASK R0 / R1. The other kinds, a predicate result or another stage are refused
+        public static void APixld(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            PixMode mode = (PixMode)x.Bits(78, 81);
+
+            if (x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex || context.TranslatorContext.Definitions.Stage != ShaderStage.Fragment)
+            {
+                throw AFail(context, $"PIXLD {mode} with a predicate result or outside a pixel shader");
+            }
+
+            Operand value = mode switch
+            {
+                PixMode.Covmask => context.Load(StorageKind.Input, IoVariable.SampleMask, null, Const(0)),
+                PixMode.MyIndex => context.Load(StorageKind.Input, IoVariable.SampleId),
+                _ => throw AFail(context, $"PIXLD {mode}"),
+            };
+
+            ASet(context, x, value);
+        }
+
         public static void AS2r(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -1046,6 +1071,29 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         // SHF Rd, lo, shift, hi: a funnel shift of {hi:lo}. Type (73..75: I64, U64, I32, U32), .W (75) wraps the shift instead of clamping it, .R (76),
         // .HI (80) the high word of the result.
+        // BMSK Rd, Ra, Rb (0x01b): a mask of Rb ones starting at bit Ra, ((1 << width) - 1) << position. .W (75) wraps both to 5 bits; without it they are clamped to 32, so a width
+        // of 32 or more gives ones up to bit 31 and a position of 32 or more gives 0 (NAK's OpBMsk; PTX bmsk). Star Fox's pixel shader builds one from two registers (R5 = bmsk(R4, R5))
+        public static void ABmsk(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            bool u = AUniform(context);
+            (ASrc a, ASrc b, _) = AAluSrcs(context, x, u, neg: false, abs: false);
+
+            Operand pos = AGet(context, a);
+            Operand width = AGet(context, b);
+
+            if (x.Bit(75))
+            {
+                pos = context.BitwiseAnd(pos, Const(31));
+                width = context.BitwiseAnd(width, Const(31));
+            }
+
+            Operand ones = context.ConditionalSelect(context.ICompareLessUnsigned(width, Const(32)), context.ISubtract(context.ShiftLeft(Const(1), width), Const(1)), Const(-1));
+            Operand res = context.ConditionalSelect(context.ICompareLessUnsigned(pos, Const(32)), context.ShiftLeft(ones, pos), Const(0));
+
+            ASet(context, x, res, u);
+        }
+
         public static void AShf(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
