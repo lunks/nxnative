@@ -51,6 +51,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	$(B)/t_codec_video
 	$(B)/t_codec_opus
 	$(B)/t_audio_stream
+	$(B)/t_net_poll
 	$(B)/t_movie_avc
 	$(B)/t_nv
 	$(B)/t_nfc
@@ -268,6 +269,9 @@ run: $(B)/t_movie_vpx
 run: $(B)/t_codec_video
 run: $(B)/t_movie_avc
 # SDK 20+ audio output streams and virtual devices (hle_audio_stream.c on hle_audio.c's output): the ring and its counts, conversion, the data event's threshold, statistics, gain, Purge, the silent sink
+run: $(B)/t_net_poll
+$(B)/t_net_poll: t_net_poll.c ../hle_net.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. $(GINC) -o $@ t_net_poll.c
 run: $(B)/t_audio_stream
 $(B)/t_audio_stream: t_audio_stream.c ../hle_audio.c ../hle_audio.h ../hle_audio_stream.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. $(GINC) -o $@ t_audio_stream.c ../hle_bigstack.c -framework AudioToolbox

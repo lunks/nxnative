@@ -43,11 +43,15 @@ static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
 void dm_guest_sleep_ns(int64_t ns);
 static int sk_idle(int64_t ms) { dm_guest_sleep_ns((ms < 0 ? 100 : ms) * 1000000); return 0; }
 typedef struct { int32_t fd; int16_t events, revents; } sk_pollfd;
+// A descriptor the host never opened (offline, it opens none) is what POSIX calls invalid: poll does not fail for it but sets POLLNVAL (0x20, BSD's value, which nn::socket keeps)
+// in its entry and counts it, at once. Star Fox's libuv loop (its 'socket monitor' thread, main+0xbe2ef3c) polls such an entry, left holding what was in memory when its socket
+// failed, beside a -1; failing the call made libuv abort (main+0xbe2f3a0), and libuv drops a POLLNVAL descriptor from its set
+enum { SK_POLLNVAL = 0x20 };
 int dm_sk_poll(void *fds, uint64_t n, int ms) {   // also hle_offline.c's plain pollfd form
     sk_pollfd *p = fds;
-    for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) return sk_fail();
-    for (uint64_t i = 0; i < n; i++) p[i].revents = 0;
-    return sk_idle(ms);
+    int bad = 0;
+    for (uint64_t i = 0; i < n; i++) bad += (p[i].revents = p[i].fd >= 0 ? SK_POLLNVAL : 0) != 0;
+    return bad ? bad : sk_idle(ms);
 }
 int dm_sk_select(int nfds, const uint64_t *r, const uint64_t *w, const uint64_t *e, const int64_t *tv) {   // fd_set: 1024 bits; timeval: {i64 seconds, i64 microseconds}
     const uint64_t *sets[3] = {r, w, e};
