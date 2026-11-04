@@ -125,7 +125,7 @@ Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that h
 
 - **Cost:** the game's own resolution steps all grow by a quarter in each direction (up to about 1.56 times the pixels of its 3D picture), so it needs more GPU time and its dynamic resolution and frame rate drop sooner in busy areas. It works with every **Game's upscaler** and **Render resolution** choice: their sizes grow with the output.
 - **Docked only:** in handheld mode the game's picture is 1920x1080 either way.
-- **Not played yet:** the HUD's layout at the larger size and memory are unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off.
+- **Not played yet:** the HUD's layout at the larger size is unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off. The game's render-target memory grows with the output ([Graphics memory](#graphics-memory)).
 - In `env.txt`: `DM_SINGLE_UPSCALE=1`. The game log then says `single upscale on` at start and `upscaler: output 2880x1620 … the window's size: one resample` once it upscales.
 
 **Match display** does the same and also makes the game's window the size its picture takes on your screen, in the screen's own pixels: the game upscales once, straight to them, and the app shows the picture without scaling it again. On a 3440x1440 screen in fullscreen that is 2560x1440 (black bars at the sides, as always for the game's 16:9 picture), whatever scaled resolution macOS shows; in a window, the window's size as it opens. The settings window's render sizes use it.
@@ -187,7 +187,7 @@ Mac only, for Donkey Kong Bananza, in Advanced settings: the parts of the pictur
 
 ### Effects resolution
 
-**Game default** draws ambient occlusion, the refraction behind water and glass, soft particles and the blob shadows at half the 3D picture's size, as on a Switch. **Full** draws them, and the game's quarter-size effects, at its full size: sharper contact shadows and particle edges, for more GPU time and memory. Untested: if the shadows in corners cover only part of the picture, or particles get dark edges, set it back. In `env.txt`: `DM_EFFECTS_RES=full`.
+**Game default** draws ambient occlusion, the refraction behind water and glass, soft particles and the blob shadows at half the 3D picture's size, as on a Switch. **Full** draws them, and the game's quarter-size effects, at its full size: sharper contact shadows and particle edges, for more GPU time and memory ([Graphics memory](#graphics-memory)). Untested: if the shadows in corners cover only part of the picture, or particles get dark edges, set it back. In `env.txt`: `DM_EFFECTS_RES=full`.
 
 ### Shadow resolution
 
@@ -195,9 +195,13 @@ Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advan
 
 ### Shadow map size
 
-Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: shadows may be cut off, or the game may crash, most likely when the map opens. If that happens, set it back to **Game default**. It changes the game's code when the game starts.
+Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: if shadows look cut off or the game crashes, set it back to **Game default**. The game's render-target memory grows with it ([Graphics memory](#graphics-memory)). It changes the game's code when the game starts.
 
 The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
+
+### Graphics memory
+
+Donkey Kong Bananza keeps all its render targets in one block of memory sized for its own resolution (200 MB), and crashes when a frame needs more. When the output is larger than 2304x1296 (**Output resolution** Window or Match display), **Effects resolution** is Full or **Shadow map size** is larger, the app gives that block more at launch, from 320 MB up to 896 MB (Match display on a 4K screen with Full effects), which takes up to 700 MB more of the Mac's memory once the game uses it. There is no setting for it; the game log names the size (`setting DM_RT_POOL=game, …`), and `DM_RT_POOL=off` in `env.txt` keeps the game's own.
 
 ### Anisotropic filtering
 

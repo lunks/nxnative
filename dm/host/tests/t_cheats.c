@@ -44,6 +44,8 @@ static uint64_t held;                            // the keys "held" for the key-
 uint64_t dm_cheats_keys(void) { return held; }
 static int hdr_peak_nits, hdr_paper_nits = 203;  // the HDR peak the display would report at launch (hle_vi.c), 0: HDR off or no screen with headroom
 int dm_vi_hdr_launch_peak(int *peak, int *paper) { if (!hdr_peak_nits) return 0; *peak = hdr_peak_nits; *paper = hdr_paper_nits; return 1; }
+static int out_w, out_h;                         // the upscaler's output at launch (loader.c dm_res_chain_output), 0: the profile has no res_chain
+int dm_res_chain_output(int *w, int *h, char *how, size_t n) { if (!out_w) return 0; *w = out_w; *h = out_h; snprintf(how, n, "test"); return 1; }
 static char moddir[1100];                        // the module folder (loader.c), with the rewriter's main.changed.tsv
 const char *dm_module_dir(void) { return moddir; }
 
@@ -723,6 +725,27 @@ int main(void) {
         g_sp_nheld = 0; unsetenv("DM_T_HDR"); setenv("DM_T_OVL", "1", 1); hdr_peak_nits = 866;
         CHECK(sp_apply(hp, nh) == 0 && rd32(0x1204) == 0x11111111u, "setting patches: two rows for one word whose conditions both hold: refused");
         unsetenv("DM_T_OVL"); hdr_peak_nits = 0; g_sp_nheld = 0;
+        // rows of a variable's value game (unset) chosen by the output's size and another setting (Bananza's render-target pool): one tier's words, none without res_chain
+        static const setting_patch_t op[] = {
+            {"DM_T_EFF", "full", "Full", "main", B1, 0x1210, 0x55555555u, 0x66666666u},
+            {"DM_T_POOL", "game", "320 MB", "main", B1, 0x1220, 0x52A19009u, 0x52A28009u, "DM_T_EFF!=full&output_mpx<=3"},
+            {"DM_T_POOL", "game", "480 MB", "main", B1, 0x1220, 0x52A19009u, 0x52A3C009u, "DM_T_EFF=full&output_mpx>3&output_mpx<=3.7"},
+            {"DM_T_POOL", "game", "384 MB", "main", B1, 0x1220, 0x52A19009u, 0x52A30009u, "DM_T_EFF!=full&output_mpx>3&output_mpx<=3.7"},
+        };
+        const int no = (int)(sizeof op / sizeof op[0]);
+        #define OP_RESET() do { wr32(0x1210, 0x55555555u); wr32(0x1220, 0x52A19009u); g_sp_nheld = 0; g_sp_napplied = 0; } while (0)
+        OP_RESET(); unsetenv("DM_T_POOL"); unsetenv("DM_T_EFF"); out_w = 0;
+        CHECK(sp_apply(op, no) == 0 && rd32(0x1220) == 0x52A19009u, "setting patches: output_mpx unknown (no res_chain): no tier holds, the game's own word");
+        out_w = 2560; out_h = 1440; setenv("DM_T_EFF", "full", 1);
+        CHECK(sp_apply(op, no) == 2 && rd32(0x1220) == 0x52A3C009u && !strcmp(dm_setting_patch_applied("DM_T_POOL", NULL), "480 MB"),
+              "setting patches: output 2560x1440 (3.69 MP) with the other setting written: its tier, unset taking game");
+        OP_RESET(); unsetenv("DM_T_EFF");
+        CHECK(sp_apply(op, no) == 1 && rd32(0x1220) == 0x52A30009u, "setting patches: the same output, the other setting unset: the != tier");
+        OP_RESET(); out_w = 2304; out_h = 1296;
+        CHECK(sp_apply(op, no) == 1 && rd32(0x1220) == 0x52A28009u, "setting patches: output 2304x1296 (2.99 MP): the lowest tier");
+        OP_RESET(); out_w = 3840; out_h = 2160;
+        CHECK(sp_apply(op, no) == 0 && rd32(0x1220) == 0x52A19009u && !dm_setting_patch_applied("DM_T_POOL", NULL), "setting patches: an output past every tier: nothing written, quietly (unset)");
+        OP_RESET(); out_w = 0;
         // rows with conditions on another setting's value (DM_<NAME>=a|b, DM_<NAME>!=a|b): a second setting picks the words; unset is "none of them"
         static const setting_patch_t ep[] = {
             {"DM_T_RATIO", "1.5", "Fixed", "main", B1, 0x1300, 0x11111111u, 0x22222222u, "DM_T_DYN!=1"},

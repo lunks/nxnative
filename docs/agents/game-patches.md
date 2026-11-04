@@ -70,7 +70,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 6 | 0 | 0 | 238 | `build` → `game` ×4 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 6 | 0 | 0 | 254 | `build` → `game` ×4 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -532,6 +532,22 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x204a8c` (`DM_FPS_LOCK=30`, Hold 30): `F9400108` → `5280004C` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x204ac0` (`DM_FPS_LOCK=30`, Hold 30): `6B08015F` → `6B0C015F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x204ac4` (`DM_FPS_LOCK=30`, Hold 30): `1A89B10A` → `1A89B18A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 320 MB, GSys heap 626 MB: output up to 2304x1296, shadow maps 3072 or 4096): `52A19009` → `52A28009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 320 MB, GSys heap 626 MB: output up to 2304x1296, shadow maps 3072 or 4096): `94021632` → `D2A4E400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 416 MB, GSys heap 722 MB: output up to 2304x1296, effects at full size): `52A19009` → `52A34009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 416 MB, GSys heap 722 MB: output up to 2304x1296, effects at full size): `94021632` → `D2A5A400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 384 MB, GSys heap 690 MB: output up to 2560x1440): `52A19009` → `52A30009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 384 MB, GSys heap 690 MB: output up to 2560x1440): `94021632` → `D2A56400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 480 MB, GSys heap 786 MB: output up to 2560x1440, effects at full size): `52A19009` → `52A3C009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 480 MB, GSys heap 786 MB: output up to 2560x1440, effects at full size): `94021632` → `D2A62400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 448 MB, GSys heap 754 MB: output up to 2880x1620): `52A19009` → `52A38009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 448 MB, GSys heap 754 MB: output up to 2880x1620): `94021632` → `D2A5E400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 576 MB, GSys heap 882 MB: output up to 2880x1620, effects at full size): `52A19009` → `52A48009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 576 MB, GSys heap 882 MB: output up to 2880x1620, effects at full size): `94021632` → `D2A6E400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 672 MB, GSys heap 978 MB: output up to 3840x2160): `52A19009` → `52A54009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 672 MB, GSys heap 978 MB: output up to 3840x2160): `94021632` → `D2A7A400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53995c` (`DM_RT_POOL=game`, 896 MB, GSys heap 1202 MB: output up to 3840x2160, effects at full size): `52A19009` → `52A70009` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x53a028` (`DM_RT_POOL=game`, 896 MB, GSys heap 1202 MB: output up to 3840x2160, effects at full size): `94021632` → `D2A96400` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
 
 ### EA SPORTS FC 27
 

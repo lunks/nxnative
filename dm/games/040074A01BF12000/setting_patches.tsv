@@ -319,3 +319,29 @@ DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204a88	913F4108	F
 DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204a8c	F9400108	5280004C
 DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ac0	6B08015F	6B0C015F
 DM_FPS_LOCK	30	Hold 30	main	e25c90c1c136638885659fd55bf8a03b	0x204ac4	1A89B10A	1A89B18A
+# Render-target pool (README.md, Render-target pool): every render target (scene, effects, depth of field, shadow maps, bloom, reflections, the upscaler's) comes from agl's
+# DynamicTextureAllocator (main+0x128d40, main+0x12da18), seven phases over one fixed 200 MB block: gsys::SystemTask's create argument mov w9,#0xc800000 at main+0x53995c, its
+# initial chunk, allocated from the GSys heap; the grow heap is 0 (main+0x53a088), so a request that does not fit returns null and its caller reads +0xa0 of it (main+0x1296e0).
+# Measured in frame 3000 (game defaults, 1676x943 scene): 96 MB from the start + 18 MB at the end; scaled by target class, the game's own sharpest (2304x1296 at rate 1.0) needs
+# 164 MB. Each tier keeps the game's headroom at that (200 / 164) and 25 % more, for the largest scene its output allows (rate 1.0) and 4096 shadow maps, rounded up to 32 MB.
+# The block comes from the GSys heap (HeapDef GSys 518144 KB = 506 MB), so its size grows by as much: bl main+0x5bf8f0 (the HeapDef lookup) at main+0x53a028 -> mov x0,#size.
+# GSys's parent, StationedHeap, is the root heap's free size less TaskMgr (main+0x5c3480-0x5c3498), and SequenceHeap is created with size 0, the rest of its parent (main+0x544d8c):
+# the growth comes out of that rest, about 1.4 GB above the fixed heaps under it on the host's 9 GB pool (estimated from the HeapDef sums, not measured)
+# Unset, DM_RT_POOL is game, and the tier whose condition holds is written (none: the game's own 200 MB); off writes nothing
+DM_RT_POOL	off	The game's 200 MB	-
+DM_RT_POOL	game	320 MB, GSys heap 626 MB: output up to 2304x1296, shadow maps 3072 or 4096	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A28009	DM_EFFECTS_RES!=full&DM_SHADOW_MAP_SIZE=3072|4096&output_mpx<=3
+DM_RT_POOL	game	320 MB, GSys heap 626 MB: output up to 2304x1296, shadow maps 3072 or 4096	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A4E400	DM_EFFECTS_RES!=full&DM_SHADOW_MAP_SIZE=3072|4096&output_mpx<=3
+DM_RT_POOL	game	416 MB, GSys heap 722 MB: output up to 2304x1296, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A34009	DM_EFFECTS_RES=full&output_mpx<=3
+DM_RT_POOL	game	416 MB, GSys heap 722 MB: output up to 2304x1296, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A5A400	DM_EFFECTS_RES=full&output_mpx<=3
+DM_RT_POOL	game	384 MB, GSys heap 690 MB: output up to 2560x1440	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A30009	DM_EFFECTS_RES!=full&output_mpx>3&output_mpx<=3.7
+DM_RT_POOL	game	384 MB, GSys heap 690 MB: output up to 2560x1440	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A56400	DM_EFFECTS_RES!=full&output_mpx>3&output_mpx<=3.7
+DM_RT_POOL	game	480 MB, GSys heap 786 MB: output up to 2560x1440, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A3C009	DM_EFFECTS_RES=full&output_mpx>3&output_mpx<=3.7
+DM_RT_POOL	game	480 MB, GSys heap 786 MB: output up to 2560x1440, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A62400	DM_EFFECTS_RES=full&output_mpx>3&output_mpx<=3.7
+DM_RT_POOL	game	448 MB, GSys heap 754 MB: output up to 2880x1620	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A38009	DM_EFFECTS_RES!=full&output_mpx>3.7&output_mpx<=4.7
+DM_RT_POOL	game	448 MB, GSys heap 754 MB: output up to 2880x1620	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A5E400	DM_EFFECTS_RES!=full&output_mpx>3.7&output_mpx<=4.7
+DM_RT_POOL	game	576 MB, GSys heap 882 MB: output up to 2880x1620, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A48009	DM_EFFECTS_RES=full&output_mpx>3.7&output_mpx<=4.7
+DM_RT_POOL	game	576 MB, GSys heap 882 MB: output up to 2880x1620, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A6E400	DM_EFFECTS_RES=full&output_mpx>3.7&output_mpx<=4.7
+DM_RT_POOL	game	672 MB, GSys heap 978 MB: output up to 3840x2160	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A54009	DM_EFFECTS_RES!=full&output_mpx>4.7
+DM_RT_POOL	game	672 MB, GSys heap 978 MB: output up to 3840x2160	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A7A400	DM_EFFECTS_RES!=full&output_mpx>4.7
+DM_RT_POOL	game	896 MB, GSys heap 1202 MB: output up to 3840x2160, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53995c	52A19009	52A70009	DM_EFFECTS_RES=full&output_mpx>4.7
+DM_RT_POOL	game	896 MB, GSys heap 1202 MB: output up to 3840x2160, effects at full size	main	e25c90c1c136638885659fd55bf8a03b	0x53a028	94021632	D2A96400	DM_EFFECTS_RES=full&output_mpx>4.7

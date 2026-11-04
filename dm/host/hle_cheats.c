@@ -1786,7 +1786,7 @@ static void sources_scan(void) {
 // [RED] line says why. A value with rows for other builds only is refused the same way: fixed addresses never run on a
 // build they were not found in. A variable set to a value without rows (the game's own, "game") writes nothing; an unset one
 // takes the value game when that value has rows (a default that is itself a patch: Bananza's Game mip bias), else writes nothing.
-// A row may carry a condition on a quantity the host knows at launch (sp_quantity: the HDR peak ratio it will report) or on another
+// A row may carry a condition on a quantity the host knows at launch (sp_quantity: the HDR peak ratio it will report, the output's megapixels) or on another
 // setting's value in the environment (sp_when_env: Bananza's upscale ratio fixed or dynamic, DM_UPSCALE_DYNAMIC; for a variable of the table, the value it
 // wrote), so one value can choose among words: only the rows whose condition holds are written, and two that hold for the same word refuse.
 // The words written are held: a cheat that stores into one is turned off at load, and any cheat write over one is refused
@@ -1798,7 +1798,16 @@ typedef struct { const char *var, *value, *label, *module, *build; uint64_t off;
 // A quantity a row's condition (when) may test, as the host knows it at launch: 0 and its value, or -1 when it has none now.
 //   hdr_peak  the HDR peak / paper white the display will report to the game (hle_vi.c dm_vi_hdr_launch_peak: DM_HDR=1 and a screen with
 //             EDR headroom at launch; DM_HDR_PEAK or the screen's headroom x paper white), so a patch can fit what the game is told
+//   output_mpx  the upscaler's output in megapixels (loader.c dm_res_chain_output: the profile's res_chain for the mode, the window with single upscale, the screen's size
+//             with match display), so a patch can size what grows with it (Bananza's render-target pool); unknown without res_chain
 static int sp_quantity(const char *name, double *out, char *desc, size_t n) {
+    if (!strcmp(name, "output_mpx")) {
+        int w = 0, h = 0; char how[64] = "";
+        if (!dm_res_chain_output(&w, &h, how, sizeof how)) { snprintf(desc, n, "output_mpx unknown: the profile has no res_chain"); return -1; }
+        *out = (double)w * h / 1e6;
+        snprintf(desc, n, "output_mpx %.2f: %dx%d, %s", *out, w, h, how);
+        return 0;
+    }
     if (!strcmp(name, "hdr_peak")) {
         int peak = 0, paper = 0;
         if (!dm_vi_hdr_launch_peak(&peak, &paper) || paper <= 0) { snprintf(desc, n, "hdr_peak unknown: HDR off or no screen with HDR headroom at launch"); return -1; }

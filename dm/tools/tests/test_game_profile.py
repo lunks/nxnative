@@ -153,6 +153,12 @@ class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes 
                            (f'DM_HDR\t1\tA\t{w}\t1E2A1001\thdr_peak=3\n', 'when is <quantity><op><number>')]:
             with self.subTest(why=why, table=table):
                 self.assertIn(why, with_patches(table))
+        # output_mpx: the upscaler's output in megapixels (Bananza's render-target pool tiers), with a term on another setting
+        p = f'main\t{BID}\t0x1000\t52A19009'
+        rows = with_patches(f'DM_P\tgame\t384 MB\t{p}\t52A30009\tDM_E!=full&output_mpx>3&output_mpx<=3.7\nDM_P\tgame\t480 MB\t{p}\t52A3C009\tDM_E=full&output_mpx>3&output_mpx<=3.7\n')
+        self.assertEqual(rows[0], '#define DM_GAME_SETTING_PATCHES_N 2')
+        self.assertIn('0x52A19009u, 0x52A3C009u, "DM_E=full&output_mpx>3&output_mpx<=3.7"}', rows[1])
+        self.assertIn('when is <quantity><op><number>', with_patches(f'DM_P\tgame\tA\t{p}\t52A30009\toutput_px>3\n'))
 
     def test_conditions_on_another_setting(self):   # DM_<NAME>=a|b / DM_<NAME>!=a|b: a second setting picks the words (Bananza's fixed or dynamic upscale ratio)
         w = f'main\t{BID}'

@@ -318,6 +318,13 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Fix:** the profile key `alloc_big_align` aligns allocations of 64 KB or more to 64 KB ([dm/games/README.md](../../dm/games/README.md)); the game then plays from the title screen into its opening story scene.
 - **Found on:** [Unicorn Overlord](../../dm/games/010069401ADB8000/README.md) (SDK 16.2.4, Vanillaware's engine as in [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md); one boot).
 
+### A render-target pool sized for the game's own resolution
+
+- **Symptom:** with a larger output, native rendering, full-size effects or larger shadow maps, `CRASH sig=11 addr=0xa0 pc=main+0x1296e0` at a scene switch (Donkey Kong Bananza: a texture request of agl's depth of field returned null and its caller read +0xa0 of it).
+- **Cause:** agl's `agl::utl::DynamicTextureAllocator` hands out every render target from one block sized at boot (200 MB in Bananza: gsys::SystemTask's create argument, allocated from the 506 MB GSys heap of the game's `HeapDef`), with no grow heap: a request that does not fit returns null, which the game never expects, as on the console its own resolutions fit. The host's memory, the application pool and the Metal textures play no part: the limit is the game's own bookkeeping.
+- **Fix:** a [setting patch](cheats.md#setting-patches) per size tier writes the block's size and grows its parent heap by as much (Bananza's `DM_RT_POOL`), chosen at launch by the output (`output_mpx`, from the profile's `res_chain`) and the settings that enlarge the targets; the parent's own parent must have the room (Bananza: what SequenceHeap, created with size 0, would otherwise take). Size the tiers from a frame capture: the pool is the memory pool of that size, its textures' offsets give its high-water mark (`<NSP folder>/040074A01BF12000-work/rt-pool/capdta.c`, `poolfit.py`).
+- **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#render-target-pool-current-not-played-yet) (agl / gsys, SDK 20.5.19; static analysis and a capture, not played yet). Super Mario Odyssey's higher resolutions needed the same, its texture pool and AglHeap raised by 512 MiB (GitHub issue #885, outside this repository).
+
 ## Mapping SVCs
 
 ### `svcQueryMemory` must report each module's real layout

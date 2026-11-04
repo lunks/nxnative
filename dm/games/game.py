@@ -117,7 +117,8 @@ def upscaler_keys(g):
 
 
 SETTING_PATCHES = 'setting_patches.tsv'
-WHEN_QUANTITIES = ('hdr_peak',)   # what a setting patch row's condition may test, as the host knows it at launch (hle_cheats.c sp_quantity): hdr_peak = the HDR peak / paper white it reports
+WHEN_QUANTITIES = ('hdr_peak', 'output_mpx')   # what a setting patch row's condition may test, as the host knows it at launch (hle_cheats.c sp_quantity): hdr_peak = the HDR peak / paper white it reports,
+# output_mpx = the upscaler's output in megapixels (the profile's res_chain with single upscale or match display: loader.c dm_res_chain_output)
 WHEN = re.compile(r'(' + '|'.join(WHEN_QUANTITIES) + r')(<=|>=|<|>)(\d+(?:\.\d+)?)')
 # or a term on another setting, as the environment holds it at launch: DM_<NAME>=a|b holds when the variable is set to one of the values, DM_<NAME>!=a|b when it is
 # unset or set to none of them (so a row can depend on a second setting: Donkey Kong Bananza's fixed or dynamic upscale ratio, DM_UPSCALE_DYNAMIC). A term on a variable with

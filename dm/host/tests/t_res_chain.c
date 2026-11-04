@@ -18,8 +18,9 @@ int svc_nro_deactivate(module_t *m) { (void)m; return 1; }
 static int opmode = 1;
 int dm_opmode(void) { return opmode; }
 // what the setting patches wrote at launch (hle_cheats.c): the label and value of a variable, NULL for none
-static const char *ratio_label, *ratio_value, *softest_label, *softest_value, *effects_label, *shadow_label, *mip_label, *mip_value;
+static const char *ratio_label, *ratio_value, *softest_label, *softest_value, *effects_label, *shadow_label, *mip_label, *mip_value, *pool_label;
 const char *dm_setting_patch_applied(const char *var, const char **value) {
+    if (!strcmp(var, "DM_RT_POOL") && pool_label) { if (value) *value = "game"; return pool_label; }
     if (!strcmp(var, "DM_UPSCALE_RATIO") && ratio_label) { if (value) *value = ratio_value; return ratio_label; }
     if (!strcmp(var, "DM_MIP_BIAS") && mip_label) { if (value) *value = mip_value; return mip_label; }
     if (!strcmp(var, "DM_UPSCALE_SOFTEST") && softest_label) { if (value) *value = softest_value; return softest_label; }
@@ -73,6 +74,10 @@ int main(void) {
               "effects the game's (half-res effects at half); shadows the game's",
            "the game's own: its scene sizes (2304 / 1.375 = 1676), its upscaler off at the start, its mip bias, effects and shadows");
     expect(l, "mip bias: game, -0.5 while upscaling (rate above 1.0), 0 at 1.0 (the game's own)", "the game's own mip bias: one launch line");
+    expect(l, "shadows the game's (scaled with the scene); render-target pool the game's own\n", "the game's own render-target pool");
+    pool_label = "448 MB, GSys heap 754 MB: output up to 2880x1620";
+    expect(chain(1), "; render-target pool 448 MB, GSys heap 754 MB: output up to 2880x1620\n", "the render-target pool the setting patch wrote: its label");
+    pool_label = NULL;
     ratio_label = "Balanced (1.69), fixed"; ratio_value = "1.6875"; effects_label = "Full (half- and quarter-res effects at the render size)"; shadow_label = "Full (no dynamic scaling)";
     mip_label = "Game: -0.5 while upscaling, 0 at native"; mip_value = "game";
     setenv("DM_UPSCALER", "metalfx-temporal", 1);
@@ -169,6 +174,27 @@ int main(void) {
       if (r == 1 && f == 1) printf("\xe2\x9c\x93 display on a build without MATCH_DISPLAY: single upscale to the game's window\n");
       else { fails++; printf("\xe2\x9c\x97 display without MATCH_DISPLAY: returned %d, +0x38 %u\n", r, f); } }
     unsetenv("DM_SINGLE_UPSCALE");
+    // the output the setting patches size by (dm_res_chain_output, output_mpx), asked before the launch lines: nothing written, no line
+    {
+        g_match_display_stub = 1; memset(page, 0xff, sizeof page);
+        struct { const char *v; int op, w, h; const char *how; } oc[] = {
+            {NULL, 1, 2304, 1296, "docked"}, {"1", 1, 2880, 1620, "single upscale: the window's size"},
+            {"display", 1, 2880, 1620, "single upscale: the window's size"},   // no screen without a front end: the game's window
+            {"1", 0, 1920, 1080, "handheld"}, {"bogus", 1, 2304, 1296, "docked"}};
+        for (int i = 0; i < (int)(sizeof oc / sizeof *oc); i++) {
+            if (oc[i].v) setenv("DM_SINGLE_UPSCALE", oc[i].v, 1); else unsetenv("DM_SINGLE_UPSCALE");
+            opmode = oc[i].op; int w = 0, h = 0; char how[64] = ""; uint32_t f;
+            char path[] = "/tmp/t_res_chain.XXXXXX"; int fd = mkstemp(path), saved = dup(2); assert(fd >= 0 && saved >= 0);
+            fflush(stderr); dup2(fd, 2);
+            int r = dm_res_chain_output(&w, &h, how, sizeof how);
+            fflush(stderr); dup2(saved, 2); close(saved); off_t logged = lseek(fd, 0, SEEK_END); close(fd); unlink(path);
+            memcpy(&f, page + 0x38, 4); checks++;
+            if (r == 1 && w == oc[i].w && h == oc[i].h && !strcmp(how, oc[i].how) && f == 0xffffffffu && !logged)
+                printf("\xe2\x9c\x93 output for DM_SINGLE_UPSCALE=%s, %s: %dx%d (%s), the state page untouched, no line\n", oc[i].v ? oc[i].v : "(unset)", oc[i].op ? "docked" : "handheld", w, h, how);
+            else { fails++; printf("\xe2\x9c\x97 output for DM_SINGLE_UPSCALE=%s: returned %d, %dx%d (%s), +0x38 %#x, %lld bytes logged\n", oc[i].v ? oc[i].v : "(unset)", r, w, h, how, f, (long long)logged); }
+        }
+        opmode = 1; unsetenv("DM_SINGLE_UPSCALE");
+    }
     // the mip bias the game applies (MIP_BIAS_LOG: its stub writes the rate +0xa0, the bias +0xa4, a count +0xa8): one line at a rate's first application
     {
         memset(page, 0, sizeof page); g_mip_bias_stub = 1; mip_label = "NVIDIA (temporal), jitter on: -1 - log2(rate)"; mip_value = "nvidia";

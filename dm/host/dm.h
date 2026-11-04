@@ -160,6 +160,7 @@ int dm_guest_heap_write(uint64_t addr, const void *src, size_t len);   // hle_sv
 void dm_cheats_init(void);            // Called once in host_preload after loading the modules (main.c): applies the profile's setting patches, reads DM_CHEATS and friends, loads the build's file
 const char *dm_setting_patch_applied(const char *var, const char **value);   // hle_cheats.c: the label of the setting patch rows written at launch for var (value in *value), NULL when none were
 int dm_vi_hdr_launch_peak(int *peak, int *paper);   // dm/gfx/hle_vi.c: 1 and the HDR peak and paper white (nits) the display will report, when DM_HDR=1 and the screen has HDR headroom at launch; else 0
+int dm_res_chain_output(int *w, int *h, char *how, size_t n);   // loader.c: 1 and the upscaler's output this launch renders to (the profile's res_chain, single upscale, match display), how naming the case; 0 without res_chain
 void dm_cheats_present(void);         // Per presented frame (hle_nvn.c presents): applies the enabled cheats once
 // The Cheats submenu's rows (front_mac.m, Mac window only). Readers of the list of cheats; the front end copies the strings out immediately
 int dm_cheats_found(void);            // A cheat file is loaded (this build's, or another build's on DM_CHEATS_ANY_BUILD)

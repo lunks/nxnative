@@ -314,15 +314,22 @@ __attribute__((weak)) int front_match_display(int *w, int *h, char *how, size_t 
 // stubs at the window size's physical uses, MATCH_DISPLAY): the same, and the window takes the size of the picture on the screen (front_match_display, match_display.h), so the
 // host's present draws it 1:1 too. Read once at the start: the game builds its framework and display arguments once, at boot. Returns 0 off, 1 the window, 2 match display
 // (*mw x *mh: the window's size)
-static int single_upscale_apply(int *mw, int *mh) {
+// single_upscale_mode: what DM_SINGLE_UPSCALE gives on this build and screen, nothing written; quiet: no lines (the setting patches ask it before the launch lines, output_mpx)
+static int single_upscale_mode(int *mw, int *mh, char *how, size_t hn, int quiet) {
     const char *e = getenv("DM_SINGLE_UPSCALE");
     int on = !e || !*e || !strcmp(e, "0") || !strcmp(e, "off") ? 0 : !strcmp(e, "1") || !strcmp(e, "on") ? 1 : !strcmp(e, "display") ? 2 : -1;
-    if (on < 0) { LOG("[RED] DM_SINGLE_UPSCALE=%s: 1, display or 0; off", e); on = 0; }
-    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=%s: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples", e); return 0; }
+    if (on < 0) { if (!quiet) LOG("[RED] DM_SINGLE_UPSCALE=%s: 1, display or 0; off", e); on = 0; }
+    if (on && !g_single_upscale_stub) { if (!quiet) LOG("[RED] DM_SINGLE_UPSCALE=%s: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples", e); return 0; }
     if (!g_single_upscale_stub || !dm_fps_state) return 0;
+    if (on == 2 && !g_match_display_stub) { if (!quiet) LOG("[RED] DM_SINGLE_UPSCALE=display: this build's window keeps the game's size (no MATCH_DISPLAY in its rewriter table: rewrite the app with this tree); single upscale to that window instead"); on = 1; }
+    else if (on == 2 && !front_match_display(mw, mh, how, hn)) { if (!quiet) LOG("%s: match display: no screen to match (no window); single upscale to the game's window instead", g_fps_mod); on = 1; }
+    return on;
+}
+static int single_upscale_apply(int *mw, int *mh) {
     char how[320] = "";
-    if (on == 2 && !g_match_display_stub) { LOG("[RED] DM_SINGLE_UPSCALE=display: this build's window keeps the game's size (no MATCH_DISPLAY in its rewriter table: rewrite the app with this tree); single upscale to that window instead"); on = 1; }
-    else if (on == 2 && !front_match_display(mw, mh, how, sizeof how)) { LOG("%s: match display: no screen to match (no window); single upscale to the game's window instead", g_fps_mod); on = 1; }
+    int on = single_upscale_mode(mw, mh, how, sizeof how, 0);
+    if (!g_single_upscale_stub || !dm_fps_state) return 0;
+    const char *e = getenv("DM_SINGLE_UPSCALE");
     uint32_t v = on != 0, wh[2] = {on == 2 ? (uint32_t)*mw : 0, on == 2 ? (uint32_t)*mh : 0};
     memcpy(dm_fps_state + 0x38, &v, sizeof v); memcpy(dm_fps_state + 0x3c, wh, sizeof wh);
     if (on) LOG("%s: single upscale on (DM_SINGLE_UPSCALE=%s): the game's display scales (Bananza: 0.8 docked) set to 1.0, so its upscaler writes the window's size and its "
@@ -374,19 +381,37 @@ static void mip_bias_launch_log(double r0, double r1, double lo, double hi, int 
         LOG("mip bias: nvidia, rate %.5g → bias %.3f (jitter %s) at launch", rates[i], dm_mip_bias_nvidia((float)rates[i], jit, aa && rates[i] <= 1.0), jit ? "on" : "off");
 }
 
+// The upscaler's output for the mode and single upscale (res_chain's three outputs; match display: the window mw x mh); 0 without res_chain
+static int res_chain_out(int single, int mw, int mh, int *w, int *h, double *lo, double *hi) {
+    int ow[3], oh[3];
+    if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], lo, hi) != 8) return 0;
+    int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2;
+    *w = ow[k]; *h = oh[k];
+    if (docked && single == 2) { *w = mw; *h = mh; }   // the window's size, the screen's
+    return 1;
+}
+// The output this launch renders to, before the launch lines (the setting patches' quantity output_mpx, hle_cheats.c sp_quantity: Bananza's render-target pool): 1 and
+// the size, how naming the case; 0 without res_chain. The largest scene is this size too: at rate 1.0 (Native, Native (MetalFX AA), and every stage's start in the game's own range)
+int dm_res_chain_output(int *w, int *h, char *how, size_t n) {
+    int mw = 0, mh = 0; double lo, hi; char mhow[320] = "";
+    int single = single_upscale_mode(&mw, &mh, mhow, sizeof mhow, 1);
+    if (!res_chain_out(single, mw, mh, w, h, &lo, &hi)) return 0;
+    int docked = dm_opmode() == 1;
+    snprintf(how, n, "%s", !docked ? "handheld" : single == 2 ? "match display: the screen's size" : single ? "single upscale: the window's size" : "docked");
+    return 1;
+}
 // The resolution chain at launch, for a profile with res_chain (game.py; Bananza's README.md, Resolution model): the upscaler's output for the mode (docked with or
 // without single upscale, handheld); the upscale rate the setting patches wrote: fixed (DM_UPSCALE_RATIO), or dynamic from it (the sharpest) to the softest
 // (DM_UPSCALE_SOFTEST as written: raised to the sharpest, past the game's highest only with a MetalFX upscaler; without it, the game's own highest), else the game's
 // own range; the rate each stage starts at (the parameter apply writes the fixed or the sharpest rate; the game's own starts at 1.0); the scene's size (output / rate,
 // rounded up, as the game's 2304 / 1.375 = 1676); the upscaler and whether it runs at the sharpest rate (at 1.0 the game turns its upscaler off, and MetalFX with
 // it; Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx, is rate 1.0 with the upscaler kept on: MetalFX's temporal scaler anti-aliases at the output's size, with its
-// mip bias); the texture mip bias (DM_MIP_BIAS: Game, or NVIDIA by the rate); the effects' and shadows' setting patches. A prediction from what was written at launch;
+// mip bias); the texture mip bias (DM_MIP_BIAS: Game, or NVIDIA by the rate); the effects' and shadows' setting patches and the render-target pool's (DM_RT_POOL). A prediction from what was written at launch;
 // the upscaler: output line at the first upscale names the sizes drawn, and the mip bias: lines (dm_mip_bias_tick) each bias the game applies
 static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 the window, 2 match display (the window mw x mh)
-    int ow[3], oh[3]; double lo, hi;
-    if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
-    int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2, w = ow[k], h = oh[k];
-    if (docked && single == 2) { w = mw; h = mh; }   // the window's size, the screen's
+    int w, h; double lo, hi;
+    if (!res_chain_out(single, mw, mh, &w, &h, &lo, &hi)) return;
+    int docked = dm_opmode() == 1;
     const char *val = NULL, *rl = dm_setting_patch_applied("DM_UPSCALE_RATIO", &val), *dy = getenv("DM_UPSCALE_DYNAMIC"), *up = getenv("DM_UPSCALER");
     const char *fval = NULL, *fl = dm_setting_patch_applied("DM_UPSCALE_SOFTEST", &fval);
     int mfx = up && (!strcmp(up, "metalfx") || !strcmp(up, "metalfx-temporal"));
@@ -423,9 +448,10 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     if (mode == 2) snprintf(mip, sizeof mip, "nvidia (%s log2(rate) at each rate, jitter %s)", jit ? "-1 -" : "-", jit ? "on" : "off");
     else if (mode == 1) snprintf(mip, sizeof mip, "game (%s)", mbl);
     else snprintf(mip, sizeof mip, "the game's own (-0.5 while upscaling)");
-    LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; mip bias %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
+    const char *pool = dm_setting_patch_applied("DM_RT_POOL", NULL);   // the render-target pool sized for the output and effects (Bananza's README.md, Render-target pool)
+    LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; mip bias %s; effects %s; shadows %s; render-target pool %s", docked ? "docked" : "handheld", w, h,
         docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups, mip,
-        eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)");
+        eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)", pool ? pool : "the game's own");
     mip_bias_launch_log(r0, r1, lo, hi, aa);
 }
 // The texture mip bias the game applies (MIP_BIAS_LOG: Bananza's stub on the controller's apply call, main+0x38e074, writes the rate at +0xa0, the bias at +0xa4, then a
