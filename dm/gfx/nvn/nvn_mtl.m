@@ -13130,6 +13130,23 @@ static void present_gpu_note(double s, int fx) {
     n[fx] = 0;
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
+// The picture against the drawable, logged when either size changes (16 lines at most; present thread): drawn 1:1 when the rectangle present_viewport gives it is its own size
+// (Donkey Kong Bananza's match display, DM_SINGLE_UPSCALE=display: the game's window sized to the screen's pixels at launch, fullscreen in the screen's native mode), else
+// scaled by the present (a window or screen of another size; a scaled HiDPI mode, whose drawable is larger than the panel and which macOS scales down to it)
+static void present_scale_note(id<MTLTexture> src, const int crop[4], NSUInteger dw, NSUInteger dh) {
+    static NSUInteger last[4]; static int lines; NSUInteger r[4];
+    if (lines >= 16 || !present_crop_rect(src, crop, r) || !r[2] || !r[3]) return;
+    NSUInteger now[4] = {r[2], r[3], dw, dh};
+    if (!memcmp(now, last, sizeof now)) return;
+    memcpy(last, now, sizeof now); lines++;
+    MTLViewport vp = present_viewport(r[2], r[3], dw, dh);
+    const char *md = getenv("DM_SINGLE_UPSCALE");
+    if ((NSUInteger)vp.width == r[2] && (NSUInteger)vp.height == r[3])
+        MLOG("present: picture %lux%lu drawn 1:1 into the drawable %lux%lu at %.0f,%.0f", (unsigned long)r[2], (unsigned long)r[3], (unsigned long)dw, (unsigned long)dh, vp.originX, vp.originY);
+    else MLOG("present: picture %lux%lu scaled %.3fx to %.0fx%.0f in the drawable %lux%lu%s", (unsigned long)r[2], (unsigned long)r[3], vp.width / r[2], vp.width, vp.height,
+              (unsigned long)dw, (unsigned long)dh, md && !strcmp(md, "display") ? " (match display sized the game's window at launch: since then the window was resized, left or entered "
+              "fullscreen or moved to another screen, or the display mode is scaled, its drawable larger than the panel: still the right picture, resampled)" : "");
+}
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, int interp) {   // interp: the interpolated picture in that slot, before the frame (nvn_mfx.inc), else -1
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
@@ -13200,6 +13217,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
     if (!dr) return 0;
+    present_scale_note(src, crop, dr.texture.width, dr.texture.height);
     int alloc_i = (int)(ticket % 3) + (interp >= 0 ? 3 : 0);
     if (g_present_alloc_fence[alloc_i]) {
         pthread_mutex_lock(&g_pq_mu);

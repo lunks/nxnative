@@ -25,6 +25,7 @@
 #include "pad_hid_mac.h"
 #include "home_quit.h"
 #include "home_quit_mac.h"
+#include "match_display.h"
 #include <signal.h>
 #include <math.h>
 #include <sys/stat.h>
@@ -44,6 +45,12 @@ int front_display_pixels(int *w, int *h) {
     int a = (int)CGDisplayModeGetPixelWidth(m), b = (int)CGDisplayModeGetPixelHeight(m); CGDisplayModeRelease(m);
     if (a <= 0 || b <= 0) return 0;
     *w = a; *h = b; return 1;
+}
+// Match display (front.h): the main display, where the window opens, fullscreen as front_run starts it (DM_FULLSCREEN) or the window's opening size
+int front_match_display(int *w, int *h, char *how, size_t n) {
+    if (!getenv("DM_WINDOW")) return 0;   // no window: nothing on a screen to match
+    const char *fs = getenv("DM_FULLSCREEN"); match_screen s = {0};
+    return match_display_screen(0, &s) && match_display_size(&s, fs && strcmp(fs, "0"), w, h, how, n);
 }
 static _Atomic int g_screen_variable_refresh;
 int front_screen_variable_refresh(void) { return g_screen_variable_refresh; }
@@ -1357,7 +1364,7 @@ void front_run(void (*guest)(void)) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        NSRect r = NSMakeRect(0, 0, 1280, 720);
+        NSRect r = NSMakeRect(0, 0, MATCH_WIN_PTS_W, MATCH_WIN_PTS_H);   // the size match display sizes a window for (match_display.h)
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];

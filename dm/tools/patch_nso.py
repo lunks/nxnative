@@ -1387,7 +1387,8 @@ obs += region_obs
 # runs the original instructions), +4 30 fps movie/cinematic flag, +8 double lead (TOTK), +0x10 float render scale (TOTK, BotW), +0x18 double game seconds (TOTK),
 # +0x20 u32 step in vsyncs (host; 0 = not decided yet), +0x24 u32 a step the game fixes itself (BotW's VFR override; 0 = none), +0x28 u32 AoC's vsyncs per update, marked by
 # its first stub (0 = off), +0x30 u64 vsyncs stepped (the stubs; logged by the host to check the game's speed), +0x38 u32 single upscale (Donkey Kong Bananza's display scales at
-# 1.0, DM_SINGLE_UPSCALE; its build has the SINGLE_UPSCALE capability). Stub bodies assembled with clang
+# 1.0, DM_SINGLE_UPSCALE; its build has the SINGLE_UPSCALE capability), +0x3c u32 and +0x40 u32 its window's width and height (match display, DM_SINGLE_UPSCALE=display, 0 = the
+# game's; MATCH_DISPLAY), +0x48..+0x9c Breath of the Wild's screen shape (DM_SCREEN_ASPECT, loader.c). Stub bodies assembled with clang
 # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
 # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, and ctx.render_scale = 1 marks a render-scale stub
 FRAME_STEP = PATCHES['FRAME_STEP']
@@ -1399,7 +1400,7 @@ if BUILD_ID in FRAME_STEP and NAME == 'main':
         # The loader supplies zero-filled BSS/key pages for a front patch area.
         # Reserve the frame state after the key page there too; stubs reach it by ADRP.
         IMAGE_SIZE = FS_STATE_OFF + 0x4000
-    assert FS_STATE_OFF % 0x1000 == 0 and (FAR or FS_STATE_OFF + 0x40 <= PATCH_OFF) and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
+    assert FS_STATE_OFF % 0x1000 == 0 and (FAR or FS_STATE_OFF + 0x100 <= PATCH_OFF) and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
     def fs_site(off, orig):
         ob = bytes.fromhex(orig)
         assert IMG[off:off + len(ob)] == ob, f'frame step original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'

@@ -188,6 +188,9 @@ enum LauncherWindowLayout {
     }
 }
 
+// launcher.c: Match display's window size on the main display, fullscreen (1) or as the game window opens (0); 0 when not known
+@_silgen_name("dm_mac_match_display") private func dmMacMatchDisplay(_ fullscreen: Int32, _ w: UnsafeMutablePointer<Int32>, _ h: UnsafeMutablePointer<Int32>) -> Int32
+
 // 1: Play (the window's settings are in the environment), 0: the player quit, 2: no window (no launcher.json, or "Show this window at launch" off): launcher.c applies the saved choices
 @_cdecl("dm_mac_launcher")
 public func dmMacLauncher() -> Int32 {
@@ -198,6 +201,10 @@ public func dmMacLauncher() -> Int32 {
         return 2
     }
     let model = LauncherModel(file.settings)
+    for fullscreen in [false, true] {   // Match display's window size, as the host will pick it (launcher.c, dm/host/match_display.h)
+        var w: Int32 = 0, h: Int32 = 0
+        if dmMacMatchDisplay(fullscreen ? 1 : 0, &w, &h) != 0 { model.displaySizes[fullscreen] = [Int(w), Int(h)] }
+    }
     let app = NSApplication.shared, launcher = Launcher(model)
     app.setActivationPolicy(.regular)
     app.delegate = launcher

@@ -56,6 +56,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
 | `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
+| `build` → `game` | match display: the window size from the state page (+0x3c / +0x40) at its physical uses | rendering | blocked: frame-step stubs have no function-matched form yet | checked: static: every call of the getters main+0x5bf770 / 0x5bf780 (six pairs) and every 2880 / 1620 constant in main; the framework's use of its argument (main+0x5c6038) | 1 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) | the game's fixed window size (sead's framework argument and gsys's display argument) in this build |
 | `build` → `game` | screen shape: the sizes, the view, the layouts' projection and their edge widgets (DM_SCREEN_ASPECT) | rendering | blocked: the stubs have no function-matched form yet | judgement | 1 | [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) | the output size is the host's, but where the game takes its sizes, its cameras and its layouts are this build's code |
 | `build` → `game` | single upscale: the display scales at 1.0 (state page +0x38) | rendering | blocked: frame-step stubs have no function-matched form yet | checked: static: the constructor main+0x539c9c, its copy into the display manager (main+0x713560) and the per-frame pick (main+0x30f840); 2880 x 0.8 = 2304 and 1620 x 0.8 = 1296 match the captured upscaler output | 1 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) | the game's own display argument (gsys) in this build |
 | `build` → `game` | Hagi coroutine stack region 1 GB → 64 MB | memory | kept: 1.1.4 is the last update; a match over Hagi would serve no other build of this game | checked: the final build 1.1.4 (the only one the profile packs), 2026-11-04 | 1 | [Super Mario 3D All-Stars: Super Mario Sunshine](../../dm/games/010049900F546002/README.md) | a size inside Hagi's own code: nothing the host sees tells a 1 GB reservation it can shrink from one it cannot |
@@ -68,7 +69,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 126 | `build` → `game` ×2 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 5 | 0 | 0 | 126 | `build` → `game` ×3 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -280,11 +281,16 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md), `040074A01BF12000`, [patches.py](../../dm/games/040074A01BF12000/patches.py).
 
 - **`build` → `game`**, rendering, blocked: frame-step stubs have no function-matched form yet, checked: static: the constructor main+0x539c9c, its copy into the display manager (main+0x713560) and the per-frame pick (main+0x30f840); 2880 x 0.8 = 2304 and 1620 x 0.8 = 1296 match the captured upscaler output: single upscale: the display scales at 1.0 (state page +0x38). The game's own display argument (gsys) in this build
+- **`build` → `game`**, rendering, blocked: frame-step stubs have no function-matched form yet, checked: static: every call of the getters main+0x5bf770 / 0x5bf780 (six pairs) and every 2880 / 1620 constant in main; the framework's use of its argument (main+0x5c6038): match display: the window size from the state page (+0x3c / +0x40) at its physical uses. The game's fixed window size (sead's framework argument and gsys's display argument) in this build
 - **`build` → `game`**, rendering, gap, judgement: setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch. Fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function
 
-- **v458752 `main`** `e25c90c1…` ([patches.py:28](../../dm/games/040074A01BF12000/patches.py#L28))
+- **v458752 `main`** `e25c90c1…` ([patches.py:54](../../dm/games/040074A01BF12000/patches.py#L54))
+  - frame step `+0x53999c`: the display argument: display 0's width from state page +0x3c (match display; 0 = the getter's 2880)
+  - frame step `+0x5399a4`: the display argument: display 0's height from state page +0x40 (match display; 0 = the getter's 1620)
   - frame step `+0x539d6c`: display scales 0.8 / 2/3 -> 1.0 with single upscale (state page +0x38): the upscaler writes the window size
-  - launcher capabilities: SINGLE_UPSCALE
+  - frame step `+0x5bf0d8`: nnMain's framework argument: the window's width from state page +0x3c (match display; 0 = the getter's 2880)
+  - frame step `+0x5bf0e0`: nnMain's framework argument: the window's height from state page +0x40 (match display; 0 = the getter's 1620)
+  - launcher capabilities: SINGLE_UPSCALE, MATCH_DISPLAY
   - setting patch `main+0x81914` (`DM_SHADOW_RES=full`, Full (no dynamic scaling)): `1E21CC00` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x6edf74` (`DM_SHADOW_MAP_SIZE=3072`, 3072): `5281001A` → `5281801A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x6ee01c` (`DM_SHADOW_MAP_SIZE=3072`, 3072): `F2C1001A` → `F2C1801A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))

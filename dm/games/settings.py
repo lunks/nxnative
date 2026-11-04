@@ -51,11 +51,14 @@ def render_base(g):
 
 def rate_base(g):
     """The profile's res_chain as the output sizes an upscale rate divides: {"docked": [w, h], "handheld": [w, h], "when": [{"is": "DM_SINGLE_UPSCALE=1",
-    "docked": [w, h], "handheld": [w, h]}]} (the first entry of when whose setting holds wins); None without res_chain (game.py checks its form)"""
+    "docked": [w, h], "handheld": [w, h]}, ...]} (the first entry of when whose setting holds wins); None without res_chain (game.py checks its form). Match display
+    (DM_SINGLE_UPSCALE=display) docked is the screen's size, known only at launch: [0, 0] with "display": true, which a front end that can size it fills in (the Mac window:
+    dm/host/match_display.h through launcher.c) and any other shows without pixel sizes"""
     rc = g.words('res_chain', '')
     if not rc: return None
     d, single, hh = ([int(x) for x in w.split('x')] for w in rc[:3])
-    return {'docked': d, 'handheld': hh, 'when': [{'is': 'DM_SINGLE_UPSCALE=1', 'docked': single, 'handheld': hh}]}
+    return {'docked': d, 'handheld': hh, 'when': [{'is': 'DM_SINGLE_UPSCALE=1', 'docked': single, 'handheld': hh},
+                                                  {'is': 'DM_SINGLE_UPSCALE=display', 'docked': [0, 0], 'handheld': hh, 'display': True}]}
 
 
 def section(text, platform, n):   # a row's section, <ios>|<mac> for each platform's own

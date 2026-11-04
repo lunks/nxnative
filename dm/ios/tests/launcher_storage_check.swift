@@ -1,6 +1,8 @@
 // The launcher's storage (LauncherSettings.swift LauncherModel), run by test_launcher_storage.py on macOS: only choices that differ from the game's default are
 // stored, Reset to tested defaults followed by Play forgets the choices, an env file's values are kept. Arguments: the iOS and the Mac launcher.json of Breath of the Wild (settings.py, GFXAPI=nvn)
 import Foundation
+// launcher.c's Match display size, which dm/mac/Launcher.swift calls: launcher.c is not linked into the check (it has its own main), and no screen is measured here
+@_cdecl("dm_mac_match_display") func dmMacMatchDisplayStub(_ fullscreen: Int32, _ w: UnsafeMutablePointer<Int32>, _ h: UnsafeMutablePointer<Int32>) -> Int32 { 0 }
 @main struct Check {
     static func main() {
         var failed = 0
@@ -115,15 +117,15 @@ import Foundation
         // (Softest needs Dynamic resolution, which needs Render resolution), and a softest rate never sharper than the render resolution (atleast)
         let res = try! JSONDecoder().decode(SettingsFile.self, from: Data(#"""
             {"settings": [{"env":"DM_OPMODE","kind":"choice","section":"Game","label":"Console mode","note":"","default":"1","options":[["1","Docked"],["0","Handheld"]],"level":"basic"},
-                          {"env":"DM_SINGLE_UPSCALE","kind":"choice","section":"Resolution","label":"Output resolution","note":"","default":"0","options":[["0","Game default"],["1","Window"]]},
+                          {"env":"DM_SINGLE_UPSCALE","kind":"choice","section":"Resolution","label":"Output resolution","note":"","default":"0","options":[["0","Game default"],["1","Window"],["display","Match display"]]},
                           {"env":"DM_UPSCALER","kind":"choice","section":"Resolution","label":"Game's upscaler","note":"","default":"game","options":[["game","Game's own"],["metalfx-temporal","MetalFX temporal"]]},
                           {"env":"DM_UPSCALE_RATIO","kind":"choice","section":"Resolution","label":"Render resolution","note":"","default":"game","conflicts":"DM_UPSCALER=game:3.0",
                            "options":[["game","Game default (dynamic)"],["1.0","Native (1.0, no upscaler)"],["1.5","Quality (1.5)"],["1.6875","Balanced (1.69)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
-                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}},
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]},{"is":"DM_SINGLE_UPSCALE=display","docked":[0,0],"handheld":[1920,1080],"display":true}]}},
                           {"env":"DM_UPSCALE_DYNAMIC","kind":"toggle","section":"Resolution","label":"Dynamic resolution","note":"","default":"0","on":"1","off":"0","needs":"DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0"},
                           {"env":"DM_UPSCALE_SOFTEST","kind":"choice","section":"Resolution","label":"Softest","note":"","default":"2.0","needs":"DM_UPSCALE_DYNAMIC=1","atleast":"DM_UPSCALE_RATIO","conflicts":"DM_UPSCALER=game:3.0",
                            "options":[["1.0","Native (1.0, no upscaler)"],["1.5","Quality (1.5)"],["1.6875","Balanced (1.69)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
-                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}},
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]},{"is":"DM_SINGLE_UPSCALE=display","docked":[0,0],"handheld":[1920,1080],"display":true}]}},
                           {"env":"DM_EFFECTS_RES","kind":"choice","section":"Effects","label":"Effects resolution","note":"","default":"game","options":[["game","Game default (half)"],["full","Full"]]}]}
             """#.utf8)).settings
         let rm = LauncherModel(res, defaults: d)
@@ -136,6 +138,17 @@ import Foundation
         rm.values["DM_OPMODE"] = "0"
         expect(rm.optionLabel(ratio, ["2.0", "P"]) == "P · 960 × 540", "handheld: its own output")
         rm.values["DM_OPMODE"] = "1"
+        // Output resolution: Match display: the screen's size, which only a front end that measures the screen knows (the Mac window, launcher.c)
+        rm.set(res[1], "display")
+        expect(rm.optionLabel(ratio, ["1.5", "Quality (1.5)"]) == "Quality (1.5)", "Match display without the screen's size (iOS, an older front end): no render size")
+        rm.displaySizes = [false: [1408, 792], true: [2560, 1440]]
+        expect(rm.optionLabel(ratio, ["1.5", "Q"]) == "Q · 939 × 528", "Match display in a window: the window's size divided")
+        rm.values["DM_FULLSCREEN"] = "1"
+        expect(rm.optionLabel(ratio, ["1.6875", "B"]) == "B · 1518 × 854", "Match display fullscreen: the screen's 2560 × 1440 divided")
+        rm.values["DM_OPMODE"] = "0"
+        expect(rm.optionLabel(ratio, ["2.0", "P"]) == "P · 960 × 540", "Match display handheld: the game's handheld output")
+        rm.values["DM_OPMODE"] = "1"; rm.values["DM_FULLSCREEN"] = nil; rm.displaySizes = [:]
+        rm.set(res[1], "1")
         expect(!rm.visible(dynRow) && !rm.visible(soft) && rm.renderSummary(in: "Resolution") == nil, "the game's own rate: no dynamic rows, no summary")
         rm.set(ratio, "1.5"); rm.set(dynRow, "1")
         expect(rm.visible(dynRow) && rm.visible(soft), "a rate: Dynamic resolution, and with it on, Softest")

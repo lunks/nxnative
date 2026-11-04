@@ -26,9 +26,17 @@
 #include <unistd.h>
 #include "romfs_image.h"
 #include "save_sync.h"
+#include "match_display.h"
 
 extern char **environ;
 int dm_mac_launcher(void);   // Launcher.swift: 1 = Play (the settings are in the environment), 0 = the player quit, 2 = no window (apply the saved choices here)
+// Match display's window size (Launcher.swift, the render sizes of the settings window's upscale rates), as the host picks it at launch (front_mac.m front_match_display):
+// the main display, fullscreen or as the game window opens. 0 when the screen is not known
+int dm_mac_match_display(int fullscreen, int *w, int *h);
+int dm_mac_match_display(int fullscreen, int *w, int *h) {
+    match_screen s = {0};
+    return match_display_screen(0, &s) && match_display_size(&s, fullscreen, w, h, NULL, 0);
+}
 static pid_t g_child;
 static char *g_file_keys, *g_launch_keys;   // the variables the env files set, and the settings the launch environment set (DM_ENV_FILE_KEYS, DM_ENV_LAUNCH_KEYS)
 

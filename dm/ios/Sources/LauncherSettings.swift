@@ -11,11 +11,12 @@ struct Setting: Decodable, Identifiable {
     let atleast: String?   // "<VAR>": a choice of numbers never below the number that setting holds: lower values are not offered, a lower one held is raised
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     let rateBase: Base?    // a choice of upscale rates: the output size each rate divides, docked and handheld, for each option's render size in pixels (the Mac window)
-    // A size per console mode, and others while a setting has a value (when: the first entry whose "<VAR>=<value>" holds wins; Bananza's output with Output resolution: Window)
+    // A size per console mode, and others while a setting has a value (when: the first entry whose "<VAR>=<value>" holds wins; Bananza's output with Output resolution: Window).
+    // display: the docked size is the screen's, known at launch only (Match display): LauncherModel.displaySizes when the front end gives them, else none
     struct Base: Decodable {
         let docked, handheld: [Int]
         let when: [Alt]?
-        struct Alt: Decodable { let `is`: String; let docked, handheld: [Int] }
+        struct Alt: Decodable { let `is`: String; let docked, handheld: [Int]; let display: Bool? }
     }
     let options: [[String]]?   // choice: [value, label]
     let min, max, step: Double?   // range
@@ -48,6 +49,9 @@ final class LauncherModel: ObservableObject {
     let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
     let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
     @Published var values: [String: String] = [:]
+    // Match display's window size (a when entry with display), fullscreen (true) and as the game window opens (false): the Mac window sets them from the screen at launch
+    // (dm/host/match_display.h, as the host picks it); empty elsewhere, which shows no render sizes for it
+    var displaySizes: [Bool: [Int]] = [:]
 
     private let defaults: UserDefaults
 
@@ -159,7 +163,8 @@ final class LauncherModel: ObservableObject {
             guard let eq = a.is.firstIndex(of: "=") else { return false }
             return values[String(a.is[a.is.startIndex..<eq])] == String(a.is[a.is.index(after: eq)...])
         }
-        let size = alt.map { handheld ? $0.handheld : $0.docked } ?? (handheld ? b.handheld : b.docked)
+        let fullscreen = (values["DM_FULLSCREEN"] ?? "0") != "0"   // the host's reading: any value but 0 starts in fullscreen
+        let size = alt.map { a in handheld ? a.handheld : a.display == true ? displaySizes[fullscreen] ?? a.docked : a.docked } ?? (handheld ? b.handheld : b.docked)
         return size.count == 2 && size.allSatisfy({ $0 > 0 }) ? size : nil
     }
     static func pixels(_ w: Int, _ h: Int) -> String { "\(w) × \(h)" }

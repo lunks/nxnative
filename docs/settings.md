@@ -128,6 +128,13 @@ Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that h
 - **Not played yet:** the HUD's layout at the larger size and memory are unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off.
 - In `env.txt`: `DM_SINGLE_UPSCALE=1`. The game log then says `single upscale on` at start and `upscaler: output 2880x1620 … the window's size: one resample` once it upscales.
 
+**Match display** does the same and also makes the game's window the size its picture takes on your screen, in the screen's own pixels: the game upscales once, straight to them, and the app shows the picture without scaling it again. On a 3440x1440 screen in fullscreen that is 2560x1440 (black bars at the sides, as always for the game's 16:9 picture), whatever scaled resolution macOS shows; in a window, the window's size as it opens. The settings window's render sizes use it.
+
+- **Chosen at launch:** the size comes from the screen the game opens on and from **Display mode**. After moving the game to another screen, resizing its window or switching between window and fullscreen, the picture is still right but scaled again: restart the game.
+- **Scaled display modes:** when macOS runs the screen at a scaled resolution ("Larger Text", "More Space"), macOS itself scales the app's whole picture to the screen; the game still renders at the screen's pixels.
+- **Cost:** from 1280x720 to 3840x2160 (a 4K screen; larger screens get 3840x2160). Smaller than Window on a 1440p screen, larger on a 4K one.
+- In `env.txt`: `DM_SINGLE_UPSCALE=display`. The game log says `match display: the game's window 2560x1440 (…)` at start and `present: picture 2560x1440 drawn 1:1 …` once it shows a frame (or `scaled …` when it does not match).
+
 ### Render resolution
 
 Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic resolution, as on a Switch: it starts each level at its output's size without its upscaler, and renders smaller, down to half the output's width, once frames run late. The others set a rate:
@@ -387,7 +394,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Rumble cutoff | `DM_RUMBLE_MIN` | `0` to `0.9` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
-| [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `0` (default) |
+| [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `display` (Match display), `0` (default) |
 | [Render resolution](#render-resolution) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `1.5`, `1.6875`, `2.0`, `3.0` |
 | [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
 | [Softest](#softest) (Mac) | `DM_UPSCALE_SOFTEST` | `1.0`, `1.5`, `1.6875`, `2.0` (default), `3.0`; not below `DM_UPSCALE_RATIO` |

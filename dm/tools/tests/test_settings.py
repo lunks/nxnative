@@ -61,7 +61,8 @@ class UpscalerSetting(unittest.TestCase):
                 with patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
                     su=[s for s in settings.build('040074A01BF12000',tmp,'unused')['settings'] if s['env']=='DM_SINGLE_UPSCALE']
                 self.assertEqual(bool(su),shown,(header,platform))
-                if su:self.assertEqual((su[0]['kind'],su[0]['default'],su[0]['section'],su[0].get('level'),su[0]['label'],[o[0] for o in su[0]['options']]),('choice','0','Resolution',None,'Output resolution',['0','1']))
+                if su:self.assertEqual((su[0]['kind'],su[0]['default'],su[0]['section'],su[0].get('level'),su[0]['label'],[o[0] for o in su[0]['options']]),('choice','0','Resolution',None,'Output resolution',['0','1','display']))
+                if su:self.assertEqual(su[0]['options'],[['0','Game default (smaller then stretched)'],['1','Window (2880x1620)'],['display','Match display']])
 
 class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches: the profile's setting_patches.tsv, for the build being packed (main's BUILD_ID), on the Mac
     DKB,DKB_MAIN='040074A01BF12000','e25c90c1c136638885659fd55bf8a03b'
@@ -96,8 +97,9 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertEqual([o[0] for o in q['options']],['game','1.0','1.5','1.6875','2.0','3.0'])
         self.assertEqual(q['options'][3][1],'Balanced (1.69)','an option is named by its label row, the write rows\' labels are the log\'s')
         self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0','Ultra performance only with a MetalFX upscaler')
-        base={'docked':[2304,1296],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]}]}
-        self.assertEqual(q['rate_base'],base,'the output sizes a rate divides (res_chain), for each option\'s render size')
+        base={'docked':[2304,1296],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]},
+                                                                  {'is':'DM_SINGLE_UPSCALE=display','docked':[0,0],'handheld':[1920,1080],'display':True}]}
+        self.assertEqual(q['rate_base'],base,'the output sizes a rate divides (res_chain), for each option\'s render size; Match display\'s docked size is the screen\'s, filled in at launch')
         dyn=r['DM_UPSCALE_DYNAMIC']
         self.assertEqual((dyn['kind'],dyn['default'],dyn['needs']),('toggle','0','DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0'))
         lo=r['DM_UPSCALE_SOFTEST']

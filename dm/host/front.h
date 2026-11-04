@@ -18,6 +18,10 @@ int front_screen_max_fps(void);
 // The pixel size of the display the game is shown on: on the Mac the window's screen in its current mode (the main display before the window is up) (a scaled Retina mode's pixels), an iPhone's or iPad's screen (nativeBounds).
 // Returns 0 and leaves w, h alone when not known (no front end: graphics unit tests). Any thread
 int front_display_pixels(int *w, int *h);
+// Match display (DM_SINGLE_UPSCALE=display; loader.c writes it into the state page at launch, before the window exists): the game window's size in pixels, the physical pixels a
+// 16:9 picture takes on the screen the window will open on, fullscreen (DM_FULLSCREEN) or as the window opens (dm/host/match_display.h), with a line saying how (how, n bytes).
+// Mac front_mac.m; 0 when not known (no window: windowless runs, unit tests; iOS), from loader.c's weak default
+int front_match_display(int *w, int *h, char *how, size_t n);
 // Whether the window's current screen mode supports variable refresh (Mac front_mac.m; none on iOS). Any thread
 int front_screen_variable_refresh(void);
 // HDR output (DM_HDR=1; Mac front_mac.m, none on iOS): the window's screen's EDR headroom, potential (1 on an SDR screen) and current. Any thread

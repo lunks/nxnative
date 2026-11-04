@@ -1,6 +1,7 @@
 // The resolution chain logged at launch (loader.c res_chain_log, the profile's res_chain): the output for the mode and single upscale, the upscale rate the setting
 // patches wrote (fixed, dynamic from the sharpest to the softest, or the game's own range) and the start rate, the scene's size, the upscaler at the sharpest, the effects and the shadows. Runs with
-// GAME=040074A01BF12000 (its res_chain); another profile without the key logs nothing. Expectations are written by hand.
+// GAME=040074A01BF12000 (its res_chain); another profile without the key logs nothing. Then what single_upscale_apply writes into the state page for DM_SINGLE_UPSCALE (no screen
+// here: match display falls back to the game's window). Expectations are written by hand.
 #include "../loader.c"
 #include <assert.h>
 
@@ -27,14 +28,15 @@ const char *dm_setting_patch_applied(const char *var, const char **value) {
 }
 
 static int checks, fails;
-// The line res_chain_log writes to stderr for single upscale on / off, captured through a temporary file
+// The line res_chain_log writes to stderr for single upscale off / on / match display (the window mw x mh), captured through a temporary file
+static int mw, mh;
 static const char *chain(int single) {
     static char buf[1024];
     char path[] = "/tmp/t_res_chain.XXXXXX";
     int fd = mkstemp(path), saved = dup(2);
     assert(fd >= 0 && saved >= 0);
     fflush(stderr); dup2(fd, 2);
-    res_chain_log(single);
+    res_chain_log(single, mw, mh);
     fflush(stderr); dup2(saved, 2); close(saved);
     lseek(fd, 0, SEEK_SET);
     ssize_t n = read(fd, buf, sizeof buf - 1); buf[n > 0 ? n : 0] = 0;
@@ -83,6 +85,30 @@ int main(void) {
     expect(chain(1), "resolution: handheld, output 1920x1080; upscale rate 1 fixed", "handheld: its own output, single upscale or not");
     opmode = 1; ratio_label = NULL; ratio_value = NULL; unsetenv("DM_UPSCALER");
     expect(chain(1), "output 2880x1620 (single upscale: the window's size); upscale rate the game's own", "a ratio that was not written (Ultra performance with the game's network): the game's own");
+    // match display: the window the screen's size (2560x1440 on a 3440x1440 panel), the rates divide it
+    mw = 2560; mh = 1440; ratio_label = "Balanced (1.69), fixed"; ratio_value = "1.6875";
+    expect(chain(2), "resolution: docked, output 2560x1440 (match display: the window's size, the screen's); upscale rate 1.6875 fixed, start 1.6875 (Balanced (1.69), fixed); scene 1518x854",
+           "match display: the screen's size, divided by the rate (2560 / 1.6875 = 1517.04, rounded up)");
+    opmode = 0;
+    expect(chain(2), "resolution: handheld, output 1920x1080; upscale rate 1.6875", "match display handheld: the game's handheld output (its final copy scales it to the window)");
+    opmode = 1; ratio_label = NULL; ratio_value = NULL;
+    // the state page (+0x38 single upscale, +0x3c / +0x40 the window's size) for each value
+    static uint8_t page[0x100]; dm_fps_state = page; g_fps_mod = "main"; g_single_upscale_stub = 1; g_match_display_stub = 1;
+    struct { const char *v; int ret, flag; } cases[] = {{"0", 0, 0}, {"1", 1, 1}, {"on", 1, 1}, {"display", 1, 1}, {"bogus", 0, 0}, {NULL, 0, 0}};
+    for (int i = 0; i < (int)(sizeof cases / sizeof *cases); i++) {
+        const char *v = cases[i].v ? cases[i].v : "(unset)";
+        if (cases[i].v) setenv("DM_SINGLE_UPSCALE", cases[i].v, 1); else unsetenv("DM_SINGLE_UPSCALE");
+        memset(page, 0xff, sizeof page); int w = 0, h = 0;
+        int r = single_upscale_apply(&w, &h); uint32_t f, wh[2]; memcpy(&f, page + 0x38, 4); memcpy(wh, page + 0x3c, 8);
+        checks++;
+        if (r == cases[i].ret && f == (uint32_t)cases[i].flag && !wh[0] && !wh[1]) printf("\xe2\x9c\x93 DM_SINGLE_UPSCALE=%s: returns %d, +0x38 %u, +0x3c / +0x40 0 (the game's window; display: no screen without a front end)\n", v, r, f);
+        else { fails++; printf("\xe2\x9c\x97 DM_SINGLE_UPSCALE=%s: returned %d, +0x38 %u, +0x3c %u, +0x40 %u\n", v, r, f, wh[0], wh[1]); }
+    }
+    g_match_display_stub = 0; setenv("DM_SINGLE_UPSCALE", "display", 1); memset(page, 0xff, sizeof page);
+    { int w = 0, h = 0, r = single_upscale_apply(&w, &h); uint32_t f; memcpy(&f, page + 0x38, 4); checks++;
+      if (r == 1 && f == 1) printf("\xe2\x9c\x93 display on a build without MATCH_DISPLAY: single upscale to the game's window\n");
+      else { fails++; printf("\xe2\x9c\x97 display without MATCH_DISPLAY: returned %d, +0x38 %u\n", r, f); } }
+    unsetenv("DM_SINGLE_UPSCALE"); dm_fps_state = NULL;
     printf("%d / %d checks passed\n", checks - fails, checks);
     return fails != 0;
 }

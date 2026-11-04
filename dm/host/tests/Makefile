@@ -67,9 +67,11 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	$(B)/t_nro
 	$(B)/t_symbols
 	$(B)/t_res_chain
+	$(B)/t_match_display
 run: $(B)/t_nro
 run: $(B)/t_symbols
 run: $(B)/t_res_chain
+run: $(B)/t_match_display
 $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c
 .PHONY: symbols
@@ -99,6 +101,12 @@ $(B)/t_res_chain: t_res_chain.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
 .PHONY: res-chain
 res-chain: $(B)/t_res_chain
 	$(B)/t_res_chain
+# match display's size (match_display.h: DM_SINGLE_UPSCALE=display, the game window sized to the screen's pixels at launch)
+$(B)/t_match_display: t_match_display.c ../match_display.h | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -o $@ t_match_display.c -framework CoreGraphics -framework CoreFoundation
+.PHONY: match-display
+match-display: $(B)/t_match_display
+	$(B)/t_match_display
 $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_nro.c
 .PHONY: nro

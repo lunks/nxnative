@@ -267,6 +267,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
         else if (!strcmp(key, "SINGLE_UPSCALE")) m->single_upscale = v != 0;
+        else if (!strcmp(key, "MATCH_DISPLAY")) m->match_display = v != 0;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -298,21 +299,33 @@ static void read_layout(module_t *m, const char *dir) {
 // (hle_nvn.c fstep_tick)
 uint8_t *dm_fps_state;
 static const char *g_fps_mod;   // the module holding the state page (for the log)
-static int g_single_upscale_stub;   // its build's stub reads state +0x38 (SINGLE_UPSCALE)
+static int g_single_upscale_stub, g_match_display_stub;   // its build's stubs read state +0x38 (SINGLE_UPSCALE) and +0x3c / +0x40 (MATCH_DISPLAY)
 static void install_fps_state(module_t *m) {
-    if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
-    dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; g_single_upscale_stub = m->single_upscale;
+    if (m->fps_state_off + 0x100 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
+    dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; g_single_upscale_stub = m->single_upscale; g_match_display_stub = m->match_display;
 }
+// No screen to match without a front end that knows one (unit tests, iOS); the Mac's front_mac.m defines it (front.h)
+__attribute__((weak)) int front_match_display(int *w, int *h, char *how, size_t n) { (void)w; (void)h; (void)how; (void)n; return 0; }
 // Single upscale (DM_SINGLE_UPSCALE=1; state +0x38, read by Donkey Kong Bananza's stub at main+0x539d6c, its patches.py): the game's display scales become 1.0, so its upscaler
-// writes the window's size and the final copy to the window is 1:1 instead of a second resample. Read once at the start: the game builds its display argument once, at boot
-static int single_upscale_apply(void) {   // 1 when the stub will take the window's size
-    const char *e = getenv("DM_SINGLE_UPSCALE"); int on = e && (!strcmp(e, "1") || !strcmp(e, "on"));
-    if (e && *e && !on && strcmp(e, "0") && strcmp(e, "off")) LOG("[RED] DM_SINGLE_UPSCALE=%s: 1 or 0; off", e);
-    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=1: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples"); return 0; }
+// writes the window's size and the final copy to the window is 1:1 instead of a second resample. Match display (DM_SINGLE_UPSCALE=display; state +0x3c / +0x40, read by the
+// stubs at the window size's physical uses, MATCH_DISPLAY): the same, and the window takes the size of the picture on the screen (front_match_display, match_display.h), so the
+// host's present draws it 1:1 too. Read once at the start: the game builds its framework and display arguments once, at boot. Returns 0 off, 1 the window, 2 match display
+// (*mw x *mh: the window's size)
+static int single_upscale_apply(int *mw, int *mh) {
+    const char *e = getenv("DM_SINGLE_UPSCALE");
+    int on = !e || !*e || !strcmp(e, "0") || !strcmp(e, "off") ? 0 : !strcmp(e, "1") || !strcmp(e, "on") ? 1 : !strcmp(e, "display") ? 2 : -1;
+    if (on < 0) { LOG("[RED] DM_SINGLE_UPSCALE=%s: 1, display or 0; off", e); on = 0; }
+    if (on && !g_single_upscale_stub) { LOG("[RED] DM_SINGLE_UPSCALE=%s: this build has no single upscale stub (SINGLE_UPSCALE in its rewriter table); the game keeps its two resamples", e); return 0; }
     if (!g_single_upscale_stub || !dm_fps_state) return 0;
-    uint32_t v = (uint32_t)on; memcpy(dm_fps_state + 0x38, &v, sizeof v);
-    if (on) LOG("%s: single upscale on (DM_SINGLE_UPSCALE=1): the game's display scales (Bananza: 0.8 docked) set to 1.0, so its upscaler writes the window's size and its "
-                "final copy is 1:1; the upscaler: output line names the sizes", g_fps_mod);
+    char how[320] = "";
+    if (on == 2 && !g_match_display_stub) { LOG("[RED] DM_SINGLE_UPSCALE=display: this build's window keeps the game's size (no MATCH_DISPLAY in its rewriter table: rewrite the app with this tree); single upscale to that window instead"); on = 1; }
+    else if (on == 2 && !front_match_display(mw, mh, how, sizeof how)) { LOG("%s: match display: no screen to match (no window); single upscale to the game's window instead", g_fps_mod); on = 1; }
+    uint32_t v = on != 0, wh[2] = {on == 2 ? (uint32_t)*mw : 0, on == 2 ? (uint32_t)*mh : 0};
+    memcpy(dm_fps_state + 0x38, &v, sizeof v); memcpy(dm_fps_state + 0x3c, wh, sizeof wh);
+    if (on) LOG("%s: single upscale on (DM_SINGLE_UPSCALE=%s): the game's display scales (Bananza: 0.8 docked) set to 1.0, so its upscaler writes the window's size and its "
+                "final copy is 1:1; the upscaler: output line names the sizes", g_fps_mod, e);
+    if (on == 2) LOG("%s: match display: the game's window %ux%u (%s), chosen at launch: after moving the game to another screen or between window and fullscreen, restart it; "
+                     "the present: picture line says whether the host draws it 1:1", g_fps_mod, wh[0], wh[1], how);
     return on;
 }
 
@@ -322,10 +335,11 @@ static int single_upscale_apply(void) {   // 1 when the stub will take the windo
 // own range; the rate each stage starts at (the parameter apply writes the fixed or the sharpest rate; the game's own starts at 1.0); the scene's size (output / rate,
 // rounded up, as the game's 2304 / 1.375 = 1676); the upscaler and whether it runs at the sharpest rate (at 1.0 the game turns its upscaler off, and MetalFX with
 // it); the effects' and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first upscale names the sizes drawn
-static void res_chain_log(int single) {
+static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 the window, 2 match display (the window mw x mh)
     int ow[3], oh[3]; double lo, hi;
     if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
     int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2, w = ow[k], h = oh[k];
+    if (docked && single == 2) { w = mw; h = mh; }   // the window's size, the screen's
     const char *val = NULL, *rl = dm_setting_patch_applied("DM_UPSCALE_RATIO", &val), *dy = getenv("DM_UPSCALE_DYNAMIC"), *up = getenv("DM_UPSCALER");
     const char *fval = NULL, *fl = dm_setting_patch_applied("DM_UPSCALE_SOFTEST", &fval);
     int mfx = up && (!strcmp(up, "metalfx") || !strcmp(up, "metalfx-temporal"));
@@ -353,13 +367,14 @@ static void res_chain_log(int single) {
     }
     const char *eff = dm_setting_patch_applied("DM_EFFECTS_RES", NULL), *shd = dm_setting_patch_applied("DM_SHADOW_RES", NULL);
     LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
-        docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups,
+        docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups,
         eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)");
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 void dm_fps_state_apply(void) {
-    if (!dm_fps_state) { res_chain_log(single_upscale_apply()); return; }   // only its [RED] line when asked for: no stub reads the page
+    int mw = 0, mh = 0;
+    if (!dm_fps_state) { int su = single_upscale_apply(&mw, &mh); res_chain_log(su, mw, mh); return; }   // only its [RED] line when asked for: no stub reads the page
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
@@ -403,7 +418,7 @@ void dm_fps_state_apply(void) {
             LOG("%s: screen shape %.3f: output 1920x%u, layout 1280x%u (DM_SCREEN_ASPECT; only builds with screen-shape stubs follow it)", g_fps_mod, a, oh, lh);
         }
     }
-    res_chain_log(single_upscale_apply());
+    { int su = single_upscale_apply(&mw, &mh); res_chain_log(su, mw, mh); }
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }
