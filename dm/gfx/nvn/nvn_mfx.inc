@@ -311,7 +311,7 @@ enum { MFX_CHECK = 8, MFX_CHECK_SZ = 32 };
 static struct {
     id<MTLComputePipelineState> ps; id<MTL4ArgumentTable> at; id<MTLBuffer> buf; int failed;
     struct { uint64_t frame; double off; int reset, used; } slot[MFX_CHECK];   // what the CPU knew of each slot's frame
-    uint64_t bad_in, bad_out; int said_in, said_out;
+    uint64_t bad_in, bad_out, hl; int said_in, said_out, said_hl;
 } g_mck;
 // The frame's motion: g_mm.mv[k] / dep[k] (k = cur) hold this frame's, at the origin, cw x ch of the textures' w x h (the upscaler's output size: the most the input can have)
 static struct {
@@ -351,10 +351,10 @@ static int mfx_motion(const mfx_io *io) {
     uint64_t ep = atomic_load(&g_cur_frame);
     if (g_mm.made_frame == ep + 1) return g_mm.ok;   // already this frame (made_frame is the frame + 1, so 0 is never a frame's)
     g_mm.made_frame = ep + 1; g_mm.ok = 0;
-    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu; projection offset of half a pixel or more %llu (largest %.2f px); scaler checks: non-finite input %llu, output non-finite or dark %llu%s",
+    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu; projection offset of half a pixel or more %llu (largest %.2f px); scaler checks: non-finite input %llu, output non-finite or dark %llu, highlights dimmed %llu%s",
                                        (unsigned long long)g_mm.frames, (unsigned long long)g_mm.made, (unsigned long long)g_mm.no_depth, (unsigned long long)g_mm.no_cam, (unsigned long long)g_mm.cuts,
                                        (unsigned long long)g_mm.gaps, (unsigned long long)g_mts.n, (unsigned long long)g_mts.fallback, (unsigned long long)g_mm.shaken, g_mm.jmax,
-                                       (unsigned long long)g_mck.bad_in, (unsigned long long)g_mck.bad_out,
+                                       (unsigned long long)g_mck.bad_in, (unsigned long long)g_mck.bad_out, (unsigned long long)g_mck.hl,
                                        g_jit.on > 0 ? [NSString stringWithFormat:@"; camera jitter: %llu frames jittered, %llu of them drawn by the temporal scaler, %llu block copies, %llu cameras of another lens",
                                                        (unsigned long long)g_jit.frames, (unsigned long long)g_mts.jit, (unsigned long long)g_jit.copies, (unsigned long long)g_jit.lens_miss].UTF8String : "");
     id<MTLTexture> depth = nil; mfx_cam cam;
@@ -420,18 +420,29 @@ static int mfx_motion(const mfx_io *io) {
     return 1;
 }
 
+// A frame's output against its input, from the check's means (li / lo: luminance clamped at 64; li1 / lo1: clamped at 1.0, paper white in HDR): 2, dark (non-finite, or less than half
+// as bright below paper white too: the picture itself went dark, as with a whole-pixel jitter); 1, highlights dimmed (less than half as bright with its highlights, not without them:
+// MetalFX's temporal scaler keeps less of small bright highlights that move, a standalone run's 20x paper white dots on a 40-pixel-a-frame pan down to 0.32 of their light, auto
+// exposure on or off, while the picture to paper white stayed within 3 %); 0, neither
+int mfx_check_class(unsigned nf_out, double li, double lo, double li1, double lo1) {
+    if (nf_out || (li1 > 0.02 && lo1 < 0.5 * li1)) return 2;
+    return li > 0.02 && lo < 0.5 * li ? 1 : 0;
+}
 // The results of the frame MFX_CHECK frames ago in slot k (the one this frame takes): its colour input held non-finite values (MetalFX's auto exposure takes one Inf as a black frame;
-// R11G11B10F stores a value above its largest as the largest, so only a shader's Inf or NaN gets there), or its output was non-finite or less than half as bright as its input
+// R11G11B10F stores a value above its largest as the largest, so only a shader's Inf or NaN gets there), its output was dark, or only its highlights were dimmed (mfx_check_class)
 static void mfx_check_read(int k) {
     if (!g_mck.slot[k].used) return;
     const uint32_t *r = (const uint32_t *)((uint8_t *)g_mck.buf.contents + k * MFX_CHECK_SZ);
     uint32_t nf_in = r[0], nf_out = r[1], n = r[4];
-    double li = n ? r[2] / 256.0 / n : 0, lo = n ? r[3] / 256.0 / n : 0;
+    double li = n ? r[2] / 256.0 / n : 0, lo = n ? r[3] / 256.0 / n : 0, li1 = n ? r[5] / 1024.0 / n : 0, lo1 = n ? r[6] / 1024.0 / n : 0;
     unsigned long long f = (unsigned long long)g_mck.slot[k].frame;
+    int cls = n ? mfx_check_class(nf_out, li, lo, li1, lo1) : 0;
     if (nf_in) { g_mck.bad_in++; if (g_mck.said_in < 5) { g_mck.said_in++;
         MLOG("[RED] [mfx] temporal scaler input at upscaler frame %llu held %u non-finite values (the game's scene colour; MetalFX's auto exposure darkens the frame on one): output mean luminance %.4f against the input's %.4f", f, nf_in, lo, li); } }
-    if (n && (nf_out || (li > 0.02 && lo < 0.5 * li))) { g_mck.bad_out++; if (g_mck.said_out < 5) { g_mck.said_out++;
-        MLOG("[RED] [mfx] temporal scaler output at upscaler frame %llu: mean luminance %.4f against the input's %.4f, %u non-finite of %u samples (projection offset %.2f px, history reset %d)", f, lo, li, nf_out, n, g_mck.slot[k].off, g_mck.slot[k].reset); } }
+    if (cls == 2) { g_mck.bad_out++; if (g_mck.said_out < 5) { g_mck.said_out++;
+        MLOG("[RED] [mfx] temporal scaler output at upscaler frame %llu: mean luminance %.4f against the input's %.4f, to paper white %.4f against %.4f, %u non-finite of %u samples (projection offset %.2f px, history reset %d)", f, lo, li, lo1, li1, nf_out, n, g_mck.slot[k].off, g_mck.slot[k].reset); } }
+    if (cls == 1) { g_mck.hl++; if (g_mck.said_hl < 5) { g_mck.said_hl++;
+        MLOG("[mfx] temporal scaler output at upscaler frame %llu: highlights dimmed, mean luminance %.4f against the input's %.4f, to paper white %.4f against %.4f (projection offset %.2f px, history reset %d)", f, lo, li, lo1, li1, g_mck.slot[k].off, g_mck.slot[k].reset); } }
 }
 // Encoded after the scaler in its block: sums of the colour input (cw x ch at the origin of col) and the output (ow x oh at the origin of dst) into this frame's slot
 typedef void (^mfx_check_blk)(id<MTL4CommandBuffer>);

@@ -280,6 +280,12 @@ int main(void) { @autoreleasepool {
     CHECK(fabs(cam.jx) < 1e-4 && fabs(cam.jy) < 1e-4, "no projection offset (jitter)");
     const float ortho[16] = {0.01f, 0, 0, 0, 0, 0.01f, 0, 0, 0, 0, -0.001f, 0, 0, 0, 0, 1};
     CHECK(!mfx_cam_from(view, ortho, 1, &cam, why, sizeof why), "an orthographic camera (a shadow map's) is refused");
+    // The scaler check's verdict: a Bananza pan's frame (live run, frame 64705: 0.0961 against 0.2345) is dark only if the picture to paper white is too; its highlights alone are not
+    CHECK(mfx_check_class(0, 0.2345, 0.0961, 0.20, 0.19) == 1, "the output less bright only above paper white: highlights dimmed");
+    CHECK(mfx_check_class(0, 0.2345, 0.0961, 0.20, 0.08) == 2, "the output less bright below paper white too: dark");
+    CHECK(mfx_check_class(0, 0.30, 0.003, 0.25, 0.003) == 2, "a whole-pixel jitter's black frame: dark");
+    CHECK(mfx_check_class(3, 0.30, 0.29, 0.25, 0.25) == 2, "non-finite output: dark");
+    CHECK(mfx_check_class(0, 0.30, 0.29, 0.25, 0.25) == 0 && mfx_check_class(0, 0.01, 0.001, 0.01, 0.001) == 0, "a matching output, or a black scene: neither");
     if ((!temporal && !interp) || !DM_GAME_CAM_MATS || !strstr(DM_GAME_UPSCALER_KEYS, "7629d857a0a93833")) {   // the rest needs Bananza's profile
         printf("t_mfx (camera only): %d checks, %d failed\n", checks, failed); return failed != 0; }
     // The game's textures: its scene (input), its upscaler output (an image), its window textures: RGBA8 (drawn through an sRGB view) and, with HDR output, RGB10A2

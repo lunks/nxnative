@@ -47,13 +47,16 @@ kernel void mfx_mv(depth2d<float, access::read> dep [[texture(0)]], texture2d<fl
 
 // mfx_check: after the temporal scaler, a check of its colour input and its output for a live run (nvn_mfx.inc mfx_check_encode). One thread per input pixel of the content (cw x ch at
 // the origin of col): non-finite input values are counted; on a grid of every 16th pixel the input's luminance and the output's at the same place of the output rectangle (ow x oh at the
-// origin of out) are summed (fixed point, 1/256, clamped at 64) and the output's non-finite values counted. One atomic add per SIMD group, only where it has something to add.
+// origin of out) are summed (fixed point, 1/256, clamped at 64), and again clamped at 1.0 (paper white in HDR: what MetalFX keeps of the picture without its highlights; 1/1024), and
+// the output's non-finite values counted. One atomic add per SIMD group, only where it has something to add.
 struct CheckParams { uint2 csize, osize; };
-struct CheckSums { atomic_uint nf_in, nf_out, lum_in, lum_out, samples, pad[3]; };
-static uint lum_fx(float3 c) { float l = dot(c, float3(0.2126, 0.7152, 0.0722)); return uint(clamp(l, 0.0, 64.0) * 256.0); }
+struct CheckSums { atomic_uint nf_in, nf_out, lum_in, lum_out, samples, lum1_in, lum1_out, pad; };
+static float lum_of(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+static uint lum_fx(float3 c) { return uint(clamp(lum_of(c), 0.0, 64.0) * 256.0); }
+static uint lum1_fx(float3 c) { return uint(clamp(lum_of(c), 0.0, 1.0) * 1024.0); }
 kernel void mfx_check(texture2d<float, access::read> col [[texture(0)]], texture2d<float, access::read> out [[texture(1)]], constant CheckParams &p [[buffer(0)]],
                       device CheckSums &r [[buffer(1)]], uint2 g [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    uint nf_in = 0, nf_out = 0, li = 0, lo = 0, n = 0;
+    uint nf_in = 0, nf_out = 0, li = 0, lo = 0, li1 = 0, lo1 = 0, n = 0;
     if (all(g < p.csize)) {
         float3 c = col.read(g).rgb;
         bool bad = any(isnan(c)) || any(isinf(c));
@@ -62,13 +65,14 @@ kernel void mfx_check(texture2d<float, access::read> col [[texture(0)]], texture
             uint2 o = min(uint2((float2(g) + 0.5) * float2(p.osize) / float2(p.csize)), p.osize - 1);
             float3 d = out.read(o).rgb;
             bool obad = any(isnan(d)) || any(isinf(d));
-            nf_out = obad; li = bad ? 0 : lum_fx(c); lo = obad ? 0 : lum_fx(d); n = 1;
+            nf_out = obad; li = bad ? 0 : lum_fx(c); lo = obad ? 0 : lum_fx(d); li1 = bad ? 0 : lum1_fx(c); lo1 = obad ? 0 : lum1_fx(d); n = 1;
         }
     }
-    nf_in = simd_sum(nf_in); nf_out = simd_sum(nf_out); li = simd_sum(li); lo = simd_sum(lo); n = simd_sum(n);
+    nf_in = simd_sum(nf_in); nf_out = simd_sum(nf_out); li = simd_sum(li); lo = simd_sum(lo); li1 = simd_sum(li1); lo1 = simd_sum(lo1); n = simd_sum(n);
     if (lane == 0) {
         if (nf_in) atomic_fetch_add_explicit(&r.nf_in, nf_in, memory_order_relaxed);
         if (nf_out) atomic_fetch_add_explicit(&r.nf_out, nf_out, memory_order_relaxed);
-        if (n) { atomic_fetch_add_explicit(&r.lum_in, li, memory_order_relaxed); atomic_fetch_add_explicit(&r.lum_out, lo, memory_order_relaxed); atomic_fetch_add_explicit(&r.samples, n, memory_order_relaxed); }
+        if (n) { atomic_fetch_add_explicit(&r.lum_in, li, memory_order_relaxed); atomic_fetch_add_explicit(&r.lum_out, lo, memory_order_relaxed); atomic_fetch_add_explicit(&r.samples, n, memory_order_relaxed);
+                 atomic_fetch_add_explicit(&r.lum1_in, li1, memory_order_relaxed); atomic_fetch_add_explicit(&r.lum1_out, lo1, memory_order_relaxed); }
     }
 }
