@@ -742,6 +742,7 @@ def cra_shaders(path, rel, ents, out):
             scan_blob(cra.undo(cra.read(f, e)), f'/{rel}/{e[1]}', out)
 
 ZIP = b'PK\x03\x04'
+VZIP = b'VZIP'   # Star Fox's data.zip: the engine's own header in front of the first member; the central directory is at the end, as in any zip
 def zip_jobs(files, parts=64):
     """Every member of every zip archive in ranges of about equal length (Portal: the whole game in game.zip, 41,416 members, 4.6 GB inflated, Deflate or stored; its GLSLC outputs are the
     221 nxcontent/nvsb/*.nvsb files, but no name is relied on). → ([(path, rel, (ZIP, members)), …], the zip paths). An archive zipfile cannot read is scanned as one file, as before"""
@@ -749,7 +750,7 @@ def zip_jobs(files, parts=64):
     zs = []
     for p, r in files:
         with open(p, 'rb') as f: h = f.read(4)
-        if h != ZIP: continue
+        if h not in (ZIP, VZIP): continue
         try:
             with open(p, 'rb') as source, zipfile.ZipFile(source) as z: zs.append((p, r, [(i.filename, i.file_size) for i in z.infolist() if not i.is_dir()]))
         except (zipfile.BadZipFile, OSError, ValueError) as e: print(f'[RED] /{r}: the zip cannot be read ({e}); scanned as one file', flush=True)
@@ -762,14 +763,50 @@ def zip_jobs(files, parts=64):
         if cur: jobs.append((p, r, (ZIP, tuple(cur))))
     return jobs, {p for p, _, _ in zs}
 
+def zip_lz4_member(f, info, label):
+    """A zip member marked stored whose data is shorter than its length (Star Fox's data.zip: 92,069 of its 114,154 members, all named by a 64-bit hash): the engine's own compression,
+    chunks of a u32 stored length and an LZ4 block of up to 64 KB, each block linked to the one before (LZ4's dictionary is the previous chunk's output); a chunk whose stored length is its
+    whole length is stored as is. The zip's CRC-32 is not of this data, so zipfile cannot read it. → the inflated member"""
+    import lz4.block
+    f.seek(info.header_offset)
+    h = f.read(30)
+    if h[:4] != ZIP: red(f'{label}: no local file header at {info.header_offset:#x}')
+    nl, xl = struct.unpack_from('<HH', h, 26)
+    f.seek(info.header_offset + 30 + nl + xl); raw = f.read(info.compress_size)
+    parts, p, left = [], 0, info.file_size
+    while left > 0:
+        if p + 4 > len(raw): red(f'{label}: the chunks end {left:,} bytes short of the member\'s length')
+        n = struct.unpack_from('<I', raw, p)[0]; want = min(1 << 16, left)
+        blk = raw[p + 4:p + 4 + n]; p += 4 + n
+        try: c = blk if n == want else lz4.block.decompress(blk, uncompressed_size=want, dict=parts[-1] if parts else b'')
+        except lz4.block.LZ4BlockError as e: red(f'{label}: chunk at {p - 4 - n:#x}: {e}')
+        if not c or len(c) > want: red(f'{label}: a chunk of {len(c):,} bytes where {want:,} are left')
+        parts.append(c); left -= len(c)
+    return b''.join(parts)
+
+def bare_shader(d, label):
+    """One shader as Star Fox's engine stores it, a zip member of its own (2,828 in data.zip): the GLSLC magic 0x19866891, u32 code length, u32 control length, u32 0, a 64-bit hash, then the
+    code (Ampere SASS: a graphics stage's program header first) and right after it the NVN2 control section (0xe0-0xf8 bytes, CTL_MAGIC), which ends the member. No GLSLC output header
+    and no section table, so glslc_shaders does not read it. → [(label, stage, control, code)], or [] when d is not one"""
+    if len(d) < 0x1c or d[:4] != b'\x91\x68\x86\x19': return []
+    nc, nl, zero = struct.unpack_from('<3I', d, 4)
+    if zero or 0x18 + nc + nl != len(d) or d[0x18 + nc:0x1c + nc] != CTL_MAGIC: return []
+    code, ctl = d[0x18:0x18 + nc], d[0x18 + nc:]
+    st = glslc_stage(ctl, code)
+    why = check(label, st, ctl, code) if st else 'no stage in its control section'
+    if why: red(f'{label}: a bare shader record that does not check: {why}')
+    return [(f'{label}#BARE', st, ctl, code)]
+
 def zip_shaders(path, rel, names, out):
     """A range of zip members (zip_jobs), each inflated and scanned like a loose file: scan_blob, then whole GLSLC outputs (Portal's .nvsb files: a 0x60-byte 'NVSB' header, then one
     GLSLC output of a vertex and a pixel shader)"""
     import zipfile
     with open(path, 'rb') as source, zipfile.ZipFile(source) as z:
         for nm in names:
-            d = z.read(nm); n = len(out)
+            i = z.getinfo(nm)
+            d = zip_lz4_member(source, i, f'/{rel}/{nm}') if i.compress_type == zipfile.ZIP_STORED and i.compress_size != i.file_size else z.read(nm); n = len(out)
             scan_blob(d, f'/{rel}/{nm}', out)
+            if len(out) == n: out += bare_shader(d, f'/{rel}/{nm}')
             if len(out) == n and d[:4] != b'MSHD' and b'\x91\x68\x86\x19' in d: out += glslc_shaders(d, f'/{rel}/{nm}', need=False)
 
 def pgdat_members(d, label):
@@ -2655,7 +2692,7 @@ def scan_file_in(args):
     if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)
         trinity_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    if len(args) > 2 and head[:4] == ZIP and args[2][0] == ZIP:   # members of a zip archive (zip_jobs)
+    if len(args) > 2 and head[:4] in (ZIP, VZIP) and args[2][0] == ZIP:   # members of a zip archive (zip_jobs)
         zip_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)

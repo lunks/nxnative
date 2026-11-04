@@ -1,5 +1,9 @@
-"""What a game's NROs decide (Portal: the Source engine in 28 NROs under an SDL main): the graphics API, the run-time GLSLC capture, and zip members for the shader split."""
+"""What a game's NROs decide (Portal: the Source engine in 28 NROs under an SDL main): the graphics API, the run-time GLSLC capture, and zip members for the shader split
+(Portal's Deflate members, Star Fox's stored members of linked LZ4 chunks)."""
 import os
+import random
+import struct
+import zlib
 from pathlib import Path
 import shutil
 import sys
@@ -67,6 +71,35 @@ class ZipMembers(unittest.TestCase):
         out = []
         for p, r, (_, ns) in jobs: ss.zip_shaders(p, r, ns, out)
         self.assertEqual(out, [])   # zero-filled members hold no shader
+
+
+    def test_stored_members_of_linked_lz4_chunks(self):   # Star Fox's data.zip: method 0, data shorter than the member, u32 length + LZ4 block chunks of 64 KB, each linked to the one before
+        import lz4.block
+        rnd = random.Random(1)
+        a = bytes(rnd.randrange(256) for _ in range(1 << 16))   # incompressible: its chunk is stored as is
+        payload = b'star' * (1 << 14) + a + a[:20000]   # 64 KB, 64 KB, then 20,000 bytes the previous chunk's output holds
+        chunks, prev = [], b''
+        for i in range(0, len(payload), 1 << 16):
+            c = payload[i:i + (1 << 16)]
+            blk = c if c == a else lz4.block.compress(c, store_size=False, dict=prev)
+            chunks.append(struct.pack('<I', len(blk)) + blk); prev = c
+        data = b''.join(chunks)
+        self.assertLess(len(data), len(payload))
+        name, crc = b'4f2a0c11d9e83b70', zlib.crc32(payload)   # the zip's CRC-32 is not of the stored data
+        local = struct.pack('<4s5H3I2H', b'PK\x03\x04', 20, 0, 0, 0, 0, crc, len(data), len(payload), len(name), 0) + name
+        cd = struct.pack('<4s6H3I5H2I', b'PK\x01\x02', 20, 20, 0, 0, 0, 0, crc, len(data), len(payload), len(name), 0, 0, 0, 0, 0, 0) + name
+        eocd = struct.pack('<4s4H2IH', b'PK\x05\x06', 0, 0, 1, 1, len(cd), len(local) + len(data), 0)
+        z = self.tmp / 'data.zip'; z.write_bytes(local + data + cd + eocd)
+        with open(z, 'rb') as f, zipfile.ZipFile(f) as zf:
+            self.assertRaises(zipfile.BadZipFile, zf.read, name.decode())
+            self.assertEqual(ss.zip_lz4_member(f, zf.getinfo(name.decode()), '/data.zip/x'), payload)
+        jobs, _ = ss.zip_jobs([(str(z), 'data.zip')])
+        out = []
+        for p, r, (_, ns) in jobs: ss.zip_shaders(p, r, ns, out)
+        self.assertEqual(out, [])
+        z.write_bytes(local + data[:-10] + cd.replace(struct.pack('<I', len(data)), struct.pack('<I', len(data) - 10), 1) + eocd.replace(struct.pack('<I', len(local) + len(data)), struct.pack('<I', len(local) + len(data) - 10)))
+        with open(z, 'rb') as f, zipfile.ZipFile(f) as zf, self.assertRaises(SystemExit):
+            ss.zip_lz4_member(f, zf.getinfo(name.decode()), '/data.zip/x')   # a member cut short is a red line
 
 
 if __name__ == '__main__':
