@@ -225,6 +225,7 @@ static class P {
 
     // DLC NSP: one data NCA (content type PublicData / Data) + a meta NCA + the ticket; only the data NCA's RomFS is written
     // id: the DLC's title ID, for a merged package that holds several add-on contents (and the base game)
+    // A change to the bytes written here bumps AOC_FORMAT in scripts/build_ipa_from_nsp.py, which keys the reuse of extracted DLC
     static int Aoc(KeySet ks, string nsp, string outDir, bool image, ulong? id = null) {
         var pkg = OpenNsp(ks, nsp);   // every NCA: Pick takes the DLC's own data NCA by its title ID
         Fit(new[] { MissingKey(ks, pkg, nsp) });

@@ -15,6 +15,9 @@ from multiprocessing import Pool
 from romfs import os, open, mmap
 
 ZMAGIC = b'\x28\xb5\x2f\xfd'
+# What main() writes for a RomFS (which NROs it finds, their names and bytes, nro.tsv, missing.tsv), also through the readers it uses (romfs.py, smash_arc.py, nso_syms.py): bump it with any change
+# to that, so that the NSP script collects again (collect_nros keys on it, not on this file's source)
+FORMAT = 1
 
 
 def zstd_mod():   # compression.zstd from Python 3.14, its backport before (pip install backports.zstd), the same API

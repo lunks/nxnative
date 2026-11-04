@@ -82,6 +82,18 @@ class Images(unittest.TestCase):
         image.pack(self.src, self.dst)
         self.assertNotEqual(image.file_identity(self.dst), identity)
 
+    def test_reuse_follows_the_format_number_not_the_packer_source(self):   # an edit to romfs_image.py that writes the same bytes kept a 14.5 GB image only by its FORMAT
+        (self.src / 'a').write_bytes(b'data')
+        image.pack(self.src, self.dst, reuse=True)
+        identity = image.file_identity(self.dst)
+        edited = self.root / 'romfs_image.py'
+        edited.write_bytes(Path(image.__file__).read_bytes() + b'\n# a comment and a new function\ndef unused(): pass\n')
+        with patch.object(image, '__file__', str(edited)): image.pack(self.src, self.dst, reuse=True)
+        self.assertEqual(image.file_identity(self.dst), identity)
+        with patch.object(image, 'FORMAT', image.FORMAT + 1): image.pack(self.src, self.dst, reuse=True)
+        self.assertNotEqual(image.file_identity(self.dst), identity)
+        self.assertEqual(self.content('a'), b'data')
+
     def test_changed_source_during_pack_preserves_previous_image(self):
         (self.src / 'a').write_bytes(b'old'); image.pack(self.src, self.dst)
         original = self.dst.read_bytes()

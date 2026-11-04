@@ -798,6 +798,28 @@ class RewriteWorkers(Base):
                 collect.assert_not_called()
 
 
+class NroCollection(Base):
+    def test_reuse_follows_the_format_number_not_the_tools_source(self):   # the NROs come from the game files: an edit to nro_collect.py or a reader that finds the same ones keeps them
+        romfs, dst, logs = self.ex / 'RomFS', self.tmp / 'nro', self.tmp / 'logs'
+        (romfs / 'module.nrr').write_bytes(b'NRR0')
+        runs = []
+        def collect(argv, log, **kw): runs.append(argv); Path(argv[3]).mkdir(parents=True); (Path(argv[3]) / 'nro.tsv').write_text('nro0\thash\n')
+        repo = self.tmp / 'repo'   # the tools as collect_nros would find them, edited between the runs
+        for f in ('dm/tools/nro_collect.py', 'dm/tools/nso_syms.py', 'dm/gfx/tools/smash_arc.py', 'dm/tools/romfs.py'):
+            (repo / f).parent.mkdir(parents=True, exist_ok=True); shutil.copy(REPO / f, repo / f)
+        with mock.patch.object(nsp, 'run', side_effect=collect):
+            self.assertEqual(nsp.collect_nros('py', repo, romfs, dst, {}, logs), {'nro0': dst / 'nro0.nro'})
+            for f in ('dm/tools/nro_collect.py', 'dm/gfx/tools/smash_arc.py'):
+                with (repo / f).open('a') as h: h.write('\n# an edit\n')
+            nsp.collect_nros('py', repo, romfs, dst, {}, logs)
+            self.assertEqual(len(runs), 1)
+            with mock.patch.object(nsp.nro_collect, 'FORMAT', nsp.nro_collect.FORMAT + 1): nsp.collect_nros('py', repo, romfs, dst, {}, logs)
+            self.assertEqual(len(runs), 2)
+            (romfs / 'module.nrr').write_bytes(b'NRR0 changed')
+            nsp.collect_nros('py', repo, romfs, dst, {}, logs)
+        self.assertEqual(len(runs), 3)   # the NRRs and the RomFS tree stay keys
+
+
 class LayerShaders(Base):
     def test_redumped_romfs_and_captures_invalidate_only_own_libraries(self):
         cap = self.ex / 'capture'; cap.mkdir(); (cap / 'shader.bin').write_bytes(b'shader')

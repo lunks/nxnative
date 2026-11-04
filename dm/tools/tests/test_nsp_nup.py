@@ -391,6 +391,20 @@ class Pack(Base):
         pack_nup.pack_version(n, vers[VER], base, app, self.out(), say=lambda s: None)
         self.assertEqual((main.stat().st_ino, img.stat().st_mtime_ns), before)
 
+    def test_image_reuse_follows_the_format_numbers_not_the_packers_source(self):   # an edit to either packer that writes the same bytes keeps the image
+        n = self.open(); app, base, vers, _ = pack_nup.scan(n)
+        img = self.out() / 'RomFS.img'
+        def pack(): pack_nup.pack_version(n, vers[VER], base, app, self.out(), say=lambda s: None); return img.stat().st_ino, img.stat().st_mtime_ns
+        first = pack()
+        edits = []
+        for mod in (pack_nup, romfs_image):
+            f = self.dir / f'edited_{Path(mod.__file__).name}'; f.write_bytes(Path(mod.__file__).read_bytes() + b'\n# an edit\n'); edits.append(mock.patch.object(mod, '__file__', str(f)))
+        with edits[0], edits[1]: self.assertEqual(pack(), first)
+        with mock.patch.object(pack_nup, 'PACKER', pack_nup.PACKER + 1): second = pack()
+        self.assertNotEqual(second, first)
+        with mock.patch.object(romfs_image, 'FORMAT', romfs_image.FORMAT + 1): self.assertNotEqual(pack(), second)
+        self.assertIn('dir/new', romfs_image.read_index(img))
+
     def test_dlc(self):
         n = self.open(); app, _, _, dlc = pack_nup.scan(n)
         aoc = self.out() / 'aoc'; aoc.mkdir(parents=True); (aoc / '7.img').write_bytes(b'gone')
@@ -406,13 +420,18 @@ class Pack(Base):
         def extract(argv, log, **kw): runs.append(argv); Path(argv[4]).parent.mkdir(parents=True, exist_ok=True); Path(argv[4]).write_bytes(b'from the NSP')
         nsp_fam, nup_fam = {'dlc': [(TID + 0x1001, 0, p)]}, {'dlc': [(t, None, k) for t, k in dlc.items()], 'nup': n}
         with mock.patch.object(nsp, 'run', side_effect=extract), mock.patch.object(nsp, 'is_merged', return_value=False):
-            for fam in (nsp_fam, nsp_fam, nup_fam): aoc = nsp.extract_aoc('nx', 'keys', REPO, work, app, fam, logs)
+            for fam in (nsp_fam, nsp_fam, nup_fam): aoc = nsp.extract_aoc('nx', 'keys', work, app, fam, logs)
             self.assertEqual(len(runs), 1)   # reused while the NSPs and aoc/ are unchanged
             self.assertIn('dlcfile', romfs_image.read_index(aoc / '1.img'))
-            nsp.extract_aoc('nx', 'keys', REPO, work, app, nsp_fam, logs)
+            nsp.extract_aoc('nx', 'keys', work, app, nsp_fam, logs)
         self.assertEqual(len(runs), 2)
         self.assertEqual(sorted(f.name for f in aoc.iterdir()), ['1.img'])
         self.assertEqual((aoc / '1.img').read_bytes(), b'from the NSP')
+        with mock.patch.object(nsp, 'run', side_effect=extract), mock.patch.object(nsp, 'is_merged', return_value=False):
+            nsp.extract_aoc('nx', 'keys', work, app, nsp_fam, logs)
+            self.assertEqual(len(runs), 2)   # nx_extract's source is not a key: only AOC_FORMAT, the bytes it writes
+            with mock.patch.object(nsp, 'AOC_FORMAT', nsp.AOC_FORMAT + 1): nsp.extract_aoc('nx', 'keys', work, app, nsp_fam, logs)
+        self.assertEqual(len(runs), 3)
 
 
 class Stop(Exception): pass

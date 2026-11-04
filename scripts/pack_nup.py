@@ -14,7 +14,8 @@
 #   extract/v<version>/control.nacp, icon.jpg   the package's NACP and its icon, when it carries them (sips reads a PNG icon by its content)
 #   aoc/<index>.img   each DLC's RomFS (index = DLC title ID − base title ID − 0x1000), the host's DM_AOC_DIR
 # An update's RomFS is packed on its own, never laid over the base: the dumps NUPs are packed from hold the patched RomFS of an update (pack_dump.py); an update with no romfs/ uses the base's.
-# Every file read is checked against its SHA-256. A repeat run keeps code modules whose content is the same and an image made from the same container tree by the same packer.
+# Every file read is checked against its SHA-256. A repeat run keeps code modules whose content is the same and an image made from the same container tree with the same image format
+# (romfs_image.FORMAT, PACKER here).
 # Needs the zstd module: compression.zstd (Python 3.14+) or backports.zstd, as the NSP script.
 # Usage: pack_nup.py <game.nup> [--version N] [--work-dir DIR]   (exit 1 on error)
 import argparse, hashlib, mmap, os, shutil, struct, sys
@@ -30,6 +31,7 @@ except ImportError:
 class Error(Exception): pass
 
 
+PACKER = 1   # what pack() gives romfs_image.write for a container folder (entries()' order, the bytes Nup.copy inflates): bump it with any change to them, so that images made before are packed again
 SUPER = struct.Struct('<4sHHQQ32sQQII16s32s')   # 0x80
 TOC = struct.Struct('<4sIQQQQQ')   # 0x30
 PKG = struct.Struct('<QIIIIBBHIQI20x')   # 0x40
@@ -250,10 +252,10 @@ def entries(n, d):   # romfs_image.entries for a folder of the container: [name,
     return ents
 
 
-def pack(n, d, img, say=print):   # the RomFS folder d of the container → img, kept while the container tree and the packers are the same
+def pack(n, d, img, say=print):   # the RomFS folder d of the container → img, kept while the container tree and the image format are the same (not the packers' source: an edit that writes the same bytes keeps it)
     img.parent.mkdir(parents=True, exist_ok=True)
     ents, dst = entries(n, d), os.fspath(img)
-    digest = hashlib.sha256(Path(romfs_image.__file__).read_bytes() + Path(__file__).read_bytes() + n.toc_sha + struct.pack('<I', d)).hexdigest()   # the TOC hash covers every name and file hash
+    digest = hashlib.sha256(f'romfs_image format {romfs_image.FORMAT} pack_nup {PACKER}\0'.encode() + n.toc_sha + struct.pack('<I', d)).hexdigest()   # the TOC hash covers every name and file hash
     if romfs_image.reusable(dst, digest): return len(ents)
     say(f'packing {n.path.name} folder {d} → {img}')
     part = dst + '.part'

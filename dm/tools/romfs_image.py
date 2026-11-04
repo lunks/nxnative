@@ -13,7 +13,7 @@
 # The index comes last, so a copy cut off partway has no valid index (the header points past the end of the file) and the host refuses it.
 # Names are the guest names: a host name chosen on a case collision (.dm-case-N) is replaced by the one in its xattr, as hle_fs.c's guest_name does.
 # Usage: romfs_image.py [--reuse] <RomFS folder> <out image>   (written to <out>.part, renamed at the end)
-# --reuse checks the source tree's names and file metadata, the packer's version and the image's identity before keeping a previous image.
+# --reuse checks the source tree's names and file metadata, the image format (FORMAT) and the image's identity before keeping a previous image.
 import argparse, hashlib, json, os, struct, subprocess
 from pathlib import Path
 
@@ -21,6 +21,9 @@ MAGIC = b'DMROMFS1'
 HEAD = struct.Struct('<8sQQQ')
 ENT = struct.Struct('<QQIHBB')
 GUEST_NAME = 'org.d2rmobile.guest-name'
+# The bytes write() makes of a given tree (the layout above, the entry order, the flags): bump it with any change to them, and only then, so that images made before are packed again.
+# The reuse stamp holds this number, not a hash of this file: a new function or a comment here leaves a 14.5–46 GB image in place.
+FORMAT = 1
 
 
 def guest(parent, name):
@@ -57,7 +60,7 @@ def file_identity(path):
 
 
 def source_digest(src, ents):
-    h = hashlib.sha256(Path(__file__).read_bytes())
+    h = hashlib.sha256(f'romfs_image format {FORMAT}\0'.encode())
     h.update(os.fsencode(os.path.realpath(src)) + b'\0')
     for name, path, isdir, _, _ in ents:
         h.update(struct.pack('<I?', len(name), isdir)); h.update(name)
@@ -188,7 +191,7 @@ if __name__ == '__main__':
         except (OSError, ValueError, TypeError) as e: sys.exit(f'[RED] {e}')
         sys.exit(0)
     ap = argparse.ArgumentParser(description='Pack a RomFS folder into an indexed image')
-    ap.add_argument('--reuse', action='store_true', help='keep the image only while its source tree, packer and image are unchanged')
+    ap.add_argument('--reuse', action='store_true', help='keep the image only while its source tree, image format and image are unchanged')
     ap.add_argument('source'); ap.add_argument('image')
     args = ap.parse_args()
     n = pack(args.source, args.image, reuse=args.reuse)

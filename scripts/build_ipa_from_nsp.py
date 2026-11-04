@@ -24,6 +24,7 @@
 #   version (the base game alone, another update) from a profile derived from it in <build folder>/profile: the same settings, and the version's own shaders (derive_profile).
 # Every intermediate file is under the build folder, <id>_build/ in the NSP folder unless --work-dir / WORK_DIR names another: nsp/ (NSZ / XCZ files converted to NSP / XCI with nsz -D, kept for the next build; pip install nsz, or an nsz 5.0 or later executable on PATH), extract/ (the extracted game files, kept for the next build unless KEEP_EXTRACTED / --no-keep-extracted), aoc/ (one RomFS image per DLC index), tools/ (nx_extract, and the Mac host for a run-time shader capture), patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes beside the build folder by default (the NSP folder, without --work-dir).
 # The DLC, the rewrite, the shader split and the iOS (or Vulkan) shaders are reused when all their inputs are as at their last successful run (the game files, the tools, the profile, Xcode and the in-repo spirv-cross: fingerprint() keys beside their output);
+#   for what is extracted or packed from the game files (RomFS images, DLC, the collected NROs) the tools count by their output format's number (romfs_image.FORMAT, pack_nup.PACKER, AOC_FORMAT, nro_collect.FORMAT), not their source;
 #   the iOS shaders' inputs are the shader package's content and the chain's own tools, so a split that runs again and writes the same package leaves them reused.
 #   The chain version header dm/gfx/nvn/dmsh_chain.h (one version for every game) is written again when a chain change was committed without it (chain_header: it follows from the source alone),
 #   so a run may leave it changed. The c1 / uniform extent tables (c1_full.tsv, cb_extent.tsv) are not in the repository: the iOS shader step's dmsh_build.py makes them in the profile folder from
@@ -38,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
 import romfs as rfs
 import nso   # the code module loader: nso.Error is a damaged module (its file cut short or not what its header says)
+import nro_collect   # its FORMAT keys the collected NROs
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pack_dump   # a folder of a game's files instead of NSPs
 import pack_nup   # a game in a NUP container instead of NSPs
@@ -1282,9 +1284,12 @@ def extract_dump(ex, name, src, app):   # one version of a dump folder (src: bas
     return dst
 
 
-def extract_aoc(nx, keys, repo, work, app, fam, logs):
+AOC_FORMAT = 1   # the bytes nx_extract --aoc --romfs-image writes for a DLC (dm/tools/nx_extract/Program.cs): bump it with any change to them, so that DLC extracted before is extracted again
+
+
+def extract_aoc(nx, keys, work, app, fam, logs):
     """DLC NSPs in the folder → <id>_build/aoc/<index>.img (the RomFS of each one's data NCA; index = title ID − base − 0x1000). The host reports these indices as owned and mounts them (DM_AOC_DIR).
-    Returns None without DLC. Reused when the DLC NSPs (names, sizes and times) and nx_extract's sources are as at the last extraction (Monster Hunter Rise: 250 DLC, 30 s),
+    Returns None without DLC. Reused when the DLC NSPs (names, sizes and times) and AOC_FORMAT are as at the last extraction, not nx_extract's source (Monster Hunter Rise: 250 DLC, 30 s),
     and aoc/ holds the files that extraction wrote (names, sizes and times): a NUP or a dump folder packs its DLC into the same aoc/"""
     if not fam['dlc']: return None
     if fam.get('nup'):
@@ -1306,7 +1311,7 @@ def extract_aoc(nx, keys, repo, work, app, fam, logs):
         if tid not in best or k > best[tid][0]: best[tid] = (k, p)
     PROG.stage('extract DLC')
     kf = work / 'aoc.key'
-    key = fingerprint(sorted((tid, p.name, p.stat().st_size, p.stat().st_mtime_ns) for tid, (_, p) in best.items()), ('files', [repo / 'dm/tools/nx_extract' / f for f in ('Program.cs', 'nx_extract.csproj')]))
+    key = fingerprint(sorted((tid, p.name, p.stat().st_size, p.stat().st_mtime_ns) for tid, (_, p) in best.items()), ('aoc format', AOC_FORMAT))
     if dst.is_dir() and (note := reused(kf, fingerprint(key, ('stat', dst)))) is not None:
         PROG.end(f'{note}, reused (inputs unchanged)'); return dst
     rmtree(kf)
@@ -1344,13 +1349,13 @@ def patch_files(repo, exe_dir, mods, game_id=None):
 def collect_nros(py, repo, romfs, dst, env, logs):
     """The NROs a game registers in NRR files (RomFS *.nrr) and loads at run time with nn::ro, found by their SHA-256 as loose files or inside the RomFS's archives (dm/tools/nro_collect.py):
     {module name: NRO path}, {} for a game without NRRs. The host maps their rewritten copies at start and loads one when the game asks (loader.c "NRO modules"; Super Smash Bros. Ultimate:
-    98 in data.arc). Reused while the NRRs, RomFS tree and collection tools are unchanged"""
+    98 in data.arc). Reused while the NRRs, RomFS tree and nro_collect.FORMAT are unchanged: not the collection tools' source, so an edit that finds the same NROs keeps them"""
     nrrs = sorted(p for p in romfs.rglob('*.nrr') if p.is_file())   # Super Smash Bros. Ultimate keeps them in a folder named .nrr
     kf = dst.with_name(dst.name + '.key')
     if not nrrs:
         rmtree(dst); rmtree(kf)   # an update can remove its NRRs: do not carry the previous manifest into the rewrite
         return {}
-    key = fingerprint(('files', nrrs + [repo / f for f in ('dm/tools/nro_collect.py', 'dm/tools/nso_syms.py', 'dm/gfx/tools/smash_arc.py', 'dm/tools/romfs.py')]), ('tree', romfs))
+    key = fingerprint(('files', nrrs), ('nro_collect format', nro_collect.FORMAT), ('tree', romfs))
     if not ((dst / 'nro.tsv').is_file() and reused(kf, key) is not None):
         tmp = dst.with_name(dst.name + '.partial'); rmtree(tmp)
         PROG.set(step=f'finding the NROs {len(nrrs)} NRR files register')
@@ -3027,7 +3032,7 @@ def main(args=None):
     for on, k in ((glslc, 'glslc_capture'), (vkcap, 'vk_capture'), (glcap, 'gl_capture'), (uedec, 'ue_decode'), (gfx == 'nvn' and src['oodle_packs'][0], 'oodle_packs'), (gfx == 'nvn' and src['ue_legacy'][0], 'ue_legacy')):
         if on: say(src[k][1])
     PROG.add(glslc + vkcap + glcap + uedec + (gfx == 'nvn'))
-    aoc = extract_aoc(nx, keys, repo, work, app, fam, logs)
+    aoc = extract_aoc(nx, keys, work, app, fam, logs)
     dlc_roms = sorted(p for p in aoc.iterdir() if p.is_dir() or p.suffix == '.img') if aoc else []
     base = next((dirs[v] for v in versions if picks[v][1] is None), dirs[versions[0]])   # the folder the base game was extracted to alone
     # the app name and bundle ID both come from the base NSP: the game name in its control data, and a bundle ID from its title ID; a setting / the command line overrides them
