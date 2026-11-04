@@ -2616,6 +2616,12 @@ NVN_NOPROTO(nvnDlssNetworkInitialize, NVNboolean, dlss_net_t *n, const dlss_buil
     return 1;
 }
 NVN_NOPROTO(nvnDlssNetworkFinalize, void, dlss_net_t *n) { (void)n; }
+// A new output size for a network already made (Star Fox at boot: 768x432), as the builder's SetOutputResolution: the scaler is made at the evaluation's sizes, so only the record changes
+NVN_NOPROTO(nvnDlssNetworkResize, NVNboolean, dlss_net_t *n, int w, int h) {
+    LOG("[nvn] DLSS network %dx%d resized to %dx%d", n->w, n->h, w, h);
+    n->w = w; n->h = h;
+    return 1;
+}
 NVN_NOPROTO(nvnDlssParametersSetDefaults, void, dlss_params_t *p) { memset(p, 0, sizeof *p); p->pre_exposure = 1; p->mv[0] = p->mv[1] = 1; }
 static void dlss_set_tex(dlss_params_t *p, int k, const NVNtexture *t, const NVNtextureView *v) {
     p->tex[k] = t;
