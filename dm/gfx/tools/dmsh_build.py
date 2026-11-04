@@ -161,9 +161,12 @@ def tg_spill(msl):
         ln = re.sub(r'(?<!mem_device \| )mem_flags::mem_threadgroup\b', 'mem_flags::mem_device | mem_flags::mem_threadgroup', ln)
         lines[n] = ln
     return '\n'.join(lines), total
-def hmma_msl(msl):
+HMMA_ROLES = ['lane', 'blk', 'a0', 'a1', 'a2', 'a3', 'b0', 'b1', 'acc0', 'acc1', 'd1']
+def hmma_helper(msl):
+    """The helper dmsh_hmma16816_f16 in the MSL: (where its signature starts, where its body starts, where its body ends, its parameters' names by role and the result
+    types (dt, rt), the roles in parameter order), or None for a shader without it. Raises ValueError for a signature of another shape"""
     m = re.search(r'\n(\w+) dmsh_hmma16816_f16\(([^)]*)\)\n\{', msl)
-    if not m: return msl
+    if not m: return None
     params, depth, cur = [], 0, ''   # commas inside template arguments (spvUnsafeArray<uint, N>) do not separate parameters
     for ch in m.group(2) + ',':
         depth += {'<': 1, '>': -1}.get(ch, 0)
@@ -179,13 +182,65 @@ def hmma_msl(msl):
     name = lambda x: group1(r'(\w+)$', x)
     names = [name(x) for x in plain]
     dt = group1(r'thread (\w+)&', plain[10], re.match)
-    v = dict(zip(['lane', 'blk', 'a0', 'a1', 'a2', 'a3', 'b0', 'b1', 'acc0', 'acc1', 'd1'], names), scr=name(scr[0]), dt=dt, rt=m.group(1))
+    v = dict(zip(HMMA_ROLES, names), scr=name(scr[0]), dt=dt, rt=m.group(1))
+    roles = iter(HMMA_ROLES); order = ['scr' if x.startswith('threadgroup ') else next(roles) for x in params]
     start = m.end() - 1; depth = 0
     for i in range(start, len(msl)):
         depth += {'{': 1, '}': -1}.get(msl[i], 0)
         if depth == 0: break
     else: raise ValueError('dmsh_hmma16816_f16: body not closed')
-    return msl[:start] + HMMA_BODY % v + msl[i + 1:]
+    return m.start() + 1, start, i + 1, v, order
+def hmma_msl(msl):
+    h = hmma_helper(msl)
+    if not h: return msl
+    _, start, end, v, _ = h
+    return msl[:start] + HMMA_BODY % v + msl[end:]
+# The same helper through Metal 4 TensorOps (MetalPerformancePrimitives matmul2d, one SIMD-group, half x half -> half) over the same block, for the side library <key>_bt that the
+# host loads instead of <key>_b on GPUs with neural accelerators in their shader cores (Apple10: M5; DM_NVN_HMMA_TENSOR): Ampere HMMA through TensorOps in docs/reference/shaders.md.
+# Tensor extents run innermost first: A (k, m), B as stored, transposed (k, n) with transpose_right, C / D (n, m). The calls whose C is a constant zero (three of four in agl's
+# networks: a tile's first HMMA) go to a twin, dmsh_hmma16816_f16_z, in multiply mode, which neither stores C nor reads it
+HMMA_TENSOR_INCLUDE = '#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n'
+HMMA_TENSOR_C = '    s[192 + g * 4 + t] = uint(%(acc0)s); s[192 + (g + 8) * 4 + t] = uint(%(acc1)s);\n'
+HMMA_TENSOR_BODY = '''{
+    threadgroup uint* s = &%(scr)s[uint(%(blk)s)];
+    uint g = uint(%(lane)s) >> 2, t = uint(%(lane)s) & 3;
+    s[g * 8 + t] = uint(%(a0)s); s[(g + 8) * 8 + t] = uint(%(a1)s); s[g * 8 + 4 + t] = uint(%(a2)s); s[(g + 8) * 8 + 4 + t] = uint(%(a3)s);
+    s[128 + g * 8 + t] = uint(%(b0)s); s[128 + g * 8 + 4 + t] = uint(%(b1)s);
+%(cstore)s    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup half* h = (threadgroup half*)s;
+    {
+        constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(16, 8, 16, false, true, false, mpp::tensor_ops::matmul2d_descriptor::mode::%(mode)s);
+        mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;
+        tensor<threadgroup half, extents<int, 16, 16>, tensor_inline> ta(h, extents<int, 16, 16>());
+        tensor<threadgroup half, extents<int, 16, 8>, tensor_inline> tb(h + 256, extents<int, 16, 8>());
+        tensor<threadgroup half, extents<int, 8, 16>, tensor_inline> td(h + 384, extents<int, 8, 16>());
+        op.run(ta, tb, td);
+    }
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    uint d0 = s[192 + g * 4 + t], d1 = s[192 + (g + 8) * 4 + t];
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    %(d1)s = as_type<%(dt)s>(d1);
+    return as_type<%(rt)s>(d0);
+}'''
+def hmma_tensor_msl(msl):
+    """The shader with its helper through TensorOps (see HMMA_TENSOR_BODY), compiled with -std=metal4.0; None for a shader without the helper. Raises ValueError as hmma_helper"""
+    h = hmma_helper(msl)
+    if not h: return None
+    head, start, end, v, order = h
+    if '#include <metal_stdlib>\n' not in msl[:head]: raise ValueError('dmsh_hmma16816_f16: no #include <metal_stdlib> to put the TensorOps headers after')
+    attrs = 'static inline __attribute__((always_inline))\n'
+    zero = ('\n\n' + (attrs if msl[:head].endswith(attrs) else '') + msl[head:start].replace('dmsh_hmma16816_f16(', 'dmsh_hmma16816_f16_z(', 1) +
+            HMMA_TENSOR_BODY % dict(v, cstore='', mode='multiply'))
+    rest = msl[end:]
+    # a constant zero C: a literal 0, or a variable spirv-cross declares as `int _N = 0;` and never assigns again
+    zeros = {n for n in re.findall(r'\bint (_\w+) = 0;', rest) if len(re.findall(r'\b%s = ' % n, rest)) == 1} | {'0'}
+    at = [order.index('acc0'), order.index('acc1')]
+    def call(c):
+        args = [a.strip() for a in c.group(1).split(',')]
+        return 'dmsh_hmma16816_f16_z(' + c.group(1) + ')' if len(args) == len(order) and all(args[i] in zeros for i in at) else c.group(0)
+    rest = re.sub(r'\bdmsh_hmma16816_f16\(([^()]*)\)', call, rest)
+    out = msl[:start] + HMMA_TENSOR_BODY % dict(v, cstore=HMMA_TENSOR_C % v, mode='multiply_accumulate') + zero + rest
+    return out.replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + HMMA_TENSOR_INCLUDE, 1)
 # Border colours: Maxwell's sampler takes any RGBA border colour, Metal's only transparent black, opaque black or opaque white, and the host's sampler gets the nearest of them
 # (nvn_border.h). A filtered sample is linear in the border colour, r = Σ w·texel + w_border·B, so two samples through samplers that differ only in their border colour give the rest:
 # with Metal colours Bn (the sampler) and Bw (its twin), r = s_n + (s_w - s_n)·k, k = (B - Bn) / (Bw - Bn) per channel. Each sampler member a shader samples gets a twin member
@@ -246,6 +301,12 @@ MAC_RECORD = ' '.join(MAC_METAL) + '; xcrun -sdk macosx metallib'
 METAL_FP = dmsh_mtlcache.compiler_id('macosx') + ('\0iphoneos\0' + dmsh_mtlcache.compiler_id('iphoneos') if IOSOUT else '')
 def mac_compile(msl, air, lib):   # same interface as ios_metal.compile; the precompiled header changes no output, so MAC_RECORD does not name it (dmsh_pch.py)
     dmsh_pch.compile(MAC_METAL, msl, air)
+    subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', lib], check=True)
+# The TensorOps libraries (<key>_bt, hmma_tensor_msl) need Metal 4's language, as the Mac's other libraries do not
+MAC_TENSOR_METAL = MAC_METAL + ['-std=metal4.0']
+MAC_TENSOR_RECORD = ' '.join(MAC_TENSOR_METAL) + '; xcrun -sdk macosx metallib'
+def mac_tensor_compile(msl, air, lib):   # through dmsh_pch as every library compile: the source on standard input, a header of its own for this language
+    dmsh_pch.compile(MAC_TENSOR_METAL, msl, air)
     subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', lib], check=True)
 # The NVN driver's constant segments have one layout in every game, which dm/gfx/nvn/dmsh_abi.h holds for the host and this build (through dmsh_abi.py); nvn_mtl.m fills them the same way at run time.
 #   c2 C2_TEX + 8 r: handles bound with nvnCommandBufferBindTexture (combined texture and sampler), slot r. The driver has 32 such slots, but a game may bind higher ones, whose words lie in the
@@ -359,7 +420,7 @@ def publish_cache(key, digest, rule_fp, code_fp):
         for name in names:
             if name.endswith('.json'):
                 src = os.path.join(out if label == 'mac' else IOSOUT, name)
-                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None); value.pop('pull', None); value.pop('alpha', None); value.pop('logic', None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish, alpha_finish, logic_finish)
+                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None); value.pop('pull', None); value.pop('alpha', None); value.pop('logic', None); value.pop('tensor', None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish, alpha_finish, logic_finish, tensor_finish)
                 atomic_json(os.path.join(d, name), value)
     atomic_json(cache_meta_path(key), {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp})
 
@@ -525,6 +586,33 @@ def ps_libraries(key, msl, full):
         except FileNotFoundError: pass
         MTL.compile(t, msl, os.path.join(d, key + '_b.metallib'))
     return {}
+
+TENSOR_STATS = collections.Counter()
+def tensor_finish(key, src, refl):
+    """A compute shader's TensorOps library <key>_bt (hmma_tensor_msl), Mac only, from its final MSL through the MSL-keyed Metal cache; reflection 'tensor' names its entry point.
+    A shader without HMMA gets none (a stale one removed). Changes refl; the caller writes it"""
+    lib = os.path.join(out, key + '_bt.metallib'); refl.pop('tensor', None)
+    def drop():
+        try: os.unlink(lib)
+        except FileNotFoundError: pass
+    if refl['stage'] != 'cs' or 'mac' not in TARGETS: drop(); return refl
+    try: v = hmma_tensor_msl(src)
+    except ValueError as e:
+        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: no TensorOps library ({str(e)[:120]}): it runs through simdgroup_matrix everywhere', flush=True)
+        drop(); return refl
+    if not v: drop(); return refl
+    msl = os.path.join(w, key + '_bt.metal'); open(msl, 'w').write(v)
+    try: MTL.compile('mac_tensor', msl, lib)
+    except subprocess.CalledProcessError as e:
+        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: the TensorOps library does not compile ({str(e)[:120]}): it runs through simdgroup_matrix everywhere', flush=True)
+        drop(); return refl
+    finally:
+        try: os.unlink(msl)
+        except FileNotFoundError: pass
+    TENSOR_STATS['generated'] += 1
+    zero = v.count('dmsh_hmma16816_f16_z(') - 1   # the calls, without the helpers' own signatures
+    refl['tensor'] = {'entry': refl.get('entry') or 'main0', 'calls': v.count('dmsh_hmma16816_f16(') - 1 + zero, 'zero_c': zero}
+    return refl
 
 pc_of, loc = {}, {}
 MAP_ROWS, MAP_CONFLICT_ROWS = {}, {}
@@ -1400,6 +1488,7 @@ def finish(key, w, j, c1):
             'raster': raster_facts(j['stage'], src), 'vs_pad': pad}
     if j['stage'] == 'vs': full = open(msl).read(); vin_finish(key, full, refl); pull_finish(key, full, refl)   # the shadow-input and pulling libraries (dmsh_vin.py, dmsh_pull.py), from the source with every entry point
     refl.update(side)   # the alpha test and logic operation entry points (ps_libraries)
+    if j['stage'] == 'cs': tensor_finish(key, src, refl)   # the TensorOps library for HMMA (see hmma_tensor_msl)
     write_refl(key, refl)
     fetch_finish(key, src, refl)
     return 'ok', '', refl
@@ -1420,7 +1509,7 @@ for _d in [out] + ([IOSOUT] if IOSOUT else []):
     if (not want or STAMP_BEFORE != INPUTS) and os.path.exists(os.path.join(_d, dmsh_chain.STAMP)): os.unlink(os.path.join(_d, dmsh_chain.STAMP))
     if not want and os.path.exists(os.path.join(_d, CAS_USED)): os.unlink(os.path.join(_d, CAS_USED))   # written again at the end, with the stamp
 w = tempfile.mkdtemp(prefix='dmsh_', dir=os.environ.get('WORK'))
-MTL = dmsh_mtlcache.Cache(os.path.join(CAS, 'metallib'), {'mac': ('macosx', MAC_RECORD, mac_compile), **({'ios': ('iphoneos', ios_metal.RECORD, ios_metal.compile)} if IOSOUT else {})}, w)
+MTL = dmsh_mtlcache.Cache(os.path.join(CAS, 'metallib'), {'mac': ('macosx', MAC_RECORD, mac_compile), 'mac_tensor': ('macosx', MAC_TENSOR_RECORD, mac_tensor_compile), **({'ios': ('iphoneos', ios_metal.RECORD, ios_metal.compile)} if IOSOUT else {})}, w)
 # first take the libraries earlier chain versions left on disk: the b-*/ beside the output (iOS: the folder of the same name) and the roots DMSH_PREFILL lists
 for _spec in [cache_root + ('=' + os.path.dirname(IOSOUT) if IOSOUT else '')] + [x for x in os.environ.get('DMSH_PREFILL', '').split(os.pathsep) if x]:
     _mac, _, _ios = _spec.partition('=')
@@ -1460,9 +1549,10 @@ for r in xr:
 def fin(key):
     if key in cache_hits:
         refl = json.load(open(os.path.join(out, key + '_b.json')))
-        src = open(os.path.join(out, key + '_b.metal')).read() if refl['stage'] in ('ps', 'vs') else ''
+        src = open(os.path.join(out, key + '_b.metal')).read() if refl['stage'] in ('ps', 'vs', 'cs') else ''
         if refl['stage'] == 'vs': write_refl(key, pull_finish(key, src, vin_finish(key, src, refl)))
         if refl['stage'] == 'ps': refl.update(ps_libraries(key, os.path.join(out, key + '_b.metal'), src))
+        if refl['stage'] == 'cs': write_refl(key, tensor_finish(key, src, refl))
         return key, 'ok', '', fetch_finish(key, src, refl)
     if key in xerr or not os.path.exists(os.path.join(w, key + '.spv')): return key, 'translation failed', xerr.get(key, 'no spv'), None
     result = (key,) + finish(key, w, jobs[key], c1s[key])
@@ -1501,6 +1591,7 @@ print(f'shadow-input libraries (<key>_bv, dmsh_vin.py): {VIN_STATS["generated"]}
 print(f'alpha test and logic operation libraries (<key>_bx, dmsh_side.py): {SIDE_STATS["generated"]} generated, {SIDE_STATS["failed"]} failed to compile, {SIDE_STATS["not generated"]} pixel shaders without either')
 print(f'pulling libraries (<key>_bp, dmsh_pull.py): {PULL_STATS["generated"]} generated, {PULL_STATS["failed"]} failed to compile, {PULL_STATS["not generated"]} not generated, '
       f'{PULL_STATS["no stage input"]} vertex shaders without stage inputs (none needed)')
+print(f'TensorOps libraries (<key>_bt, hmma_tensor_msl): {TENSOR_STATS["generated"]} generated, {TENSOR_STATS["failed"]} failed')
 print('mesh libraries (<vertex>_<geometry>_m3, dmsh_mesh.py): ' + (', '.join(f'{k} {v}' for k, v in MESH_STATS.items()) or 'none'))
 print(MTL.summary())
 for lvl in [k for k in st if k != 'ok']:

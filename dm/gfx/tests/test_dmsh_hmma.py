@@ -1,6 +1,7 @@
-"""Ampere HMMA.16816 with an f16 accumulator through simdgroup_matrix (dmsh_build.py hmma_msl): the rewrite of the translator's helper dmsh_hmma16816_f16 as spirv-cross
-writes it, its arguments and scratch array, the compile with the chain's Metal flags, and on this Mac's GPU the rewritten body against a CPU reference of PTX mma.m16n8k16
-(f16 sources and accumulator) on random fragments, four SIMD-groups a threadgroup."""
+"""Ampere HMMA.16816 with an f16 accumulator through simdgroup_matrix (dmsh_build.py hmma_msl) and through Metal 4 TensorOps (hmma_tensor_msl, the <key>_bt library): the
+rewrites of the translator's helper dmsh_hmma16816_f16 as spirv-cross writes it, its arguments and scratch array, the compile with the chain's Metal flags, and on this Mac's GPU
+the rewritten bodies against a CPU reference of PTX mma.m16n8k16 (f16 sources and accumulator) on random fragments, four SIMD-groups a threadgroup; for TensorOps also the
+calls whose C is a constant zero (dmsh_hmma16816_f16_z, multiply mode)."""
 import ast
 from pathlib import Path
 import re
@@ -11,11 +12,13 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
 tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
-selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == 'hmma_msl')
-            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) == 'HMMA_BODY' for t in n.targets))]
+FUNCS = {'hmma_helper', 'hmma_msl', 'hmma_tensor_msl'}
+selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in FUNCS)
+            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '').startswith('HMMA_') for t in n.targets))]
 scope = {'re': re}
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
-hmma_msl = scope['hmma_msl']
+hmma_msl, hmma_tensor_msl = scope['hmma_msl'], scope['hmma_tensor_msl']
+METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']   # the chain's Mac flags (dmsh_build.py MAC_METAL); TensorOps add -std=metal4.0 (MAC_TENSOR_METAL)
 
 HEAD = '''#include <metal_stdlib>
 #include <simd/simd.h>
@@ -35,6 +38,7 @@ struct spvUnsafeArray
 '''
 # The helper as spirv-cross writes it (Donkey Kong Bananza's 7629d857a0a93833, cut down to its signature and a body of the same shape)
 HELPER = '''
+static inline __attribute__((always_inline))
 int dmsh_hmma16816_f16(thread const int& _42961, thread const int& _42962, thread const int& _42963, thread const int& _42964, thread const int& _42965, thread const int& _42966, thread const int& _42967, thread const int& _42968, thread const int& _42969, thread const int& _42970, thread int& _42971, threadgroup spvUnsafeArray<uint, 1024>& _34)
 {
     uint _42974 = uint(int(uint(_42961) >> uint(2)));
@@ -48,6 +52,7 @@ int dmsh_hmma16816_f16(thread const int& _42961, thread const int& _42962, threa
     return int(_34[_42962 + 1]);
 }
 '''
+# One HMMA a lane on its fragments (C from the input), then one more with a constant zero C as spirv-cross passes it (`int _N = 0;`) on the same A and B
 KERNEL = '''
 kernel void check(device const uint *in [[buffer(0)]], device uint *out [[buffer(1)]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
                   uint gid [[thread_position_in_grid]])
@@ -58,11 +63,15 @@ kernel void check(device const uint *in [[buffer(0)]], device uint *out [[buffer
     int b0 = int(in[gid * 8 + 4]), b1 = int(in[gid * 8 + 5]), c0 = int(in[gid * 8 + 6]), c1 = int(in[gid * 8 + 7]);
     int d1;
     int d0 = dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, c0, c1, d1, scr);
-    out[gid * 2] = uint(d0); out[gid * 2 + 1] = uint(d1);
+    int _900 = 0;
+    int _901 = 0;
+    int z1;
+    int z0 = dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, _900, _901, z1, scr);
+    out[gid * 4] = uint(d0); out[gid * 4 + 1] = uint(d1); out[gid * 4 + 2] = uint(z0); out[gid * 4 + 3] = uint(z1);
 }
 '''
-# The GPU check: 64 threadgroups of 128 lanes, random halves in [-1, 1]; the reference sums in float and rounds once; the matrix hardware rounds the f16 accumulator as
-# it goes, as Ampere's f16 accumulator does, so the tolerance is 0.01 + 0.4 % of the value
+# The GPU check: 64 threadgroups of 128 lanes, random halves in [-1, 1]; the reference sums in float and rounds once. simdgroup_matrix rounds the f16 accumulator as it goes,
+# as Ampere's f16 accumulator does (largest error 0.009); TensorOps round once (0.002). argv[2]: the tolerance's absolute part (plus 0.4 % of the value). Exit 2: no Metal 4
 RUNNER = r'''#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 static float h2f(uint16_t h) { __fp16 v; memcpy(&v, &h, 2); return (float)v; }
@@ -71,13 +80,15 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); NSError *e = nil;
         if (!dev) { printf("no Metal device\n"); return 2; }
+        if (argc > 3 && ![dev supportsFamily:MTLGPUFamilyMetal4]) { printf("no Metal 4 GPU family\n"); return 2; }
+        double tol = atof(argv[2]);
         NSData *lib_data = [NSData dataWithContentsOfFile:@(argv[1])];
         id<MTLLibrary> lib = [dev newLibraryWithData:dispatch_data_create(lib_data.bytes, lib_data.length, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT) error:&e];
         if (!lib) { printf("library: %s\n", e.localizedDescription.UTF8String); return 1; }
         id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"check"] error:&e];
         if (!ps) { printf("pipeline: %s\n", e.localizedDescription.UTF8String); return 1; }
         const int groups = 64, tg = 128, n = groups * tg;
-        id<MTLBuffer> in = [dev newBufferWithLength:n * 32 options:MTLResourceStorageModeShared], out = [dev newBufferWithLength:n * 8 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> in = [dev newBufferWithLength:n * 32 options:MTLResourceStorageModeShared], out = [dev newBufferWithLength:n * 16 options:MTLResourceStorageModeShared];
         uint32_t *w = in.contents; srand(11);
         for (int i = 0; i < n * 8; i++) w[i] = f2h((rand() % 2001 - 1000) / 1000.0f) | (uint32_t)f2h((rand() % 2001 - 1000) / 1000.0f) << 16;
         id<MTLCommandQueue> q = [dev newCommandQueue]; id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
@@ -93,13 +104,13 @@ int main(int argc, char **argv) {
                 for (int r = 0; r < 2; r++) { int row = g + 8 * r; C[row][2 * t] = h2f(f[6 + r] & 0xffff); C[row][2 * t + 1] = h2f(f[6 + r] >> 16); }
             }
             for (int L = 0; L < 32; L++) {
-                int g = L / 4, t = L % 4; const uint32_t *r = o + (warp * 32 + L) * 2;
-                for (int q2 = 0; q2 < 2; q2++) for (int j = 0; j < 2; j++) {
-                    int row = g + 8 * q2, col = 2 * t + j; float ref = C[row][col];
+                int g = L / 4, t = L % 4; const uint32_t *r = o + (warp * 32 + L) * 4;
+                for (int zc = 0; zc < 2; zc++) for (int q2 = 0; q2 < 2; q2++) for (int j = 0; j < 2; j++) {
+                    int row = g + 8 * q2, col = 2 * t + j; float ref = zc ? 0 : C[row][col];
                     for (int k = 0; k < 16; k++) ref += A[row][k] * B[k][col];
-                    double d = fabs(h2f((r[q2] >> (16 * j)) & 0xffff) - ref);
+                    double d = fabs(h2f((r[zc * 2 + q2] >> (16 * j)) & 0xffff) - ref);
                     if (d > worst) worst = d;
-                    bad += d > 0.01 + fabs(ref) * 0.004;
+                    bad += d > tol + fabs(ref) * 0.004;
                 }
             }
         }
@@ -108,6 +119,11 @@ int main(int argc, char **argv) {
     }
 }
 '''
+
+
+def body_of(src, name):   # a function's text from its signature to the next function
+    i = src.index(f' {name}(')
+    return src[i:src.index('\n}\n', i) + 3]
 
 
 class HmmaRewrite(unittest.TestCase):
@@ -125,27 +141,70 @@ class HmmaRewrite(unittest.TestCase):
         self.assertIn(KERNEL.strip(), out)
 
     def test_other_shaders_unchanged(self):
-        src = HEAD + KERNEL.replace('dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, c0, c1, d1, scr)', 'a0')
+        src = HEAD + KERNEL.replace('dmsh_hmma16816_f16(', 'max(')
         self.assertEqual(hmma_msl(src), src)
+        self.assertIsNone(hmma_tensor_msl(src))
 
     def test_unexpected_signature_refused(self):
-        with self.assertRaises(ValueError):
-            hmma_msl(HEAD + HELPER.replace('thread const int& _42970, ', ''))
+        for f in (hmma_msl, hmma_tensor_msl):
+            with self.assertRaises(ValueError):
+                f(HEAD + HELPER.replace('thread const int& _42970, ', ''))
+
+
+class HmmaTensorRewrite(unittest.TestCase):
+    def setUp(self):
+        self.out = hmma_tensor_msl(HEAD + HELPER + KERNEL)
+
+    def test_headers(self):
+        self.assertIn('#include <metal_stdlib>\n#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n', self.out)
+
+    def test_multiply_accumulate_body(self):
+        body = body_of(self.out, 'dmsh_hmma16816_f16')
+        self.assertIn('mode::multiply_accumulate', body)
+        self.assertIn('matmul2d_descriptor(16, 8, 16, false, true, false,', body)   # B is stored transposed
+        self.assertIn('mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;', body)
+        self.assertIn('s[192 + (g + 8) * 4 + t] = uint(_42970)', body)           # C stored
+        self.assertIn('_42971 = as_type<int>(d1);', body)
+        self.assertNotIn('simdgroup_multiply', body)
+        self.assertNotIn('_42974', body)
+
+    def test_zero_c_twin(self):
+        body = body_of(self.out, 'dmsh_hmma16816_f16_z')
+        self.assertTrue(self.out[:self.out.index('int dmsh_hmma16816_f16_z(')].endswith('static inline __attribute__((always_inline))\n'))
+        self.assertIn('mode::multiply)', body)
+        self.assertNotIn('uint(_42969)', body)                                   # C neither stored nor read
+        self.assertNotIn('uint(_42970)', body)
+        self.assertIn('s[128 + g * 8 + 4 + t] = uint(_42968)', body)             # B1 still stored
+
+    def test_calls(self):
+        kernel = self.out[self.out.index('kernel void check'):]
+        self.assertIn('= dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, c0, c1, d1, scr);', kernel)       # C from the input
+        self.assertIn('= dmsh_hmma16816_f16_z(l, blk, a0, a1, a2, a3, b0, b1, _900, _901, z1, scr);', kernel)  # C a constant zero
+
+    def test_reassigned_zero_kept(self):   # a variable that starts at 0 and is assigned again is no constant
+        out = hmma_tensor_msl(HEAD + HELPER + KERNEL.replace('    int z1;\n', '    int z1;\n    _901 = c1;\n'))
+        self.assertIn('= dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, _900, _901, z1, scr);', out)
 
 
 @unittest.skipUnless(shutil.which('xcrun') and shutil.which('clang'), 'needs Xcode')
 class HmmaOnGpu(unittest.TestCase):
-    def test_matches_reference(self):
+    def run_check(self, msl, flags, tol, metal4=False):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            (d / 'h.metal').write_text(hmma_msl(HEAD + HELPER + KERNEL))
-            subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance', str(d / 'h.metal'), '-o', str(d / 'h.air')], check=True)
+            (d / 'h.metal').write_text(msl)
+            subprocess.run([*METAL, *flags, str(d / 'h.metal'), '-o', str(d / 'h.air')], check=True)
             subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(d / 'h.air'), '-o', str(d / 'h.metallib')], check=True)
             (d / 'run.m').write_text(RUNNER)
             subprocess.run(['clang', '-fobjc-arc', '-O1', str(d / 'run.m'), '-framework', 'Metal', '-framework', 'Foundation', '-o', str(d / 'run')], check=True)
-            r = subprocess.run([str(d / 'run'), str(d / 'h.metallib')], capture_output=True, text=True)
+            r = subprocess.run([str(d / 'run'), str(d / 'h.metallib'), str(tol), *(['metal4'] if metal4 else [])], capture_output=True, text=True)
             if r.returncode == 2: self.skipTest(r.stdout.strip())
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_matches_reference(self):
+        self.run_check(hmma_msl(HEAD + HELPER + KERNEL), [], 0.01)
+
+    def test_tensor_matches_reference(self):   # rounds once: a tighter tolerance than the simdgroup_matrix body's
+        self.run_check(hmma_tensor_msl(HEAD + HELPER + KERNEL), ['-std=metal4.0'], 0.004, metal4=True)
 
 
 if __name__ == '__main__':
