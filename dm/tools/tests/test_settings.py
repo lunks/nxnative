@@ -87,7 +87,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertEqual(list(sec),['Game','Resolution','Effects','Frame rate','HDR','Controls','Performance'])
         want=['DM_SINGLE_UPSCALE','DM_UPSCALER','DM_UPSCALE_RATIO','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_PRESENT_UPSCALE']
         self.assertEqual([e for e in sec['Resolution'] if e in want],want,'in the picture\'s order (other rows, such as a MetalFX temporal option after the upscaler, may come between)')
-        self.assertEqual(sec['Effects'],['DM_EFFECTS_RES','DM_SHADOW_RES','DM_SHADOW_MAP_SIZE'])
+        self.assertEqual(sec['Effects'],['DM_EFFECTS_RES','DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_ANISO','DM_TRILINEAR'])
         self.assertEqual(sec['Frame rate'],['DM_FPS_LOCK','DM_MFX_INTERP'])
         self.assertEqual(sec['HDR'][0],'DM_HDR')
         self.assertEqual({s['section'] for s in listed if s.get('level')=='basic'},{'Game','Controls'},'Basic settings keep their sections')

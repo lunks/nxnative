@@ -66,8 +66,8 @@ import Foundation
         let mac = try! JSONDecoder().decode(SettingsFile.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
         setenv("DM_ENV_FILE_KEYS", "", 1); unsetenv("DM_FULLSCREEN"); unsetenv("DM_OPMODE")
         let mm = LauncherModel(mac.settings, defaults: d)
-        expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Resolution", "HDR", "Controls", "Performance"],
-               "Basic keeps its sections; Advanced has the picture's (Upscaling under Resolution, HDR), in the list's order: \(mm.sections(basic: false))")
+        expect(mm.sections(basic: true) == ["Game", "Controls"] && mm.sections(basic: false) == ["Game", "Resolution", "Effects", "HDR", "Controls", "Performance"],
+               "Basic keeps its sections; Advanced has the picture's (Upscaling under Resolution, filtering under Effects, HDR), in the list's order: \(mm.sections(basic: false))")
         expect(mm.rows(in: "Game", basic: true).map(\.env) == ["DM_FPS_TARGET", "DM_RENDER_SCALE", "DM_OPMODE", "DM_LANG", "DM_FULLSCREEN"], "Basic rows in the list's order")
         expect(!file.settings.contains { $0.env == "DM_FULLSCREEN" } && mm.values["DM_FULLSCREEN"] == "0", "Display mode is the Mac's, Window by default")
         mm.values["DM_FULLSCREEN"] = "1"; mm.apply()
