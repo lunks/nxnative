@@ -797,6 +797,27 @@ def bare_shader(d, label):
     if why: red(f'{label}: a bare shader record that does not check: {why}')
     return [(f'{label}#BARE', st, ctl, code)]
 
+def vipr_shaders(d, label):
+    """Star Fox's VIPR packs ('VIPR', u32 2, u32 header length, then named sections, GARD and vbin-2 with the asset's path): two of its 24,650 hold shaders. The upscaler's
+    (/data/eclipse/upscaling/ounce-nvn2-upper_left_ndsr.bin) holds an agl NDSR pack of Splatoon Raiders' layout (ndsr_shaders: 28 shaders); the characters' compute archive
+    (…/navi_archive_…_nvn2_glsl_b1.bin, 165 compute shaders) a run of records, each an NVN2 control section with its code right after it, the record's header ending in
+    u32 control length and u32 code length just before the control (0xe0 and the control's own code length +0x44). → [(label, stage, control, code)]"""
+    if d[:4] != b'VIPR': return []
+    i = d.find(b'NDSR')
+    if i >= 0: return ndsr_shaders(d[i:], f'{label}#VIPR@{i:#x}')
+    out = []
+    for m in re.finditer(re.escape(CTL_MAGIC), d):
+        c = m.start()
+        if c < 0xc or not nvn2_ctl(d[c:c + 0x48]): continue
+        nl, nc = struct.unpack_from('<2I', d, c - 0xc)
+        if nl < 0x48 or nc != struct.unpack_from('<I', d, c + 0x44)[0] or c + nl + nc > len(d): continue
+        ctl, code = d[c:c + nl], d[c + nl:c + nl + nc]
+        st = nvn2_stage(ctl, code)
+        why = check(label, st, ctl, code) if st else 'no stage in its control section'
+        if why: red(f'{label}: a VIPR shader record at {c:#x} that does not check: {why}')
+        out.append((f'{label}#VIPR@{c:#x}', st, ctl, code))
+    return out
+
 def zip_shaders(path, rel, names, out):
     """A range of zip members (zip_jobs), each inflated and scanned like a loose file: scan_blob, then whole GLSLC outputs (Portal's .nvsb files: a 0x60-byte 'NVSB' header, then one
     GLSLC output of a vertex and a pixel shader)"""
@@ -806,7 +827,7 @@ def zip_shaders(path, rel, names, out):
             i = z.getinfo(nm)
             d = zip_lz4_member(source, i, f'/{rel}/{nm}') if i.compress_type == zipfile.ZIP_STORED and i.compress_size != i.file_size else z.read(nm); n = len(out)
             scan_blob(d, f'/{rel}/{nm}', out)
-            if len(out) == n: out += bare_shader(d, f'/{rel}/{nm}')
+            if len(out) == n: out += bare_shader(d, f'/{rel}/{nm}') or vipr_shaders(d, f'/{rel}/{nm}')
             if len(out) == n and d[:4] != b'MSHD' and b'\x91\x68\x86\x19' in d: out += glslc_shaders(d, f'/{rel}/{nm}', need=False)
 
 def pgdat_members(d, label):
