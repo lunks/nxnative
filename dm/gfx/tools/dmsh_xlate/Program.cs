@@ -8,9 +8,10 @@
 //   Job: [{ "key", "stage": "vs|ps|cs", "code": machine code file (graphics = 0x50-byte SPH + instructions, compute = instructions),
 //           "arch": "sm86" for Ampere code (NVN2, Switch 2: a 0x80-byte SPH and 128-bit instructions; absent = Maxwell),
 //           "tex": { "slot": "2d|2darray|cube|cubearray|3d|buffer|1d|1darray|2dms|2dmsarray", ... }, "img": { "slot": { "type", "fmt" } },
-//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z] }]
+//           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z],
+//           "imma_tensor": true for a compute shader's TensorOps source (IMMA.16832 on bytes as helper calls, QueryImmaTensor) }]
 //   Output: <key>.spv and <key>.res.json (offsets of storage buffer slots in c0, etc.; decoding texture handle → slot number is done in the script that builds the metallib;
-//           "fetch1d": the texture slots read by 1D integer fetches translated as wrapped 2D reads, see RecordTexelFetch1D)
+//           "fetch1d": the texture slots read by 1D integer fetches translated as wrapped 2D reads, see RecordTexelFetch1D; "imma_tensor": the IMMAs a TensorOps source takes as calls)
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.Shader;
 using Ryujinx.Graphics.Shader.Translation;
@@ -69,6 +70,7 @@ static class SwshXlate
         public int QueryConstantBuffer1Size() => _c1.Length;
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
         public int[] QueryAmpereStageMemory() => _job["stage_memory"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;   // a task or mesh shader (dmsh_meshstage.py)
+        public bool QueryImmaTensor() => _job["imma_tensor"] is JsonNode n && (bool)n;   // a compute shader's TensorOps source (dmsh_build.py imma_source)
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }
         // All resources go into set 0, each with a distinct binding number (spirv-cross emits them as one argument buffer); the translator's convention of giving the buffer of constant segment number index binding = index+1 is not relied on
         // The translator's own messages (a bindless read it resolved, or could not and removed, its result 0; an invalid encoding) go into the notes, marked, which dmsh_build.py counts apart
@@ -229,7 +231,7 @@ static class SwshXlate
                     ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
                     ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
                     ["geometry_stride"] = geometry ? ctx.GetResourceReservations().OutputSizePerInvocation : 0,
-                    ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
+                    ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap, ["imma_tensor"] = ctx.ImmaTensorCount,
                 };
                 foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });

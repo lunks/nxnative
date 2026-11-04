@@ -48,6 +48,15 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// nxnative: whether Ampere IMMA.16832 on 8-bit elements of one sign in a compute shader becomes a call of the helper dmsh_imma16832_s8 / _u8, for the source of the
+        /// shader's TensorOps library (dmsh_build.py imma_source), instead of the per-lane emulation every other library of the shader keeps.
+        /// </summary>
+        bool QueryImmaTensor()
+        {
+            return false;
+        }
+
+        /// <summary>
         /// Gets a span of the specified memory location, containing shader code.
         /// </summary>
         /// <param name="address">GPU virtual address of the data</param>

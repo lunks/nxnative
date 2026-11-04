@@ -2,14 +2,24 @@
 """Ampere IMMA (0x237, InstEmitAmpereTensor.cs AImma), the integer matrix multiply-accumulate of Star Fox's character networks, through the offline translator (dmsh_xlate, arch sm86):
 a program that loads A, B and C from shared memory, runs one IMMA and stores D is translated, its shared memory routed to a device buffer, and on this Mac's GPU each lane's D is
 checked bit for bit against a CPU reference of PTX mma.sync .row.col.s32 on random fragments, which places every element by the PTX ISA's fragment formulas for its shape (64 warps a
-form): the game's encodings (IMMA.16832.S8.S8, D over A, B or C), the other signs, .SAT with C near the s32 bounds, m16n8k16 and m8n8k16, and the 4-bit shapes. Needs
-DMSH_TEST_XLATE (the translator) like the other translator tests."""
-import re, shutil, subprocess, sys, tempfile, unittest
+form): the game's encodings (IMMA.16832.S8.S8, D over A, B or C), the other signs, .SAT with C near the s32 bounds, m16n8k16 and m8n8k16, and the 4-bit shapes. Each case also
+runs as the shader's TensorOps source (dmsh_build.py imma_source, the translator's job imma_tensor), where m16n8k32 on bytes of one sign takes its products from the helper
+dmsh_imma16832_s8 / _u8: with the translator's body and through Metal 4's matmul2d (imma_tensor_msl, the <key>_bt library), bit for bit against the same reference; every other
+form must translate there as in the per-lane library. Needs DMSH_TEST_XLATE (the translator) like the other translator tests; the rewrite's text is checked without it."""
+import ast, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_dmsh_ampere_mem import EXIT, Translated, inst
 
-METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']   # the chain's Mac flags (dmsh_build.py MAC_METAL)
+TOOLS = Path(__file__).resolve().parents[1] / 'tools'
+tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
+selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in {'imma_helper', 'imma_tensor_msl', 'imma_calls'})
+            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '').startswith('IMMA_') or getattr(t, 'id', '') == 'HMMA_TENSOR_INCLUDE' for t in n.targets))]
+scope = {'re': re}
+exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
+imma_tensor_msl, imma_calls = scope['imma_tensor_msl'], scope['imma_calls']
+
+METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']   # the chain's Mac flags (dmsh_build.py MAC_METAL); TensorOps add -std=metal4.0 (MAC_TENSOR_METAL)
 RZ = 255
 TID = 30   # the lane's register: S2R R30, SR_TID.X (Mario Kart World's encoding, write barrier 0)
 S2R = (0x000e260000002100, 0x0000000000007919 | TID << 16)
@@ -38,7 +48,7 @@ def imma(rd, ra, rb, rc, size=5, a_signed=1, b_signed=1, sat=0, nibbles=0):   # 
             rb << 32 | ra << 24 | rd << 16 | 0x7237)
 
 
-# The run: argv metallib, m, k, element bits, A signed, B signed, .SAT, C from Rc (0: RZ), C near the s32 bounds. Exit 2: no Metal device
+# The run: argv metallib, m, k, element bits, A signed, B signed, .SAT, C from Rc (0: RZ), C near the s32 bounds[, metal4: a TensorOps library]. Exit 2: no Metal device, or no Metal 4
 RUNNER = r'''#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 static long long elem(uint32_t w, int i, int bits, int sgn) {   // element i of a register, the lowest first
@@ -49,6 +59,7 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); NSError *e = nil;
         if (!dev) { printf("no Metal device\n"); return 2; }
+        if (argc > 10 && ![dev supportsFamily:MTLGPUFamilyMetal4]) { printf("no Metal 4 GPU family\n"); return 2; }
         int m = atoi(argv[2]), k = atoi(argv[3]), bits = atoi(argv[4]), as = atoi(argv[5]), bs = atoi(argv[6]), sat = atoi(argv[7]), has_c = atoi(argv[8]), edge = atoi(argv[9]);
         NSData *lib_data = [NSData dataWithContentsOfFile:@(argv[1])];
         id<MTLLibrary> lib = [dev newLibraryWithData:dispatch_data_create(lib_data.bytes, lib_data.length, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT) error:&e];
@@ -131,28 +142,40 @@ class Imma(Translated):
         code = [S2R, lds(ra, 0, 6), lds(rb, 0x200, 5)] + ([lds(rc, 0x400, 6)] if rc != RZ else []) + [mma, sts(rd, 0x600, 6 if m == 16 else 5), EXIT]
         return b''.join(inst(*c) for c in code), rc != RZ
 
-    def msl_on_device(self, mma, m):
-        """The translated program, its shared memory a device buffer of its threadgroup's own 512 words (buffer 30)"""
+    def msl_on_device(self, mma, m, **job):
+        """The translated program, its shared memory a device buffer of its threadgroup's own 512 words (buffer 30); a TensorOps source's scratch stays threadgroup memory"""
         code, has_c = self.program(mma, m)
-        msl = self.translate(code, shared=SHARED)
+        msl = self.translate(code, shared=SHARED, **job)
         msl, n = re.subn(r'threadgroup spvUnsafeArray<uint, 512> (\w+);',
                          r'device spvUnsafeArray<uint, 512>& \1 = *(device spvUnsafeArray<uint, 512>*)(dmsh_mem + 512 * dmsh_group.x);', msl)
         self.assertEqual(n, 1, msl)
         msl = msl.replace('kernel void main0(', 'kernel void main0(device uint* dmsh_mem [[buffer(30)]], uint3 dmsh_group [[threadgroup_position_in_grid]], ', 1)
         return msl, has_c
 
-    def check(self, mma, m, k, bits=8, a_signed=1, b_signed=1, sat=0, edge=False):
-        msl, has_c = self.msl_on_device(mma, m)
+    def run_on_gpu(self, msl, args, tensor=False):
         with tempfile.TemporaryDirectory(prefix='imma_run_') as d:
             d = Path(d)
             (d / 'k.metal').write_text(msl)
-            subprocess.run([*METAL, str(d / 'k.metal'), '-o', str(d / 'k.air')], check=True)
+            subprocess.run([*METAL, *(['-std=metal4.0'] if tensor else []), str(d / 'k.metal'), '-o', str(d / 'k.air')], check=True)
             subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(d / 'k.air'), '-o', str(d / 'k.metallib')], check=True)
-            r = subprocess.run([str(Path(self.dir.name) / 'run'), str(d / 'k.metallib'), *map(str, (m, k, bits, a_signed, b_signed, sat, int(has_c), int(edge)))],
-                               capture_output=True, text=True)
+            r = subprocess.run([str(Path(self.dir.name) / 'run'), str(d / 'k.metallib'), *map(str, args), *(['metal4'] if tensor else [])], capture_output=True, text=True)
         if r.returncode == 2: self.skipTest(r.stdout.strip())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return {name: int(n) for n, name in re.findall(r'(\d+) (clamped|wrapped)', r.stdout)}
+
+    def check(self, mma, m, k, bits=8, a_signed=1, b_signed=1, sat=0, edge=False):
+        msl, has_c = self.msl_on_device(mma, m)
+        args = (m, k, bits, a_signed, b_signed, sat, int(has_c), int(edge))
+        counts = self.run_on_gpu(msl, args)
+        # The shader's TensorOps source: m16n8k32 on bytes of one sign through the helper (the translator's body, then matmul2d), any other form as in the per-lane library
+        src, _ = self.msl_on_device(mma, m, imma_tensor=True)
+        if (m, k, bits) == (16, 32, 8) and a_signed == b_signed:
+            self.assertEqual(imma_calls(src), 1, src)
+            self.assertEqual(self.run_on_gpu(src, args), counts)
+            self.assertEqual(self.run_on_gpu(imma_tensor_msl(src), args, tensor=True), counts)
+        else:
+            self.assertEqual(src, msl)
+        return counts
 
     def test_game_d_over_a(self):   # C is RZ
         self.check(GAME_A, 16, 32)
@@ -192,6 +215,76 @@ class Imma(Translated):
             with self.subTest(form=f'{hi:016x}{lo:016x}'):
                 with self.assertRaises(AssertionError) as e: self.translate(self.program((hi, lo), 16)[0], shared=SHARED)
                 self.assertIn('IMMA size', str(e.exception))
+
+
+# The helper as spirv-cross writes it in a TensorOps source (the game encoding's translation above, cut down to its signature and a body of the same shape), and two calls
+HEAD = '#include <metal_stdlib>\n#include <simd/simd.h>\n\nusing namespace metal;\n'
+HELPER = '''
+static inline __attribute__((always_inline))
+int dmsh_imma16832_s8(thread const int& _314, thread const int& _315, thread const int& _316, thread const int& _317, thread const int& _318, thread const int& _319, thread const int& _320, thread const int& _321, thread int& _322, thread int& _323, thread int& _324, threadgroup spvUnsafeArray<uint, 320>& _23)
+{
+    uint _327 = uint(int(uint(_314) >> uint(2)));
+    _23[_315 + int(_327)] = uint(_316);
+    if (_327 > 3u)
+    {
+        _322 = 0;
+    }
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    _323 = int(_23[_315]); _324 = _323;
+    return int(_23[_315 + 1]);
+}
+'''
+KERNEL = '''
+kernel void main0(uint lane [[thread_index_in_simdgroup]])
+{
+    threadgroup spvUnsafeArray<uint, 320> _23;
+    int a = int(lane), blk = 0, p1, p2, p3;
+    int _266 = dmsh_imma16832_s8(a, blk, a, a, a, a, a, a, p1, p2, p3, _23);
+    int _267 = dmsh_imma16832_s8(_266, blk, a, a, a, a, a, a, p1, p2, p3, _23);
+}
+'''
+
+
+class ImmaTensorRewrite(unittest.TestCase):
+    def body(self, out, name):
+        i = out.index(f' {name}(')
+        return out[i:out.index('\n}\n', i) + 3]
+
+    def test_body_through_matmul2d(self):
+        out = imma_tensor_msl(HEAD + HELPER + KERNEL)
+        body = self.body(out, 'dmsh_imma16832_s8')
+        self.assertIn('matmul2d_descriptor(16, 8, 32, false, true, false, mpp::tensor_ops::matmul2d_descriptor::mode::multiply)', body)   # B stored transposed; no C
+        self.assertIn('tensor<threadgroup int8_t, extents<int, 32, 16>, tensor_inline> ta((threadgroup int8_t*)s, ', body)
+        self.assertIn('tensor<threadgroup int, extents<int, 8, 16>, tensor_inline> tp((threadgroup int*)(s + 192), ', body)
+        self.assertIn('threadgroup uint* s = &_23[uint(_315)];', body)   # the scratch array at the block offset
+        self.assertIn('uint g = uint(_314) >> 2', body)                  # the lane
+        self.assertIn('s[(g + 8) * 8 + 4 + t] = uint(_319);', body)      # A3
+        self.assertIn('s[128 + g * 8 + 4 + t] = uint(_321);', body)      # B1
+        self.assertIn('_322 = as_type<int>(p1); _323 = as_type<int>(p2); _324 = as_type<int>(p3);', body)
+        self.assertIn('return as_type<int>(p0);', body)
+        self.assertNotIn('_327', body)                                   # the translator's body is gone, the braces of its blocks too
+        self.assertIn(KERNEL.strip(), out)
+        self.assertEqual(imma_calls(out), 2)
+
+    def test_not_inlined(self):   # inlined, Apple's compiler takes minutes for a shader of 200 calls
+        out = imma_tensor_msl(HEAD + HELPER + KERNEL)
+        self.assertIn('\nstatic __attribute__((noinline))\nint dmsh_imma16832_s8(', out)
+        self.assertNotIn('always_inline', out)
+
+    def test_unsigned(self):
+        out = imma_tensor_msl(HEAD + HELPER.replace('dmsh_imma16832_s8', 'dmsh_imma16832_u8') + KERNEL.replace('dmsh_imma16832_s8', 'dmsh_imma16832_u8'))
+        self.assertIn('tensor<threadgroup uint8_t, extents<int, 32, 8>, tensor_inline> tb((threadgroup uint8_t*)(s + 128), ', self.body(out, 'dmsh_imma16832_u8'))
+
+    def test_headers_once(self):
+        out = imma_tensor_msl(HEAD + HELPER + KERNEL)
+        self.assertIn('#include <metal_stdlib>\n#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n', out)
+        hmma_first = (HEAD + HELPER + KERNEL).replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + scope['HMMA_TENSOR_INCLUDE'])   # hmma_tensor_msl came first
+        self.assertEqual(imma_tensor_msl(hmma_first).count('#include <metal_tensor>'), 1)
+
+    def test_other_sources(self):
+        self.assertIsNone(imma_tensor_msl(HEAD + KERNEL.replace('dmsh_imma16832_s8(', 'max(')))
+        with self.assertRaises(ValueError):
+            imma_tensor_msl(HEAD + HELPER.replace('thread const int& _321, ', '') + KERNEL)
 
 
 if __name__ == '__main__':

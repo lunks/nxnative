@@ -4445,7 +4445,7 @@ static void shmap_read(void) {
     id<MTLFunction> afn[4]; int afn_state, has_alpha;
     id<MTLFunction> bbfn[4]; int bbfn_state, has_border;   // bbfn: fn, fn_u, fn_m, fn_d of the border correcting library <key>_bb (bb_fn; bbfn_state as afn_state; has_border: the reflection names one, dmsh_build.py border_plain)
     id<MTLLibrary> llib; NSMutableDictionary<NSNumber *, id<MTLFunction>> *lfn; int lfn_state, has_logic;
-    id<MTLFunction> tfn; _Atomic(void *) tps; _Atomic int tps_state; } @end   // tfn: a compute shader's entry in its TensorOps library <key>_bt, tps its pipeline (retained) once tps_state is 2 (tensor_pso: 0 not started, 1 compiling, 2 ready, 3 failed)   // llib: the side library <key>_bx for logic operations, lfn: its fn_u / fn_m specialized per set of targets (lo_fn; lfn_state as afn_state; has_logic: the reflection names its entry points, dmsh_logic.py)   // afn: the alpha test entry points of fn, fn_u, fn_m, fn_d in the side library <key>_bx (at_fn; afn_state 0 untried, 1 loaded, 2 failed; has_alpha: the reflection names them, dmsh_alpha.py)   // pfn: the same entry of the pulling library <key>_bp (pull_fn; has_pull: the reflection names one, dmsh_pull.py)   // vertex: the entry point loaded (by the depth mode); vfn: the same entry of the shadow-input library <key>_bv (vin_fn; state 0 untried, 1 loaded, 2 failed)
+    id<MTLFunction> tfn; _Atomic(void *) tps; _Atomic int tps_state; id<MTLFunction> fn_b; _Atomic int fn_b_on; } @end   // tfn: a compute shader's entry in its TensorOps library <key>_bt, tps its pipeline (retained) once tps_state is 2 (tensor_pso: 0 not started, 1 compiling, 2 ready, 3 failed); fn_b: <key>_b's entry when fn is <key>_bt's (a primary TensorOps library), which cs_pipeline takes instead (fn_b_on) once Metal refuses fn   // llib: the side library <key>_bx for logic operations, lfn: its fn_u / fn_m specialized per set of targets (lo_fn; lfn_state as afn_state; has_logic: the reflection names its entry points, dmsh_logic.py)   // afn: the alpha test entry points of fn, fn_u, fn_m, fn_d in the side library <key>_bx (at_fn; afn_state 0 untried, 1 loaded, 2 failed; has_alpha: the reflection names them, dmsh_alpha.py)   // pfn: the same entry of the pulling library <key>_bp (pull_fn; has_pull: the reflection names one, dmsh_pull.py)   // vertex: the entry point loaded (by the depth mode); vfn: the same entry of the shadow-input library <key>_bv (vin_fn; state 0 untried, 1 loaded, 2 failed)
 @implementation NvShader
 - (void)dealloc { free(rf.c1); free(geo_slot); void *t = atomic_load(&tps); if (t) CFRelease(t); }
 @end
@@ -4639,7 +4639,10 @@ static id<MTLFunction> fn_dev(id<MTLFunction> f) {
 // on a Mac GPU whose shader cores carry neural accelerators (Apple10: M5), where agl's upscaler network measured 20 % faster than through simdgroup_matrix. Elsewhere TensorOps run
 // without them, and its simdgroup_matrix library <key>_b stays. DM_NVN_HMMA_TENSOR=0 keeps <key>_b everywhere; =1 takes <key>_bt wherever there is one (any GPU, to compare).
 // Apple's compiler takes 9 to 39 s for such a pipeline (M5 Pro; 0.4 to 0.8 s through simdgroup_matrix), once until the system's shader cache drops it, so it is compiled in the
-// background (tensor_pso): the dispatches run the <key>_b pipeline until it is ready
+// background (tensor_pso): the dispatches run the <key>_b pipeline until it is ready.
+// Ampere IMMA through TensorOps (dmsh_build.py imma_tensor_msl): the same switch and GPUs. A library whose TensorOps are IMMA alone is 'primary': it is the shader's function from
+// the start (cs_pipeline), as <key>_b is elsewhere, since its pipeline compiles faster than the per-lane one (its helper is not inlined: Star Fox's 1b627bd475a4d18c, 216 IMMAs,
+// M5 Pro: see docs/reference/shaders.md), and <key>_b's per-lane pipeline is never built on such a GPU unless Metal refuses that one. Every other GPU and iOS keep <key>_b
 static int hmma_tensor_on(void) {
     static int v; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -4650,9 +4653,17 @@ static int hmma_tensor_on(void) {
         int def = 0;   // no iOS TensorOps libraries yet: an A19's neural accelerators are not measured
 #endif
         v = e && *e ? atoi(e) != 0 : def;
-        if (v || (e && *e)) MLOG("HMMA (DM_NVN_HMMA_TENSOR): %s%s", v ? "through TensorOps where a compute shader has a <key>_bt library" : "through simdgroup_matrix", e && *e ? " (set)" : " (this GPU's default)");
+        if (v || (e && *e)) MLOG("HMMA and IMMA (DM_NVN_HMMA_TENSOR): %s%s", v ? "through TensorOps where a compute shader has a <key>_bt library" : "through simdgroup_matrix and per lane", e && *e ? " (set)" : " (this GPU's default)");
     });
     return v;
+}
+// A compute shader's pipeline from its function. A primary TensorOps library (IMMA, see hmma_tensor_on) that Metal refuses falls back to <key>_b's function, for good
+static id<MTLComputePipelineState> cs_pipeline(NvShader *cs, NSError **e) {
+    int alt = cs->fn_b && atomic_load(&cs->fn_b_on);
+    id<MTLComputePipelineState> ps = [g_dev newComputePipelineStateWithFunction:alt ? cs->fn_b : cs->fn error:e];
+    if (ps || !cs->fn_b || alt) return ps;
+    if (!atomic_exchange(&cs->fn_b_on, 1)) MLOG("[RED] compute shader %s: its TensorOps pipeline failed (%s): it runs per lane", cs->key, e && *e ? (*e).localizedDescription.UTF8String : "no error given");
+    return [g_dev newComputePipelineStateWithFunction:cs->fn_b error:e];
 }
 // The TensorOps pipeline of compute shader cs once it is built, else nil: the first call starts its compile in the background (the prewarm's compute lines and the first dispatch call it).
 // The compiles run one at a time on a background queue: Metal's compiler service takes minutes for some (Star Fox's 60f3f31a0e0132e1: 96.4 s for its <key>_bt library, 1.9 s for
@@ -4691,14 +4702,15 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
     if (!lib || !j) { MLOG("[RED] failed to load shader %s: %s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "no reflection json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("[RED] shader %s has translation chain version %s, but this host expects %s", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     if (layer && !j[@"entry_layer"]) { MLOG("[RED] vertex shader %s has no layer entry points", pc.UTF8String); return nil; }
-    id<MTLFunction> tfn = nil;
-    if (stage == 5 && [j[@"tensor"] isKindOfClass:[NSDictionary class]] && hmma_tensor_on()) {   // the same shader with its HMMAs through TensorOps (hmma_tensor_on, tensor_pso)
+    id<MTLFunction> tfn = nil; int tprimary = 0;
+    if (stage == 5 && [j[@"tensor"] isKindOfClass:[NSDictionary class]] && hmma_tensor_on()) {   // the same shader with its HMMAs and IMMAs through TensorOps (hmma_tensor_on, tensor_pso)
         NSError *te = nil; id<MTLLibrary> tl = lib_from_file([NSString stringWithFormat:@"%@/%@t.metallib", g_msl_dir, pc], &te);
         tfn = tl ? [tl newFunctionWithName:j[@"tensor"][@"entry"] ?: j[@"entry"]] : nil;
         if (tfn.functionConstantsDictionary.count) tfn = nil;   // not made by dmsh_build.py: compute pipelines here take functions without constants
-        if (!tfn) MLOG("[RED] shader %s: its TensorOps library does not load (%s): it runs through simdgroup_matrix", pc.UTF8String, te ? te.localizedDescription.UTF8String : "no such entry point");
+        tprimary = [j[@"tensor"][@"primary"] boolValue];
+        if (!tfn) MLOG("[RED] shader %s: its TensorOps library does not load (%s): it runs %s", pc.UTF8String, te ? te.localizedDescription.UTF8String : "no such entry point", tprimary ? "per lane" : "through simdgroup_matrix");
     }
-    NvShader *o = [NvShader new]; o->gs_loc = o->lay_loc = -1; o->tfn = tfn;
+    NvShader *o = [NvShader new]; o->gs_loc = o->lay_loc = -1; o->tfn = tprimary ? nil : tfn;
     if (stage == 0 && [j[@"layer_from"] isKindOfClass:[NSDictionary class]]) { o->lay_loc = [j[@"layer_from"][@"loc"] intValue]; o->lay_comp = [[j[@"layer_from"][@"comp"] description] UTF8String][0]; }
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("[RED] shader %s reflection conversion failed: %s", pc.UTF8String, err); return nil; }
@@ -4775,6 +4787,7 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
         if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7) || max_aid >= NVN_REFL_MAXARG)
             MDIE("shader %s has an unexpected argument buffer layout: encodedLength=%lu maxAid=%d", o->key, (unsigned long)o->arg_len, max_aid);
     }
+    if (tprimary && tfn && o->fn) { o->fn_b = o->fn; o->fn = tfn; }   // IMMA through TensorOps: <key>_bt in <key>_b's place (cs_pipeline); its argument buffer is <key>_b's (dmsh_build.py imma_source)
     if (o->rf.has_c1) c1_store(o);
     NSString *ext = g_cb_ext[[pc hasSuffix:@"_b"] ? [pc substringToIndex:pc.length - 2] : pc];   // bytes each uniform slot can read (cb_len), storage slots never written (sb_ro)
     for (NSString *f in [ext componentsSeparatedByString:@" "]) { int r = 0, n = 0;
@@ -7624,7 +7637,7 @@ static void warm_task(WarmTask *t) {
             g_warm_done++; return;
         }
         if (t->kind == 2) {
-            NvShader *cs = warm_shader(t->key, 5); NSError *e = nil; id ps = cs ? [g_dev newComputePipelineStateWithFunction:cs->fn error:&e] : nil;
+            NvShader *cs = warm_shader(t->key, 5); NSError *e = nil; id ps = cs ? cs_pipeline(cs, &e) : nil;
             if (cs && !ps) MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String);
             tensor_pso(cs);   // starts the TensorOps pipeline's compile, which nothing waits for (hmma_tensor_on)
             if (ps) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = t->key; item->shader = cs; item->object = ps; warm_enqueue(item); g_warm_cps++; }
@@ -11404,7 +11417,7 @@ static void dispatch(const p_dispatch *dp) {
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
         if (cs->cps_failed) return;   // the same function fails the same way: asked again at every dispatch, Mario Kart World's refused shaders took 3,138 pipeline builds in 60 s
-        NSError *e = nil; uint64_t bt = bp_now(); ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+        NSError *e = nil; uint64_t bt = bp_now(); ps = cs_pipeline(cs, &e);
         g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
         if (!ps) { cs->cps_failed = 1; MLOG("[RED] failed to create compute pipeline for %s: %s (its dispatches are skipped)", cs->key, e.localizedDescription.UTF8String); return; }
         pso_record("C\t%s\n", cs->key);

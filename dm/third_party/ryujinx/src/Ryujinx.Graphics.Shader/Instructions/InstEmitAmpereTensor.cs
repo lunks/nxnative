@@ -249,7 +249,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // x (columns 2t, 2t + 1).
         // nxnative: Star Fox's character networks (navi_archive_2604ki8_mixedtrqlrki8_mixedtrqllrki8_nvn2_glsl_b1.bin, 84 of its 165 compute shaders, 3,550 IMMAs, up to 216 a
         // shader) use IMMA.16832.S8.S8 alone, without .SAT: 001fe40000405cff000000182c187237 is R24, R44, R24, RZ (09e46021dd6eb679), and D lies over A, B or C in others (every
-        // source is gathered before D is written). Each product fits in 17 bits and a dot product of k of them in s32, so the sum is exact and only C + sum can overflow.
+        // source is gathered before D is written). Each product fits in 17 bits and a dot product of k of them in s32, so the sum is exact and only C + sum can overflow. Per lane,
+        // their pipelines took 0.5 to 8 s for Metal's compiler and their dispatches 7 to 25 times as long as through Metal 4's TensorOps on an M5 Pro, which the TensorOps source
+        // below gives the Mac's <key>_bt library (docs/reference/shaders.md, Ampere IMMA)
         public static void AImma(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -270,6 +272,19 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int aRegs = rows * k / span;
             int bRegs = k / span;
 
+            // nxnative: in a compute shader's TensorOps source (IGpuAccessor.QueryImmaTensor; dmsh_build.py imma_source) the products of m16n8k32 on 8-bit elements of one sign,
+            // the form Metal 4's matmul2d has (int8 x int8 or uint8 x uint8 -> int32, MPPTensorOpsMatMul2d.h) and the only one in Star Fox's networks, come from a call of
+            // dmsh_imma16832_s8 / _u8 (TensorPass, HelperFunctionManager.GenerateImma16832), and C is added below as in the per-lane form. Every other library of the shader
+            // keeps the per-lane form, emitted as before; the count tells the build which shaders have a TensorOps source
+            ShaderDefinitions defs = context.TranslatorContext.Definitions;
+            bool tensor = size == 5 && bits == 8 && aSigned == bSigned && defs.Stage == ShaderStage.Compute;
+
+            if (tensor)
+            {
+                context.TranslatorContext.ImmaTensorCount++;
+                tensor = context.TranslatorContext.GpuAccessor.QueryImmaTensor();
+            }
+
             Operand lane = ALaneId(context);
             Operand g = context.ShiftRightU32(lane, Const(2));
             Operand t = context.BitwiseAnd(lane, Const(3));
@@ -279,10 +294,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return signed ? context.BitfieldExtractS32(v, Const(bits * i), Const(bits)) : context.BitfieldExtractU32(v, Const(bits * i), Const(bits));
             }
 
+            Operand[] products = tensor ? AImmaProducts(context, x, defs, lane, aSigned) : null;
+
             // A rows g (and g + 8), every k: from lanes 4g + j (j = 0..3), which hold k = e j .. e j + e - 1 (+ span for each further register or pair)
             Operand[,] a = new Operand[rows, k];
 
-            for (int j = 0; j < 4; j++)
+            for (int j = 0; j < 4 && !tensor; j++)
             {
                 Operand src = context.IAdd(context.ShiftLeft(g, Const(2)), Const(j));
 
@@ -301,7 +318,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             // B columns 2t and 2t + 1, every k: from lanes 4 col + j
             Operand[,] b = new Operand[2, k];
 
-            for (int c = 0; c < 2; c++)
+            for (int c = 0; c < 2 && !tensor; c++)
             {
                 Operand col = context.IAdd(context.ShiftLeft(t, Const(1)), Const(c));
 
@@ -328,9 +345,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
             for (int i = 0; i < d.Length; i++)
             {
                 int row = i >> 1, c = i & 1;
-                Operand sum = context.IMultiply(a[row, 0], b[c, 0]);
+                Operand sum = tensor ? products[i] : context.IMultiply(a[row, 0], b[c, 0]);
 
-                for (int kk = 1; kk < k; kk++)
+                for (int kk = 1; kk < k && !tensor; kk++)
                 {
                     sum = context.IAdd(sum, context.IMultiply(a[row, kk], b[c, kk]));
                 }
@@ -353,6 +370,28 @@ namespace Ryujinx.Graphics.Shader.Instructions
             {
                 context.Copy(Register(x.Rd + i, RegisterType.Gpr), d[i]);
             }
+        }
+
+        // The products A x B of an IMMA.16832 on 8-bit elements of one sign in a TensorOps source: IntegerMatrixMultiply, which TensorPass turns into a call of
+        // dmsh_imma16832_s8 / _u8, on the subgroup's block of the scratch shared memory (ResourceManager.ImmaScratchWords words a subgroup, laid out by AHmma's rule)
+        private static Operand[] AImmaProducts(EmitterContext context, AmpereOp x, ShaderDefinitions defs, Operand lane, bool signed)
+        {
+            int threads = defs.ComputeLocalSizeX * defs.ComputeLocalSizeY * defs.ComputeLocalSizeZ;
+            int memoryId = context.ResourceManager.GetImmaScratchMemoryId(System.Math.Max(1, (threads + 31) / 32));
+
+            Operand tidX = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(0));
+            Operand tidY = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(1));
+            Operand tidZ = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(2));
+            Operand flat = context.IAdd(tidX, context.IAdd(context.IMultiply(tidY, Const(defs.ComputeLocalSizeX)),
+                                                          context.IMultiply(tidZ, Const(defs.ComputeLocalSizeX * defs.ComputeLocalSizeY))));
+            Operand block = context.IMultiply(context.ShiftRightU32(flat, Const(5)), Const(ResourceManager.ImmaScratchWords));
+
+            Operand[] p = [Local(), Local(), Local(), Local()];
+
+            context.Add(new Operation(Instruction.IntegerMatrixMultiply, 0, p, [Const(memoryId), Const(signed ? 1 : 0), lane, block,
+                AGpr(x.Ra), AGpr(x.Ra + 1), AGpr(x.Ra + 2), AGpr(x.Ra + 3), AGpr(x.Rb), AGpr(x.Rb + 1)]));
+
+            return p;
         }
 
         // LDSM.16.M88.n / .MT88.n Rd, [Ra + UR + offset]: n (72..74: 1, 2, 4) 8 x 8 matrices of halves from shared memory; lanes 8i .. 8i + 7 give the addresses of

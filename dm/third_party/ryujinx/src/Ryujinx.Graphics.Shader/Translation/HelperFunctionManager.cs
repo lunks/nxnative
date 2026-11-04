@@ -178,6 +178,8 @@ namespace Ryujinx.Graphics.Shader.Translation
                 HelperFunctionName.SharedStore8 => GenerateSharedStore8(id),
                 HelperFunctionName.SharedStore16 => GenerateSharedStore16(id),
                 HelperFunctionName.Hmma16816F16 => GenerateHmma16816F16(id),
+                HelperFunctionName.Imma16832S8 => GenerateImma16832(id, signed: true),
+                HelperFunctionName.Imma16832U8 => GenerateImma16832(id, signed: false),
                 _ => throw new ArgumentException($"Invalid function name {functionName}"),
             };
         }
@@ -267,6 +269,72 @@ namespace Ryujinx.Graphics.Shader.Translation
             context.Return(d[0]);
 
             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "dmsh_hmma16816_f16", true, 10, 1);
+        }
+
+        // nxnative: the products of Ampere IMMA.16832 on 8-bit elements of one sign, P (16 x 8, s32) = A (16 x 32) * B (32 x 8), for one warp (Metal SIMD-group), in a
+        // compute shader's TensorOps source (IGpuAccessor.QueryImmaTensor); the caller adds C. In: the lane, the word offset of this subgroup's 320-word block of the scratch
+        // shared memory `id`, A (4 words), B (2); returns P's first word, the other three through the out arguments. Fragments (PTX mma.m16n8k32 .s8 / .u8): lane L, g = L / 4,
+        // t = L % 4; A word r: row g + 8 (r & 1), k 4t + 16 (r >> 1) .. + 3, the lowest byte first; B word r: k 4t + 16 r .. + 3 of column g; P word i: row g + 8 (i >> 1),
+        // column 2t + (i & 1). The block holds A row-major (words 0..127, 8 a row), B transposed (128..191: row n, 8 words of k), so every lane stores its words as they are,
+        // and leaves 192..319 for P row-major (8 a row), which this body does not use. It computes P from the block lane by lane: a sum of 32 products of 8-bit values is exact
+        // in s32. dmsh_build.py (imma_tensor_msl) replaces it in the TensorOps library with Metal 4's matmul2d over the same block; the name, the arguments and the block are
+        // the contract
+        private static Function GenerateImma16832(int id, bool signed)
+        {
+            EmitterContext context = new();
+
+            Operand lane = Argument(0);
+            Operand bse = Argument(1);
+            Operand g = context.ShiftRightU32(lane, Const(2));
+            Operand t = context.BitwiseAnd(lane, Const(3));
+            Operand g8 = context.IAdd(g, Const(8));
+
+            Operand At(Operand row, int word) => context.IAdd(bse, context.IAdd(context.ShiftLeft(row, Const(3)), context.IAdd(t, Const(word))));
+
+            context.Store(StorageKind.SharedMemory, id, At(g, 0), Argument(2));
+            context.Store(StorageKind.SharedMemory, id, At(g8, 0), Argument(3));
+            context.Store(StorageKind.SharedMemory, id, At(g, 4), Argument(4));
+            context.Store(StorageKind.SharedMemory, id, At(g8, 4), Argument(5));
+            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 0)), Argument(6));
+            context.Store(StorageKind.SharedMemory, id, context.IAdd(Const(128), At(g, 4)), Argument(7));
+
+            context.SubgroupBarrier();
+
+            Operand Element(Operand word, int i) => signed ? context.BitfieldExtractS32(word, Const(8 * i), Const(8)) : context.BitfieldExtractU32(word, Const(8 * i), Const(8));
+
+            Operand[] p = new Operand[4];
+
+            for (int i = 0; i < 4; i++)
+            {
+                Operand rowBase = context.IAdd(bse, context.ShiftLeft(i >> 1 == 0 ? g : g8, Const(3)));
+                Operand col = context.IAdd(context.ShiftLeft(t, Const(1)), Const(i & 1));
+                Operand colBase = context.IAdd(bse, context.IAdd(Const(128), context.ShiftLeft(col, Const(3))));
+                Operand sum = Const(0);
+
+                for (int kw = 0; kw < 8; kw++)
+                {
+                    Operand aw = context.Load(StorageKind.SharedMemory, id, context.IAdd(rowBase, Const(kw)));
+                    Operand bw = context.Load(StorageKind.SharedMemory, id, context.IAdd(colBase, Const(kw)));
+
+                    for (int e = 0; e < 4; e++)
+                    {
+                        sum = context.IAdd(sum, context.IMultiply(Element(aw, e), Element(bw, e)));
+                    }
+                }
+
+                p[i] = sum;
+            }
+
+            // The next IMMA of this subgroup overwrites the block: every lane has read it by then
+            context.SubgroupBarrier();
+
+            context.Copy(Argument(8), p[1]);
+            context.Copy(Argument(9), p[2]);
+            context.Copy(Argument(10), p[3]);
+
+            context.Return(p[0]);
+
+            return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, signed ? "dmsh_imma16832_s8" : "dmsh_imma16832_u8", true, 8, 3);
         }
 
         private static Function GenerateSharedStore8(int id)

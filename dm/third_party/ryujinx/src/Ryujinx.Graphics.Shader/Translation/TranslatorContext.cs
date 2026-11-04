@@ -41,6 +41,9 @@ namespace Ryujinx.Graphics.Shader.Translation
         public bool LayerOutputWritten { get; private set; }
         public int LayerOutputAttribute { get; private set; }
 
+        // nxnative: the IMMAs a TensorOps source takes as helper calls (InstEmitAmpereTensor.AImma), counted whether or not this translation is one (IGpuAccessor.QueryImmaTensor)
+        public int ImmaTensorCount { get; internal set; }
+
         internal TranslatorContext(
             ulong address,
             int size,

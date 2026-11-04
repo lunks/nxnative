@@ -139,6 +139,22 @@ namespace Ryujinx.Graphics.Shader.Translation
             return HmmaScratchMemoryId;
         }
 
+        // nxnative: the scratch of Ampere IMMA in a TensorOps source (InstEmitAmpereTensor.AImma, helpers dmsh_imma16832_s8 / _u8): a shared memory of its own,
+        // ImmaScratchWords for each subgroup of the workgroup (A, B and the products of one IMMA), made the first time an IMMA needs it
+        public const int ImmaScratchWords = 320;
+
+        public int ImmaScratchMemoryId { get; private set; } = -1;
+
+        public int GetImmaScratchMemoryId(int subgroups)
+        {
+            if (ImmaScratchMemoryId < 0)
+            {
+                ImmaScratchMemoryId = Properties.AddSharedMemory(new MemoryDefinition("imma_scratch", AggregateType.Array | AggregateType.U32, ImmaScratchWords * subgroups));
+            }
+
+            return ImmaScratchMemoryId;
+        }
+
         public void SetVertexAsComputeLocalMemories(ShaderStage stage, InputTopology inputTopology)
         {
             LocalVertexDataMemoryId = AddMemoryDefinition("local_vertex_data", AggregateType.Array | AggregateType.FP32, Reservations.OutputSizePerInvocation);
