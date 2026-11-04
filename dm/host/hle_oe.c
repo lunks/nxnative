@@ -108,6 +108,11 @@ HLE_FORCE("_ZN2nn2oe15EnableRecordingEv", "video recording switch; the host has 
 // Applet resource user ID (ARUID, the number am assigns to this process): the host has no am, and the SDK's own getter returns 0. SDK 20's OpenAudioRenderer (the CPU rendering + manual execution path, sdk+0x221730)
 //   aborts when it gets 0 (The Legend of Zelda: Breath of the Wild 1.9.0); SDK 16 did not check. Report a fixed non-zero ID, used only as an identifier
 HLE_FORCE("_ZN2nn6applet23GetAppletResourceUserIdEv", "applet resource user ID; the host returns a fixed non-zero value", uint64_t, h_applet_Aruid, void) { return 0x80; }
+// The camera as a resource the application holds (nn::camera::Activate / Deactivate and Finalize call these; SDK 21.4.4 sdk+0x1dfea0 / sdk+0x1dfee0 send them to am's common state
+// getter, vtable +0x1d0 / +0x1d8, and abort on any error). The host has no am (the getter is null) and no other applet that could want the camera: nothing to hand over.
+// Star Fox's webcam thread activates the camera as soon as its camera session is up ([The camera through the graphics system], hle_sf.c)
+HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "the application starts using the camera (am); the host has no other applet to take it from", void, h_applet_CamBegin, void) {}
+HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "the application stops using the camera (am)", void, h_applet_CamEnd, void) {}
 // Launch parameter (present only when another program launched this one with one; returns bool): the host never passes one
 // Launch parameter (present only when another program launched this one with one; returns bool): DM_LAUNCH_PARAM=<file>, written by oe::ExecuteProgram on the way here (below), else what
 // the profile's launch_param describes, for a program of a multi-program application run by itself: Super Mario 3D All-Stars' games quit without the launcher's language and two volumes

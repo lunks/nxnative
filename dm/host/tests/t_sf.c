@@ -1,5 +1,7 @@
 // Host service sessions (hle_sf.c) without a guest: a CMIF request on a served service (olsc:u) succeeds with zeroed output and no special header; the camera context of the Switch 2
-// (nn::camera::sdk::CreateCameraContext) is a host session with no camera: every command fails with 0xdc4 except 21, which copies an event's read end to the client in the special header
+// (nn::camera::sdk::CreateCameraContext) is a host session that answers as a console with no camera plugged in: Initialize (3) gives a camera handle after the SFCO header, Finalize (4)
+// succeeds, 21 copies an event's read end to the client in the special header, QueryDeviceConnection (29) and OpenCamera (25) find no device (0x7c4), a command on an open camera gets
+// 0x5c4 (invalid handle); a Close message (the proxy's last release) is accepted
 #include "../hle.h"
 #undef HLE_FORCE
 #define HLE_FORCE(mangled, why, ret, cname, ...) static ret cname(__VA_ARGS__)
@@ -25,8 +27,12 @@ int main(void) {
 
     uint32_t cam = 0;
     CHECK(h_cam_Context(&cam) == RES_OK && cam, "the camera context is a host session");
-    CHECK(request(cam, m, 3) == RES_OK && m[4] == 0x4f434653 && m[6] == 0xdc4u && !(m[1] >> 31), "opening a camera: 0xdc4, no camera");
-    CHECK(events == 0, "no event made for a failing command");
+    CHECK(request(cam, m, 3) == RES_OK && m[4] == 0x4f434653 && m[6] == RES_OK && !(m[1] >> 31), "Initialize succeeds: the console has the camera function");
+    CHECK((m[8] | (uint64_t)m[9] << 32) != 0 && m[10] == 0, "Initialize gives a non-zero u64 camera handle right after the SFCO header");
+    CHECK(request(cam, m, 29) == RES_OK && m[4] == 0x4f434653 && m[6] == 0x7c4u && m[8] == 0, "QueryDeviceConnection: 0x7c4, no camera device connected");
+    CHECK(request(cam, m, 25) == RES_OK && m[6] == 0x7c4u, "OpenCamera: 0x7c4, no camera device to open");
+    CHECK(request(cam, m, 22) == RES_OK && m[6] == 0x5c4u, "a command on an open camera: 0x5c4, the handle is not a camera's");
+    CHECK(events == 0, "no event made for a command without one");
     CHECK(request(cam, m, 21) == RES_OK, "the camera's event");
     CHECK(m[1] >> 31 && (m[2] >> 1 & 15) == 1 && (m[2] & 1) == 0 && (m[2] >> 5 & 15) == 0, "special header: one copy handle, no process ID, no move handle");
     CHECK(m[3] == 0x1001 && events == 1, "the copied handle is the new event's read end");
@@ -34,8 +40,12 @@ int main(void) {
     CHECK((m[1] & 0x3ff) == (0x100 - 0x10) / 4, "the data words start after the handle");
     uint32_t dup = 0;
     CHECK(h_sf_Dup(&dup, cam) == RES_OK && dup && dup != cam, "a duplicate of the camera session");
-    CHECK(request(dup, m, 5) == RES_OK && m[6] == 0xdc4u, "the duplicate answers as the camera");
+    CHECK(request(dup, m, 29) == RES_OK && m[6] == 0x7c4u, "the duplicate answers as the camera");
+    CHECK(request(cam, m, 4) == RES_OK && m[6] == RES_OK, "Finalize succeeds");
+    memset(m, 0xcc, 0x100); m[0] = 2; m[1] = 0;
+    CHECK(h_sf_Send(cam, m, 0x100) == RES_OK, "a Close message (the proxy's last release) is accepted");
     h_sf_Close(dup); h_sf_Close(cam); h_sf_Close(h);
+    CHECK(h_sf_Send(cam, m, 0x100) == 0xe401u, "a closed session is no longer a host session");
     printf("t_sf: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

@@ -10,11 +10,14 @@
 // then {"SFCI", version, command, token} and the arguments. The response is the same with {u32 objects, 3 × u32} and {"SFCO", version, result, token}
 #include "hle.h"
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define SF_H0 0xd0000u   // session handles: outside the kernel handle table (0x1000 + slot, 4096 slots, hle_thread.c)
 #define SF_MAX 64
-// A service's own answer to a command: its result, and a kernel handle to copy to the client in *copy (0: none). NULL: success, zeroed output (olsc:u)
-typedef Result (*sf_answer)(unsigned cmd, uint32_t *copy);
+#define SF_OUT 0x40      // output data a service's answer can give, after the SFCO header (the rest of the response reads as zero)
+// A service's own answer to a command: its result, the command's input data (after the SFCI header, nin bytes), its output data in out (SF_OUT bytes, zeroed), and a kernel handle
+// to copy to the client in *copy (0: none). NULL: success, zeroed output (olsc:u)
+typedef Result (*sf_answer)(unsigned cmd, const uint8_t *in, size_t nin, uint8_t *out, uint32_t *copy);
 static struct { char name[16]; int used, domain; unsigned seen; sf_answer answer; } g_sf[SF_MAX];
 static pthread_mutex_t g_sf_mu = PTHREAD_MUTEX_INITIALIZER;
 static const char *const sf_served[] = {"olsc:u", "caps:su", "caps:u", "caps:a", "caps:c", "caps:sc", "caps:ss"};
@@ -34,18 +37,39 @@ static uint32_t sf_new(const char *name, int domain, sf_answer answer) {
 
 // The Switch 2's camera (a USB camera, for GameChat's video). nn::camera::sdk::CreateCameraContext asks the graphics system's user session (gsv) for a session to the camera service and
 // gives it to the caller as a UniqueNativeHandle (a 32-bit handle; SDK 22.2.0 sdk+0x2c42c0 writes it), with 0x3af3 when the SDK has no gsv session, which the host never opens. The game then
-// talks to the camera through that session with the SDK's HIPC client. The host has no camera, so the session answers as a console with none: by Mario Kart World 1.8.0 (pull request #1116,
-// not checked here: the build is not on this Mac) the game opens the camera with command 3 and takes 0xdc4 as "no camera" (any other error aborts), then asks for the camera's event with
-// command 21 (a copied handle it attaches to a SystemEvent; an error aborts). So 0xdc4 for every command, and an event that never fires for 21
-static Result camera_answer(unsigned cmd, uint32_t *copy) {
-    if (cmd == 21) { *copy = hle_new_event(NULL); return RES_OK; }
-    return 0xdc4u;
+// talks to the camera through that session with the SDK's client, nn::camera in its own module (Star Fox's subsdk3, SDK 21.4.4; its proxy's vtable +0x20 on gives the commands).
+// The host has no camera, so the session answers as a Switch 2 with none plugged in, the results (module 452) as the SDK and the game read them:
+//   3  Initialize (in: a 16-byte name, "Default"; out: the camera handle, a u64 the SDK keeps and sends with every command and gives the game as its DeviceHandle): success. The SDK's
+//      Initialize (subsdk3+0x1d20) aborts on any error but 0xdc4, which it returns without becoming initialized; Star Fox logs 0xdc4 as "This platform does not support the camera
+//      function." (main+0xba54218) and never sets up its camera slots, then reads one (main+0xba54e4c, a null read 1.4 s into the boot). A console with no camera has the function
+//   4  Finalize: success (the SDK aborts otherwise)
+//   21 the device connection changed event (a copied handle the SDK attaches to a SystemEvent; an error aborts): an event that never fires, as no camera is ever plugged in
+//   29 QueryDeviceConnection, 25 OpenCamera: 0x7c4, no camera device connected (Star Fox's webcam thread, main+0xba58944: "No camera device detected.", then waits on the event).
+//      The SDK passes 0x7c4, 0xdc4 and 0xfc4 (a camera that does not meet the requirements) to the caller and aborts on any other error
+// Any other command acts on an open camera, which there never is: 0x5c4 (invalid handle, the SDK's own answer for a DeviceHandle it did not give out), with a red line once per command.
+// The camera handle's value on a console is not known; the SDK only hands it back
+#define CAM_HANDLE 1ull
+static Result camera_answer(unsigned cmd, const uint8_t *in, size_t nin, uint8_t *out, uint32_t *copy) {
+    (void)in; (void)nin;
+    switch (cmd) {
+    case 3: { uint64_t h = CAM_HANDLE; memcpy(out, &h, 8); return RES_OK; }
+    case 4: return RES_OK;
+    case 21: *copy = hle_new_event(NULL); return RES_OK;
+    case 25: case 29: return 0x7c4u;
+    }
+    static _Atomic uint64_t seen[4];   // commands 0..255, logged once each
+    if (cmd < 256 && !(atomic_fetch_or(&seen[cmd / 64], 1ull << (cmd % 64)) & 1ull << (cmd % 64))) LOG("[RED] sf: camera command %u with no camera open → 0x5c4", cmd);
+    return 0x5c4u;
 }
 HLE_FORCE("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", "camera context (a camera service session through gsv) → a host session with no camera", Result, h_cam_Context,
           uint32_t *out) {
     *out = sf_new("camera", 0, camera_answer); LOG("sf: camera context → host session %#x (no camera)", *out);
     return RES_OK;
 }
+// nn::camera::Finalize destroys the context before it releases the session (subsdk3+0x1f90, then the proxy's Close and CloseClientSessionHandle). The SDK's (21.4.4 sdk+0x2bf6d0) locks
+// the gsv user session, which nn::gsv::GetUserSession gives as null when it was never opened: a null read at sdk+0x171ef8 when Star Fox's title screen let go of the camera.
+// The host's context is the session alone, which its close ends
+HLE_FORCE("_ZN2nn6camera3sdk20DestroyCameraContextEv", "destroy the camera context (through gsv) → nothing: the host session closes with its handle", Result, h_cam_Destroy, void) { return RES_OK; }
 
 HLE_FORCE("_ZN2nn2sf4hipc31InitializeHipcServiceResolutionEv", "service name resolution (connects to sm); the host resolves the names it serves itself", Result, h_sf_InitRes, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn2sf4hipc29FinalizeHipcServiceResolutionEv", "service name resolution (sm)", void, h_sf_FinRes, void) {}
@@ -98,13 +122,19 @@ HLE_FORCE("_ZN2nn2sf4hipc15SendSyncRequestENS_3svc6HandleEPvm", "send a request 
     uint32_t magic = *(uint32_t *)(base + hin), ver = *(uint32_t *)(base + hin + 4), cmd = *(uint32_t *)(base + hin + 8);
     static int trace = -1; if (trace < 0) trace = getenv("DM_SF_TRACE") && atoi(getenv("DM_SF_TRACE"));
     if (trace) { char hx[3 * 0x80 + 1] = ""; for (unsigned k = 0; k < 0x80 && k < size; k++) snprintf(hx + 3 * k, 4, "%02x ", base[k]); LOG("sf: %s request: %s", g_sf[i].name, hx); }
+    // A Close message (type 2) ends the session: the client's proxy sends it as its last reference goes (the camera's, on nn::camera::Finalize, subsdk3+0x20bc), ignores the result
+    // and closes its handle next (CloseClientSessionHandle above). The server sends no reply
+    if (type == 2) return RES_OK;
     if (type != 4 && type != 6) { LOG("[RED] sf: %s: HIPC message type %u not served", g_sf[i].name, type); return 0xe401u; }
     if (dtype == 2) { memset(base, 0, 16); return RES_OK; }   // a domain object closed: nothing to answer
     if (magic != 0x49434653) { LOG("[RED] sf: %s: request without SFCI (%#x)", g_sf[i].name, magic); return 0xe401u; }
     unsigned key = (obj & 0xff) << 16 | (cmd & 0xffff);   // log each object / command once
     pthread_mutex_lock(&g_sf_mu); int first = g_sf[i].seen != key; g_sf[i].seen = key; pthread_mutex_unlock(&g_sf_mu);
-    uint32_t copy = 0; Result res = g_sf[i].answer ? g_sf[i].answer(cmd & 0xffff, &copy) : RES_OK;
-    if (first || trace) LOG("sf: %s object %u command %u (%u data words in): %s%s", g_sf[i].name, obj, cmd, ndw, res ? "fails" : "success, zeroed output", copy ? ", a copied handle" : "");
+    size_t din = hin + 16, nin = data + ndw * 4 > din ? data + ndw * 4 - din : 0;   // the command's input: the data words after the SFCI header
+    uint8_t outd[SF_OUT] = {0};
+    uint32_t copy = 0; Result res = g_sf[i].answer ? g_sf[i].answer(cmd & 0xffff, base + din, nin, outd, &copy) : RES_OK;
+    if ((first || trace) && res) LOG("sf: %s object %u command %u (%u data words in): fails with %#x", g_sf[i].name, obj, cmd, ndw, res);
+    else if (first || trace) LOG("sf: %s object %u command %u (%u data words in): success%s", g_sf[i].name, obj, cmd, ndw, copy ? ", a copied handle" : "");
     // The response: no descriptors. Without a handle there is no special header, so the data words start at +8; a copied handle takes a special header (its copy count) and the handle,
     // so they start at +0x10. The CMIF part starts at +0x10 either way (16-byte aligned); everything after the headers up to the buffer's end reads as zero
     size_t end = size < 0x1000 ? size : 0x1000, dw = copy ? 0x10 : 8;
@@ -113,5 +143,6 @@ HLE_FORCE("_ZN2nn2sf4hipc15SendSyncRequestENS_3svc6HandleEPvm", "send a request 
     if (copy) { m[1] |= 1u << 31; m[2] = 1u << 1; m[3] = copy; }   // special header: no process ID, 1 copy handle, 0 move handles
     size_t out = 0x10 + (dom ? 16 : 0);
     uint32_t *o = (uint32_t *)(base + out); o[0] = 0x4f434653; o[1] = ver; o[2] = res; o[3] = 0;   // "SFCO"; a domain's out-object count before it stays 0
+    if (out + 16 + SF_OUT <= end) memcpy(base + out + 16, outd, SF_OUT);   // the output data after the SFCO header
     return RES_OK;
 }
