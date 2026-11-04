@@ -18,9 +18,12 @@ META = {
     'level': r'basic',                       # a setting a front end shows first; without it, the front end decides
     'needs': r'DM_[A-Z0-9_]+=[^;=|:]+(\|[^;=|:]+)*',   # <VAR>=<value>[|<value>...]: a sub-setting, drawn only while the row that sets <VAR> is drawn and has one of the values
     # <VAR>=<value>: held at its default, and drawn disabled, while the row that sets <VAR> has that value; <VAR>=<value>:<own value>[|<own value>...]: only those values of
-    # this row cannot be used with it (not offered while <VAR> has the value, a held one goes back to the default), the rest of the row stays usable
-    'conflicts': r'DM_[A-Z0-9_]+=[^;=|:]+(:[^;=|:]+(\|[^;=|:]+)*)?',
+    # this row cannot be used with it (not offered while <VAR> has the value, a held one goes back to the default), the rest of the row stays usable; several clauses joined by ,
+    'conflicts': r'DM_[A-Z0-9_]+=[^;=|:,]+(:[^;=|:,]+(\|[^;=|:,]+)*)?(,DM_[A-Z0-9_]+=[^;=|:,]+(:[^;=|:,]+(\|[^;=|:,]+)*)?)*',
     'atleast': r'DM_[A-Z0-9_]+',             # <VAR>: a choice of numbers whose values below the number <VAR>'s row holds are not offered, and a held one is raised (Bananza's softest rate, never sharper than its render resolution)
+    # <value>:<rate>[|<value>:<rate>...]: values of a rate row (RATE_ROWS) that are not numbers, and the rate each renders at, for their render sizes; such a value at rate 1 keeps its
+    # upscaler running, as anti-aliasing at the output's size (Bananza's native-mfx)
+    'rates': r'[A-Za-z][A-Za-z0-9_.+-]*:\d+(\.\d+)?(\|[A-Za-z][A-Za-z0-9_.+-]*:\d+(\.\d+)?)*',
 }
 # Rows whose options are upscale rates (numbers the output size is divided by): their list entry gets rate_base, the output sizes from the profile's res_chain, so a front end can
 # show each option's render size in pixels for the console mode and output resolution chosen
@@ -157,12 +160,12 @@ def build(gid, patched, control):
             if m['atleast'] not in kinds: sys.exit(f'settings.tsv:{n}: atleast names a variable no row sets: {m["atleast"]}')
             if m['atleast'] == var: sys.exit(f'settings.tsv:{n}: atleast names the row\'s own variable')
             if kind != 'choice' or kinds[m['atleast']][0] != 'choice': sys.exit(f'settings.tsv:{n}: atleast joins two choices: {var} and {m["atleast"]}')
-        for key in ('needs', 'conflicts'):
-            if key not in m: continue
-            need, want = m[key].split('=', 1)
+        if 'rates' in m and var not in RATE_ROWS: sys.exit(f'settings.tsv:{n}: rates is for a row of upscale rates ({", ".join(RATE_ROWS)})')
+        for key, clause in ([('needs', m['needs'])] if 'needs' in m else []) + [('conflicts', c) for c in m.get('conflicts', '').split(',') if c]:
+            need, want = clause.split('=', 1)
             want, _, own = want.partition(':')
-            if need not in table: sys.exit(f'settings.tsv:{n}: {key} names a variable no row sets: {m[key]}')
-            if need == var: sys.exit(f'settings.tsv:{n}: {key} names the row\'s own variable: {m[key]}')
+            if need not in table: sys.exit(f'settings.tsv:{n}: {key} names a variable no row sets: {clause}')
+            if need == var: sys.exit(f'settings.tsv:{n}: {key} names the row\'s own variable: {clause}')
             can = table[need]
             for w in want.split('|'):
                 if can is not None and w not in can: sys.exit(f'settings.tsv:{n}: {key} a value {need} never takes: {w} (it takes {", ".join(sorted(can))})')
@@ -180,10 +183,13 @@ def build(gid, patched, control):
             if values == 'patches' and var not in popts: sys.exit(f'settings.tsv:{n}: values patches needs the condition patches:{var} (the profile\'s setting patches for this build)')
             opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
-            own = m.get('conflicts', '').partition(':')[2]
-            for w in filter(None, own.split('|')):   # a patches row's values are known only now, for the build packed
+            own = [w for c in m.get('conflicts', '').split(',') for w in c.partition(':')[2].split('|') if w]
+            for w in own:   # a patches row's values are known only now, for the build packed
                 if w not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: conflicts names a value this row does not offer: {w}')
-            if s['default'] in own.split('|'): sys.exit(f'settings.tsv:{n}: a conflicting value cannot be the default (the row goes back to it): {s["default"]}')
+            if s['default'] in own: sys.exit(f'settings.tsv:{n}: a conflicting value cannot be the default (the row goes back to it): {s["default"]}')
+            for v, _, r in (p.partition(':') for p in m['rates'].split('|')) if 'rates' in m else ():
+                if v not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: rates names a value this row does not offer: {v}')
+                if float(r) < 1: sys.exit(f'settings.tsv:{n}: rates gives {v} a rate below 1: {r}')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first
             if 'atleast' in m and not all(re.fullmatch(r'\d+(\.\d+)?', o[0]) for o in opts): sys.exit(f'settings.tsv:{n}: atleast needs a choice of numbers: {", ".join(o[0] for o in opts)}')
             s['options'] = opts

@@ -334,7 +334,9 @@ static int single_upscale_apply(int *mw, int *mh) {
 // (DM_UPSCALE_SOFTEST as written: raised to the sharpest, past the game's highest only with a MetalFX upscaler; without it, the game's own highest), else the game's
 // own range; the rate each stage starts at (the parameter apply writes the fixed or the sharpest rate; the game's own starts at 1.0); the scene's size (output / rate,
 // rounded up, as the game's 2304 / 1.375 = 1676); the upscaler and whether it runs at the sharpest rate (at 1.0 the game turns its upscaler off, and MetalFX with
-// it); the effects' and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first upscale names the sizes drawn
+// it; Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx, is rate 1.0 with the upscaler kept on: MetalFX's temporal scaler anti-aliases at the output's size, with the
+// mip bias DM_NATIVE_MIP_BIAS chose); the effects' and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first
+// upscale names the sizes drawn
 static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 the window, 2 match display (the window mw x mh)
     int ow[3], oh[3]; double lo, hi;
     if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
@@ -343,7 +345,9 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     const char *val = NULL, *rl = dm_setting_patch_applied("DM_UPSCALE_RATIO", &val), *dy = getenv("DM_UPSCALE_DYNAMIC"), *up = getenv("DM_UPSCALER");
     const char *fval = NULL, *fl = dm_setting_patch_applied("DM_UPSCALE_SOFTEST", &fval);
     int mfx = up && (!strcmp(up, "metalfx") || !strcmp(up, "metalfx-temporal"));
-    double r0 = rl && val ? atof(val) : 0, r1 = r0;   // the sharpest and the softest rate (equal: fixed)
+    int aa = rl && val && !strcmp(val, "native-mfx");   // native with MetalFX AA: rate 1.0, the upscaler on (its rows hold only with metalfx-temporal)
+    const char *mb = getenv("DM_NATIVE_MIP_BIAS"), *bias = aa && mb && !strcmp(mb, "-0.5") ? "-0.5" : "0";   // the rows' condition: DM_NATIVE_MIP_BIAS=-0.5
+    double r0 = aa ? 1.0 : rl && val ? atof(val) : 0, r1 = r0;   // the sharpest and the softest rate (equal: fixed)
     int dynamic = r0 >= 1.0 && r0 <= hi && dy && !strcmp(dy, "1");   // setting_patches.tsv's dynamic rows: a sharpest rate from 1.0 to the game's highest
     if (dynamic) {
         r1 = fl && fval ? atof(fval) : hi;
@@ -361,7 +365,9 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
         else snprintf(rate, sizeof rate, "%.5g fixed, start %.5g (%s)", r0, r0, rl);
         if (r1 > r0) snprintf(scene, sizeof scene, "%dx%d to %dx%d", (int)ceil(w / r0), (int)ceil(h / r0), (int)ceil(w / r1), (int)ceil(h / r1));
         else snprintf(scene, sizeof scene, "%dx%d", (int)ceil(w / r0), (int)ceil(h / r0));
-        if (r1 <= 1.0) snprintf(ups, sizeof ups, "none (rate 1.0: the game turns its upscaler off)");
+        if (aa && r1 <= 1.0) snprintf(ups, sizeof ups, "%s at the output's size: native with MetalFX AA, mip bias %s", name, bias);
+        else if (aa) snprintf(ups, sizeof ups, "%s: native with MetalFX AA at the sharpest (mip bias %s), upscaling when softer", name, bias);
+        else if (r1 <= 1.0) snprintf(ups, sizeof ups, "none (rate 1.0: the game turns its upscaler off)");
         else if (r0 <= 1.0) snprintf(ups, sizeof ups, "%s, off at the sharpest (rate 1.0: the game turns its upscaler off), on when softer", name);
         else snprintf(ups, sizeof ups, "%s, on at the sharpest", name);
     }

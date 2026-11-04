@@ -69,7 +69,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 5 | 0 | 0 | 126 | `build` → `game` ×3 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 5 | 0 | 0 | 153 | `build` → `game` ×3 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -311,6 +311,33 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x38decc` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic: the sharpest): `5100054A` → `F9407A69` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x38ded0` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler), dynamic: the sharpest): `EB0C015F` → `17FFFFD8` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler)): `BD400120` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), fixed): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), fixed): `BD402E88` → `1E2E1008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), fixed): `BD400120` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd04` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `BD406502` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dd98` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `BD406545` → `1E201005` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e104` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `BD406503` → `1E201003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38e194` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `BD406542` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de2c` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `F9407A69` → `14000024` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dea4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `BD400900` → `1E204100` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38deb8` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `3400028A` → `14000015` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38debc` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `7100055F` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dec0` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `AA1F03EC` → `1E206908` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38decc` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `5100054A` → `F9407A69` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38ded0` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), dynamic: the sharpest): `EB0C015F` → `17FFFFD8` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x16053a4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `BD400120` → `1E2E1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x422f04` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1E202008` → `7100013F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x422f0c` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1A9FA7EB` → `1A9F152B` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x422f10` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `5E21D842` → `B900100B` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x422f20` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `4B0B014A` → `D503201F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df3c` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `54000C0D` → `54000C0B` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38df4c` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `54000C20` → `D503201F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38de58` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `54000201` → `1400001F` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38ded4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `54000140` → `54FFFE21` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38ded8` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `F100219F` → `B9400A6A` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dedc` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `9100058D` → `361FFDEA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38dee0` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `9A89316C` → `17FFFFDF` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x38deb8` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA), mip bias -0.5): `3400028A` → `14000014` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x38dbc4` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `36081548` → `140000AA` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x38de6c` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `BD402E88` → `1E2F1008` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x38df08` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5), fixed): `BD400120` → `1E2F1000` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))

@@ -170,6 +170,41 @@ import Foundation
         saved.values["DM_UPSCALE_SOFTEST"] = "1.0"; saved.apply()
         expect(String(cString: getenv("DM_UPSCALE_SOFTEST")) == "1.6875", "Play never sends a softest rate below the render resolution")
         for s in res { unsetenv(s.env); d.removeObject(forKey: "launcher." + s.env) }
+        // Native (MetalFX AA): a rate value that is not a number (rates=native-mfx:1, the output's size), offered only with MetalFX temporal (two conflict clauses joined by ","),
+        // and Softest without Native while it is the sharpest (a second clause on another setting)
+        let aa = try! JSONDecoder().decode(SettingsFile.self, from: Data(#"""
+            {"settings": [{"env":"DM_SINGLE_UPSCALE","kind":"choice","section":"Resolution","label":"Output resolution","note":"","default":"1","options":[["0","Game default"],["1","Window"]]},
+                          {"env":"DM_UPSCALER","kind":"choice","section":"Resolution","label":"Game's upscaler","note":"","default":"game","options":[["game","Game's own"],["metalfx","MetalFX"],["metalfx-temporal","MetalFX temporal"]]},
+                          {"env":"DM_UPSCALE_RATIO","kind":"choice","section":"Resolution","label":"Render resolution","note":"","default":"game","conflicts":"DM_UPSCALER=game:3.0|native-mfx,DM_UPSCALER=metalfx:native-mfx","rates":"native-mfx:1",
+                           "options":[["game","Game default (dynamic)"],["1.0","Native (1.0, no upscaler)"],["native-mfx","Native (MetalFX AA)"],["1.5","Quality (1.5)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}},
+                          {"env":"DM_UPSCALE_DYNAMIC","kind":"toggle","section":"Resolution","label":"Dynamic resolution","note":"","default":"0","on":"1","off":"0","needs":"DM_UPSCALE_RATIO=1.0|native-mfx|1.5|2.0"},
+                          {"env":"DM_UPSCALE_SOFTEST","kind":"choice","section":"Resolution","label":"Softest","note":"","default":"2.0","needs":"DM_UPSCALE_DYNAMIC=1","atleast":"DM_UPSCALE_RATIO","conflicts":"DM_UPSCALER=game:3.0,DM_UPSCALE_RATIO=native-mfx:1.0",
+                           "options":[["1.0","Native (1.0, no upscaler)"],["1.5","Quality (1.5)"],["2.0","Performance (2.0)"],["3.0","Ultra performance (3.0, MetalFX only)"]],
+                           "rate_base":{"docked":[2304,1296],"handheld":[1920,1080],"when":[{"is":"DM_SINGLE_UPSCALE=1","docked":[2880,1620],"handheld":[1920,1080]}]}}]}
+            """#.utf8)).settings
+        let am = LauncherModel(aa, defaults: d)
+        let up = aa[1], ar = aa[2], ad = aa[3], asoft = aa[4]
+        expect(am.options(ar).map { $0[0] } == ["game", "1.0", "1.5", "2.0"], "the game's upscaler: neither Ultra performance nor Native (MetalFX AA)")
+        am.set(up, "metalfx")
+        expect(am.options(ar).map { $0[0] } == ["game", "1.0", "1.5", "2.0", "3.0"], "MetalFX's spatial scaler: Ultra performance, not Native (MetalFX AA) (the second clause)")
+        am.set(up, "metalfx-temporal")
+        expect(am.options(ar).count == 6, "MetalFX temporal: every value")
+        am.set(ar, "native-mfx")
+        expect(am.optionLabel(ar, ["native-mfx", "Native (MetalFX AA)"]) == "Native (MetalFX AA) · 2880 × 1620", "Native (MetalFX AA) shows the output's size (rates)")
+        expect(am.renderSummary(in: "Resolution") == "Renders 2880 × 1620, the output itself: the upscaler anti-aliases it.", "its summary: \(am.renderSummary(in: "Resolution") ?? "nil")")
+        am.set(asoft, "1.0"); am.set(ad, "1")
+        expect(am.visible(ad) && am.options(asoft).map { $0[0] } == ["1.5", "2.0", "3.0"], "as the sharpest of a dynamic range: Softest starts at Quality")
+        expect(am.held(asoft) && am.values["DM_UPSCALE_SOFTEST"] == "1.0", "a Native softest held from before is held at the default while Native (MetalFX AA) is the sharpest")
+        am.set(asoft, "2.0")
+        expect(am.renderSummary(in: "Resolution") == "Renders 2880 × 1620 to 1440 × 810, upscaled to 2880 × 1620. At 2880 × 1620 the upscaler anti-aliases the output itself.", "the dynamic summary: \(am.renderSummary(in: "Resolution") ?? "nil")")
+        am.set(asoft, "1.5"); am.set(ar, "1.0"); am.set(asoft, "1.0"); am.set(ar, "native-mfx")
+        expect(am.values["DM_UPSCALE_SOFTEST"] == "2.0", "choosing Native (MetalFX AA) resets a Native softest to its default")
+        am.set(up, "metalfx")
+        expect(am.values["DM_UPSCALE_RATIO"] == "game", "choosing the spatial scaler resets Native (MetalFX AA) (the second clause)")
+        am.values["DM_UPSCALE_RATIO"] = "native-mfx"; am.apply()
+        expect(String(cString: getenv("DM_UPSCALE_RATIO")) == "game", "Play holds Native (MetalFX AA) at the default with the spatial scaler")
+        for s in aa { unsetenv(s.env); d.removeObject(forKey: "launcher." + s.env) }
         failed += checkLauncherLayout(LauncherModel(mac.settings, defaults: d), defaults: d)
         print("launcher storage: \(failed) failed")
         exit(failed == 0 ? 0 : 1)

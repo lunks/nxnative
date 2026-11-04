@@ -6,11 +6,13 @@ struct Setting: Decodable, Identifiable {
     let env, kind, label, note, def: String
     let section: String?   // heading on the settings screen; absent in older bundles
     let needs: String?     // "<VAR>=<value>[|<value>...]": a sub-setting, drawn only while that setting has one of the values
-    let conflicts: String? // "<VAR>=<value>": held at its default, and drawn disabled, while that setting has that value; "<VAR>=<value>:<own>[|<own>...]": only those values of this row
+    let conflicts: String? // "<VAR>=<value>": held at its default, and drawn disabled, while that setting has that value; "<VAR>=<value>:<own>[|<own>...]": only those values of this row;
+                           // several such clauses joined by ","
     let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
     let atleast: String?   // "<VAR>": a choice of numbers never below the number that setting holds: lower values are not offered, a lower one held is raised
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     let rateBase: Base?    // a choice of upscale rates: the output size each rate divides, docked and handheld, for each option's render size in pixels (the Mac window)
+    let rates: String?     // "<value>:<rate>[|<value>:<rate>...]": values of a rate choice that are not numbers, and the rate each renders at (Bananza's native-mfx: 1, its upscaler on)
     // A size per console mode, and others while a setting has a value (when: the first entry whose "<VAR>=<value>" holds wins; Bananza's output with Output resolution: Window).
     // display: the docked size is the screen's, known at launch only (Match display): LauncherModel.displaySizes when the front end gives them, else none
     struct Base: Decodable {
@@ -26,6 +28,14 @@ struct Setting: Decodable, Identifiable {
     var basic: Bool { level == "basic" }
     var onValue: String { on ?? "1" }
     var offValue: String { off ?? "0" }
+    // The rate a value of a rate choice renders at: the number itself, or the one rates gives a value that is not a number (nil: neither, such as game)
+    func rate(_ v: String) -> Double? {
+        if let r = Double(v) { return r }
+        for p in (rates ?? "").split(separator: "|") { let kv = p.split(separator: ":", maxSplits: 1); if kv.count == 2, kv[0] == v { return Double(kv[1]) } }
+        return nil
+    }
+    // A value rates gives a rate (not a number itself): at rate 1 its upscaler still runs, anti-aliasing at the output's size
+    func aliased(_ v: String) -> Bool { Double(v) == nil && rate(v) != nil }
     func isDefault(_ v: String) -> Bool {   // a range compares as numbers (a slider writes 1.00 for 1.0)
         kind == "range" ? abs((Double(v) ?? .nan) - (Double(def) ?? .nan)) < 1e-6 : v == def
     }
@@ -39,7 +49,7 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, conflicts, level, atleast, base, rateBase = "rate_base", options, min, max, step, on, off }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, conflicts, level, atleast, base, rateBase = "rate_base", rates, options, min, max, step, on, off }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
@@ -72,34 +82,36 @@ final class LauncherModel: ObservableObject {
         for s in settings where !fixed.contains(s.env) { raise(s) }   // a saved value below its atleast bound: the lowest one offered
     }
 
-    // A row's "conflicts" as its parts: the setting, its value, and this row's own values that cannot go with it (nil: the whole row)
-    private func conflict(_ s: Setting) -> (key: String, want: String, own: [String]?)? {
-        guard let c = s.conflicts, let eq = c.firstIndex(of: "=") else { return nil }
-        let rest = c[c.index(after: eq)...], colon = rest.firstIndex(of: ":")
-        let want = String(colon.map { rest[rest.startIndex..<$0] } ?? rest)
-        let own = colon.map { rest[rest.index(after: $0)...].split(separator: "|").map(String.init) }
-        return (String(c[c.startIndex..<eq]), want, own)
+    // A row's "conflicts" as its clauses (joined by ","), each as its parts: the setting, its value, and this row's own values that cannot go with it (nil: the whole row)
+    private func conflicts(_ s: Setting) -> [(key: String, want: String, own: [String]?)] {
+        (s.conflicts ?? "").split(separator: ",").compactMap { c in
+            guard let eq = c.firstIndex(of: "=") else { return nil }
+            let rest = c[c.index(after: eq)...], colon = rest.firstIndex(of: ":")
+            let want = String(colon.map { rest[rest.startIndex..<$0] } ?? rest)
+            let own = colon.map { rest[rest.index(after: $0)...].split(separator: "|").map(String.init) }
+            return (String(c[c.startIndex..<eq]), want, own)
+        }
     }
-    // The other row while it has the value this row conflicts with (drawn, so its value counts), nil otherwise
-    private func conflicting(_ s: Setting) -> (other: Setting, own: [String]?)? {
-        guard let c = conflict(s), values[c.key] == c.want, let other = settings.first(where: { $0.env == c.key }), visible(other) else { return nil }
-        return (other, c.own)
+    // The clauses whose other row has the value this row conflicts with now (drawn, so its value counts): that row, and this row's values it rules out (nil: all)
+    private func conflicting(_ s: Setting) -> [(other: Setting, own: [String]?)] {
+        conflicts(s).compactMap { c in
+            guard values[c.key] == c.want, let other = settings.first(where: { $0.env == c.key }), visible(other) else { return nil }
+            return (other, c.own)
+        }
     }
     // A row with "conflicts" cannot be used together with that setting's value: while the other row has it, this one is held at
     // its default and drawn disabled. Choosing a value resets the rows that conflict with it, so the two never hold together; a value an env file fixes stays.
     // A conflict of some of the row's own values leaves the row usable: those values are not offered (options) and go back to the default (held)
     func blocker(_ s: Setting) -> Setting? {
-        guard let c = conflicting(s), c.own == nil else { return nil }
-        return c.other
+        conflicting(s).first { $0.own == nil }?.other
     }
-    func held(_ s: Setting) -> Bool {   // the row's value cannot be used now: the whole row is blocked, or its value is one the other setting's value rules out
-        guard let c = conflicting(s) else { return false }
-        guard let own = c.own else { return !s.isDefault(values[s.env] ?? s.def) }
-        return own.contains(values[s.env] ?? s.def)
+    func held(_ s: Setting) -> Bool {   // the row's value cannot be used now: the whole row is blocked, or its value is one another setting's value rules out
+        let v = values[s.env] ?? s.def
+        return conflicting(s).contains { c in c.own.map { $0.contains(v) } ?? !s.isDefault(v) }
     }
     func options(_ s: Setting) -> [[String]] {   // a choice's values on offer now: without the ones a conflict rules out, nor those below its atleast bound
         var o = s.options ?? []
-        if let c = conflicting(s), let own = c.own { o = o.filter { !own.contains($0[0]) } }
+        for c in conflicting(s) { if let own = c.own { o = o.filter { !own.contains($0[0]) } } }
         if let b = bound(s) { o = o.filter { (Double($0[0]) ?? .infinity) >= b - 1e-9 } }
         return o
     }
@@ -123,8 +135,9 @@ final class LauncherModel: ObservableObject {
         values[s.env] = v; raisedRows.remove(s.env)
         for r in settings where r.env != s.env && !fixed.contains(r.env) {
             if r.atleast == s.env { raise(r) }
-            guard let c = conflict(r), c.key == s.env, c.want == v else { continue }
-            if c.own == nil || c.own!.contains(values[r.env] ?? r.def) { values[r.env] = r.def }
+            for c in conflicts(r) where c.key == s.env && c.want == v {
+                if c.own == nil || c.own!.contains(values[r.env] ?? r.def) { values[r.env] = r.def }
+            }
         }
     }
 
@@ -170,7 +183,7 @@ final class LauncherModel: ObservableObject {
     static func pixels(_ w: Int, _ h: Int) -> String { "\(w) × \(h)" }
     // An upscale rate's render size (rate_base): the output for the console mode and output resolution chosen, divided by the rate, rounded up as the game does
     func renderSize(_ s: Setting, rate: String) -> [Int]? {
-        guard let b = s.rateBase, let r = Double(rate), r >= 1, let size = size(b) else { return nil }
+        guard let b = s.rateBase, let r = s.rate(rate), r >= 1, let size = size(b) else { return nil }
         return size.map { Int((Double($0) / r).rounded(.up)) }
     }
     // A choice's option as shown: its label, and its render size in pixels when the row's options are upscale rates ("Quality (1.5) · 1920 × 1080")
@@ -183,11 +196,12 @@ final class LauncherModel: ObservableObject {
     func renderSummary(in section: String) -> String? {
         let drawn = rows(in: section)
         guard let top = drawn.first(where: { $0.rateBase != nil }), let b = top.rateBase, let out = size(b),
-              let r0 = Double(values[top.env] ?? top.def), let a = renderSize(top, rate: values[top.env] ?? top.def) else { return nil }
+              let r0 = top.rate(values[top.env] ?? top.def), let a = renderSize(top, rate: values[top.env] ?? top.def) else { return nil }
+        let aa = top.aliased(values[top.env] ?? top.def)   // a rates value: its upscaler runs at the output's size, as anti-aliasing
         let low = drawn.first { $0.atleast == top.env && $0.rateBase != nil }.flatMap { renderSize($0, rate: values[$0.env] ?? $0.def) }.flatMap { $0 == a ? nil : $0 }
         let range = Self.pixels(a[0], a[1]) + (low.map { " to " + Self.pixels($0[0], $0[1]) } ?? "")
-        if r0 <= 1 && low == nil { return "Renders \(range), the output itself: no upscaler." }
-        return "Renders \(range), upscaled to \(Self.pixels(out[0], out[1]))." + (r0 <= 1 ? " At \(Self.pixels(a[0], a[1])) the game's upscaler is off." : "")
+        if r0 <= 1 && low == nil { return "Renders \(range), the output itself: " + (aa ? "the upscaler anti-aliases it." : "no upscaler.") }
+        return "Renders \(range), upscaled to \(Self.pixels(out[0], out[1]))." + (r0 <= 1 ? " At \(Self.pixels(a[0], a[1])) " + (aa ? "the upscaler anti-aliases the output itself." : "the game's upscaler is off.") : "")
     }
     var changed: Bool { settings.contains { !fixed.contains($0.env) && !$0.isDefault(values[$0.env] ?? $0.def) } }
 
@@ -206,7 +220,7 @@ final class LauncherModel: ObservableObject {
             if fixed.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (\(fromLaunch.contains(s.env) ? "launch environment" : "env file"))\n", stderr); continue }
             let w = held(s) ? s.def : raised(s) ?? v   // held at its default while a conflicting value holds (one an env file fixes); raised to its atleast bound
             store(s, w)
-            setenv(s.env, w, 1); fputs("launcher: \(s.env)=\(w)\(s.isDefault(w) ? "" : " (changed)")\(w == v ? "" : held(s) ? " (held: conflicts with \(conflicting(s)?.other.env ?? ""))" : " (raised: not below \(s.atleast ?? ""))")\n", stderr)
+            setenv(s.env, w, 1); fputs("launcher: \(s.env)=\(w)\(s.isDefault(w) ? "" : " (changed)")\(w == v ? "" : held(s) ? " (held: conflicts with \(conflicting(s).first?.other.env ?? ""))" : " (raised: not below \(s.atleast ?? ""))")\n", stderr)
         }
     }
     private func store(_ s: Setting, _ v: String) {

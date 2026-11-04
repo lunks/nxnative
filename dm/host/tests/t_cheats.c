@@ -771,6 +771,20 @@ int main(void) {
         CHECK(sp_apply(wp, nw) == 1 && rd32(0x1300) == 0x11111111u && rd32(0x1304) == 0x33333333u && rd32(0x1308) == 0x77777777u,
               "setting patches: that variable's own condition did not hold: nothing written for it, and the term sees it unset");
         unsetenv("DM_T_CEIL"); unsetenv("DM_T_SOFT"); EP_RESET();
+        // a word value (Bananza's native-mfx) whose rows need one upscaler, and a group of extra words chosen by a plain setting with a negative value (DM_NATIVE_MIP_BIAS=-0.5)
+        static const setting_patch_t np[] = {
+            {"DM_T_RATIO", "native-mfx", "Native (AA)", "main", B1, 0x1300, 0x11111111u, 0x22222222u, "DM_T_UP=metalfx-temporal"},
+            {"DM_T_RATIO", "native-mfx", "Native (AA), bias", "main", B1, 0x1304, 0x33333333u, 0x44444444u, "DM_T_UP=metalfx-temporal&DM_T_BIAS=-0.5"},
+        };
+        const int nn = (int)(sizeof np / sizeof np[0]);
+        EP_RESET(); setenv("DM_T_RATIO", "native-mfx", 1); setenv("DM_T_UP", "metalfx", 1); setenv("DM_T_BIAS", "-0.5", 1);
+        CHECK(sp_apply(np, nn) == 0 && rd32(0x1300) == 0x11111111u && !dm_setting_patch_applied("DM_T_RATIO", NULL), "setting patches: a word value with another upscaler: no row holds, nothing written");
+        EP_RESET(); setenv("DM_T_UP", "metalfx-temporal", 1);
+        CHECK(sp_apply(np, nn) == 2 && rd32(0x1300) == 0x22222222u && rd32(0x1304) == 0x44444444u && dm_setting_patch_applied("DM_T_RATIO", &val) && !strcmp(val, "native-mfx"),
+              "setting patches: a word value, its upscaler and a negative value of the other setting: both groups' words written, the value kept");
+        EP_RESET(); setenv("DM_T_BIAS", "-0.50", 1);
+        CHECK(sp_apply(np, nn) == 1 && rd32(0x1304) == 0x33333333u, "setting patches: a negative value matches whole only (-0.50 is not -0.5)");
+        unsetenv("DM_T_RATIO"); unsetenv("DM_T_UP"); unsetenv("DM_T_BIAS"); EP_RESET();
         #undef EP_RESET
         #undef B1
     }

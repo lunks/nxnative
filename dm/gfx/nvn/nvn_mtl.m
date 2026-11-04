@@ -12916,8 +12916,8 @@ int front_screen_max_fps(void);   // front_mac.m (a weak stand-in further on)
 // (960x540 → 1920x1080), MetalFX's spatial scaler about 1 ms. With DM_UPSCALER=metalfx (the launcher's Game's upscaler: MetalFX), a dispatch of one of the game's upscaler shaders
 // (DM_GAME_UPSCALER_KEYS: game.py takes the compute shaders the shader map found in agl_ndsr.pck) is replaced by the spatial scaler from the input rectangle to the output rectangle, in the colour mode of that shader. MetalFX takes rectangles at the origin: the input
 // rectangle is drawn into an RGBA16F scaler texture first and the result drawn into the output rectangle (copy_t2t_draw), unless the colour is linear, both textures are RGBA16F and the input
-// and output rectangles cover their respective textures. An output rectangle not larger than the input in both directions, an indirect dispatch, or anything
-// the checks below refuse runs the game's shader. The look changes (Apple's scaler instead of the game's network), so it is the player's choice; DM_UPSCALER=game (the default)
+// and output rectangles cover their respective textures. An output rectangle smaller than the input, one of the input's size with the spatial scaler (the temporal one draws
+// that: up_mfx_same), an indirect dispatch, or anything the checks below refuse runs the game's shader. The look changes (Apple's scaler instead of the game's network), so it is the player's choice; DM_UPSCALER=game (the default)
 // keeps the network. Found with the iPhone port's NDSR replacement (PR #1073), which decoded the rectangles. The network's own cost on the GPU is the translator's
 // LDSM / MOVM shuffles, open in docs/reference/shaders.md (Ampere HMMA through simdgroup_matrix)
 typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out, read; NSUInteger key[5]; int refused; } up_mfx_scaler;   // key: input w, h, output w, h, sRGB input; in: the RGBA16F input; out: the output (RGBA16F, or RGBA8Unorm for sRGB input); read: what the game's image is drawn from (out, or its sRGB view)
@@ -13009,7 +13009,9 @@ static int up_mfx_rect(const uint32_t v[4], NSUInteger w, NSUInteger h, NVNcopyR
     if (v[0] > INT_MAX || v[1] > INT_MAX || rw > INT_MAX || rh > INT_MAX || (uint64_t)v[0] + rw > w || (uint64_t)v[1] + rh > h) return 0;
     *r = (NVNcopyRegion){(int)v[0], (int)v[1], 0, (int)rw, (int)rh, 1}; return 1;
 }
-// The textures and rectangles of a dispatch of upscaler cs (see above): 0 when they are not one input texture and one larger output image the scalers can take
+// The textures and rectangles of a dispatch of upscaler cs (see above): 0 when they are not one input texture and one output image at least as large the scalers can take.
+// An output of the input's size is a 1:1 dispatch (Donkey Kong Bananza's Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx: the game keeps its network path at rate 1.0), which
+// only the temporal scaler draws (anti-aliasing at the output's size); up_mfx_encode leaves it to the shader otherwise
 static int up_mfx_resolve(NvShader *cs, mfx_io *io) {
     int ti = -1, oi = -1;
     for (int i = 0; i < cs->rf.nb; i++) { int k = cs->rf.b[i].kind; if (k == NVN_RB_TEX && ti < 0) ti = i; else if (k == NVN_RB_IMG && oi < 0) oi = i; else if (k == NVN_RB_TEX || k == NVN_RB_IMG) return 0; }
@@ -13030,7 +13032,7 @@ static int up_mfx_resolve(NvShader *cs, mfx_io *io) {
     NVNcopyRegion ir, orr;
     if (!in || !out || in == out || in.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D || in.sampleCount != 1 || out.sampleCount != 1 ||
         fmt_int_or_ds(in.pixelFormat) || fmt_int_or_ds(out.pixelFormat) || mtl_fmt_block(out.pixelFormat) || !up_mfx_rect(v, in.width, in.height, &ir) || !up_mfx_rect(v + 4, out.width, out.height, &orr) ||
-        orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) return 0;
+        orr.width < ir.width || orr.height < ir.height) return 0;
     io->in = in; io->out = out; io->ir = ir; io->orr = orr; io->out_ser = dout.serial;
     return 1;
 }
@@ -13049,7 +13051,10 @@ static int up_out_note(NvShader *cs) {
     int ww = (int)(win & 0xffff), wh_ = (int)(win >> 16), one = win && io.orr.width == ww && io.orr.height == wh_;
     if (wh == last || lines >= 8) return one ? 1 : 2;
     last = wh; lines++;
-    if (!win) MLOG("upscaler: output %dx%d (from %dx%d), no window yet", io.orr.width, io.orr.height, io.ir.width, io.ir.height);
+    if (io.orr.width == io.ir.width && io.orr.height == io.ir.height)   // Native (MetalFX AA): the network path at rate 1.0
+        MLOG("upscaler: output %dx%d (from %dx%d): 1:1, %s", io.orr.width, io.orr.height, io.ir.width, io.ir.height,
+             up_mfx_on() == 2 ? "MetalFX's temporal scaler anti-aliases at the output's size" : "the game's shader draws it (only MetalFX temporal draws a 1:1 dispatch)");
+    else if (!win) MLOG("upscaler: output %dx%d (from %dx%d), no window yet", io.orr.width, io.orr.height, io.ir.width, io.ir.height);
     else if (one) MLOG("upscaler: output %dx%d (from %dx%d), the window's size: one resample, the final copy is 1:1", io.orr.width, io.orr.height, io.ir.width, io.ir.height);
     else MLOG("upscaler: output %dx%d (from %dx%d), window %dx%d: the final copy resamples it again (%.2fx)%s", io.orr.width, io.orr.height, io.ir.width, io.ir.height, ww, wh_,
               (double)ww / io.orr.width, getenv("DM_SINGLE_UPSCALE") ? "" : "; DM_SINGLE_UPSCALE=1 upscales once, where the build has the stub");
@@ -13057,12 +13062,30 @@ static int up_out_note(NvShader *cs) {
 }
 // After the game's own upscaler ran: its output is the interpolation's scene (nvn_mfx.inc)
 static void mfx_after_game(NvShader *cs) { mfx_io io; if (up_mfx_resolve(cs, &io)) mfx_after(&io); }
+// A 1:1 dispatch (see up_mfx_resolve) the temporal scaler did not draw. With the spatial scaler (DM_UPSCALER=metalfx) it is the game's shader's, as before. With the temporal one, a
+// frame it lacks the depth or the camera of (a menu without the 3D scene) gets its input copied into the output: the game's own picture at rate 1.0 is its SMAA'd scene, which is
+// what the network's input holds, so the frame looks as Native's would; the network itself is not run at a ratio it never runs at. 1 when copied
+static uint64_t g_up_mfx_same;
+static int up_mfx_same(const mfx_io *io) {
+    if (up_mfx_on() != 2) { g_up_mfx_kept++; return 0; }
+    zskip_del(io->out_ser);
+    rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    ubd_land_compute();
+    if (io->in.pixelFormat == io->out.pixelFormat)
+        enc_b_copy_texture(blit(), io->in, 0, 0, MTLOriginMake(io->ir.xoffset, io->ir.yoffset, 0), MTLSizeMake(io->ir.width, io->ir.height, 1), io->out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0));
+    else if (!copy_t2t_draw(io->in, io->out, 0, 0, 0, 0, &io->ir, &io->orr, 0, 0)) { args_dirty_all(); g_up_mfx_kept++; return 0; }
+    args_dirty_all();
+    if (!g_up_mfx_same++) MLOG("upscaler: a 1:1 dispatch (%dx%d) the temporal scaler could not draw (no scene depth or camera this frame): its input copied into the output (logged once)", io->ir.width, io->ir.height);
+    mfx_after(io);
+    return 1;
+}
 // The dispatch of upscaler cs as MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal, nvn_mfx.inc) or spatial scaler from its texture slot's rectangle to its image slot's (see above):
-// 1 when drawn, 0 to run the shader. The temporal one falls back to the spatial one for a frame it lacks the depth or the camera of, and takes only a shader with linear input and output
-// (up_mfx_color: it reads the scene as linear HDR); a shader with sRGB input gets the spatial one in perceptual mode
+// 1 when drawn, 0 to run the shader. The temporal one falls back to the spatial one for a frame it lacks the depth or the camera of, and a 1:1 dispatch to a copy (up_mfx_same); it takes
+// only a shader with linear input and output (up_mfx_color: it reads the scene as linear HDR), and a shader with sRGB input gets the spatial one in perceptual mode (a 1:1 one its own shader)
 static int up_mfx_encode(NvShader *cs) {
     mfx_io io; if (!up_mfx_resolve(cs, &io)) { g_up_mfx_kept++; return 0; }
     if (up_mfx_on() == 2 && cs->up_color == UP_COLOR_LINEAR && mfx_temporal(&io)) { mfx_after(&io); return 1; }
+    if (io.ir.width == io.orr.width && io.ir.height == io.orr.height) { if (cs->up_color != UP_COLOR_LINEAR) { g_up_mfx_kept++; return 0; } return up_mfx_same(&io); }
     id<MTLTexture> in = io.in, out = io.out; NVNcopyRegion ir = io.ir, orr = io.orr; uint64_t dout_ser = io.out_ser;
     int srgb = cs->up_color == UP_COLOR_SRGB;
     up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, srgb); if (!e) { g_up_mfx_kept++; return 0; }

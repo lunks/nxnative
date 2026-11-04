@@ -69,7 +69,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
     def rows(self,gid,fixups,platform='mac'):
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
             (Path(tmp)/'main.fixups.tsv').write_text(fixups)
-            return {s['env']:s for s in settings.build(gid,tmp,'unused')['settings'] if s['env'] in ('DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_UPSCALE_RATIO','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_EFFECTS_RES','DM_FPS_LOCK')}
+            return {s['env']:s for s in settings.build(gid,tmp,'unused')['settings'] if s['env'] in ('DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_UPSCALE_RATIO','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_EFFECTS_RES','DM_FPS_LOCK')}
     def test_bananza_shadow_rows(self):
         r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')
         self.assertEqual([k for k in r if k.startswith('DM_SHADOW')],['DM_SHADOW_RES','DM_SHADOW_MAP_SIZE'])
@@ -85,7 +85,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         sec={}
         for s in listed: sec.setdefault(s['section'],[]).append(s['env'])
         self.assertEqual(list(sec),['Game','Resolution','Effects','Frame rate','HDR','Controls','Performance'])
-        want=['DM_SINGLE_UPSCALE','DM_UPSCALER','DM_UPSCALE_RATIO','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_PRESENT_UPSCALE']
+        want=['DM_SINGLE_UPSCALE','DM_UPSCALER','DM_UPSCALE_RATIO','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_PRESENT_UPSCALE']
         self.assertEqual([e for e in sec['Resolution'] if e in want],want,'in the picture\'s order (other rows, such as a MetalFX temporal option after the upscaler, may come between)')
         self.assertEqual(sec['Effects'],['DM_EFFECTS_RES','DM_SHADOW_RES','DM_SHADOW_MAP_SIZE'])
         self.assertEqual(sec['Frame rate'],['DM_FPS_LOCK','DM_MFX_INTERP'])
@@ -94,16 +94,21 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')
         q=r['DM_UPSCALE_RATIO']
         self.assertEqual((q['kind'],q['default'],q['label'],q['section']),('choice','game','Render resolution','Resolution'))
-        self.assertEqual([o[0] for o in q['options']],['game','1.0','1.5','1.6875','2.0','3.0'])
-        self.assertEqual(q['options'][3][1],'Balanced (1.69)','an option is named by its label row, the write rows\' labels are the log\'s')
-        self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0','Ultra performance only with a MetalFX upscaler')
+        self.assertEqual([o[0] for o in q['options']],['game','1.0','native-mfx','1.5','1.6875','2.0','3.0'])
+        self.assertEqual(q['options'][4][1],'Balanced (1.69)','an option is named by its label row, the write rows\' labels are the log\'s')
+        self.assertEqual(q['options'][2][1],'Native (MetalFX AA)')
+        self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0|native-mfx,DM_UPSCALER=metalfx:native-mfx','Ultra performance only with a MetalFX upscaler, Native (MetalFX AA) only with the temporal one')
+        self.assertEqual(q['rates'],'native-mfx:1','Native (MetalFX AA) renders at rate 1: its render size is the output\'s')
+        mb=r['DM_NATIVE_MIP_BIAS']
+        self.assertEqual((mb['kind'],mb['default'],mb['needs'],[o[0] for o in mb['options']]),('choice','0','DM_UPSCALE_RATIO=native-mfx',['0','-0.5']))
         base={'docked':[2304,1296],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]},
                                                                   {'is':'DM_SINGLE_UPSCALE=display','docked':[0,0],'handheld':[1920,1080],'display':True}]}
         self.assertEqual(q['rate_base'],base,'the output sizes a rate divides (res_chain), for each option\'s render size; Match display\'s docked size is the screen\'s, filled in at launch')
         dyn=r['DM_UPSCALE_DYNAMIC']
-        self.assertEqual((dyn['kind'],dyn['default'],dyn['needs']),('toggle','0','DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0'))
+        self.assertEqual((dyn['kind'],dyn['default'],dyn['needs']),('toggle','0','DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0'))
         lo=r['DM_UPSCALE_SOFTEST']
-        self.assertEqual((lo['kind'],lo['default'],lo['label'],lo['needs'],lo['atleast'],lo['conflicts']),('choice','2.0','Softest','DM_UPSCALE_DYNAMIC=1','DM_UPSCALE_RATIO','DM_UPSCALER=game:3.0'))
+        self.assertEqual((lo['kind'],lo['default'],lo['label'],lo['needs'],lo['atleast'],lo['conflicts']),
+                         ('choice','2.0','Softest','DM_UPSCALE_DYNAMIC=1','DM_UPSCALE_RATIO','DM_UPSCALER=game:3.0,DM_UPSCALE_RATIO=native-mfx:1.0'))
         self.assertEqual([o[0] for o in lo['options']],['1.0','1.5','1.6875','2.0','3.0'])
         self.assertEqual(lo['rate_base'],base)
         self.assertEqual(r['DM_EFFECTS_RES']['options'],[['game','Game default (half)'],['full','Full (half- and quarter-res effects at the render size)']])
@@ -128,18 +133,22 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         cases=[('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:z\n','never takes: z'),
                ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:x\n','cannot be the default'),
                ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\ttoggle\t-\t0\talways\tGame\tB\t\tneeds=DM_A=a|c\n','never takes: c'),
-               ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\t\tneeds=DM_A=a\n','own variable')]
+               ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\t\tneeds=DM_A=a\n','own variable'),
+               ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:y,DM_A=b:z\n','never takes: z'),   # each clause checked
+               ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:y,DM_C=b:y\n','no row sets'),
+               ('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:y,DM_A=b:x\n','cannot be the default'),
+               ('DM_A\tchoice\ta=A,n=N\ta\talways\tGame\tA\t\trates=n:1\n','row of upscale rates')]
         for table,err in cases:
             with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
                 (Path(tmp)/'settings.tsv').write_text(table)
                 with patch.object(settings,'HERE',Path(tmp)),self.assertRaisesRegex(SystemExit,err):
                     settings.build('010056B015FE8000',tmp,'unused')
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
-            (Path(tmp)/'settings.tsv').write_text('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y\tx\talways\tGame\tB\t\tconflicts=DM_A=a:y\n'
+            (Path(tmp)/'settings.tsv').write_text('DM_A\tchoice\ta=A,b=B\ta\talways\tGame\tA\nDM_B\tchoice\tx=X,y=Y,z=Z\tx\talways\tGame\tB\t\tconflicts=DM_A=a:y,DM_A=b:z\n'
                                               'DM_C\ttoggle\t-\t0\talways\tGame\tC\t\tneeds=DM_A=a|b\n')
             with patch.object(settings,'HERE',Path(tmp)):
                 rows={s['env']:s for s in settings.build('010056B015FE8000',tmp,'unused')['settings']}
-        self.assertEqual((rows['DM_B']['conflicts'],rows['DM_C']['needs']),('DM_A=a:y','DM_A=a|b'))
+        self.assertEqual((rows['DM_B']['conflicts'],rows['DM_C']['needs']),('DM_A=a:y,DM_A=b:z','DM_A=a|b'))
     def test_bananza_frame_rate_mode(self):   # DM_FPS_LOCK: the frame-rate controller steps up as the game does; Prefer 60 tries 60 again after 120 frames and skips the veto, Hold 30 clamps at 2
         r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')['DM_FPS_LOCK']
         self.assertEqual((r['kind'],r['section'],r['default']),('choice','Frame rate','game'))

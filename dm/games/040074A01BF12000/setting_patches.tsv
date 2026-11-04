@@ -23,7 +23,7 @@ DM_SHADOW_MAP_SIZE	4096	4096	main	e25c90c1c136638885659fd55bf8a03b	0x6ee01c	F2C1
 # when DM_UPSCALE_SOFTEST has rows, and the store takes s8 itself (fmov s0,s8 at main+0x38dea4, b past the snap at main+0x38deb8). The controller's min rate becomes 1.0 and its
 # max 2.0 (its four reads), so it still steps through all of its own rates and the clamp maps them into the range; the parameter apply starts each stage at R.
 # Ultra performance (3.0, a rate the game never chooses) is fixed only, and only with DM_UPSCALER metalfx or metalfx-temporal: agl's network was never run that far
-# DM_UPSCALE_SOFTEST F, the softest rate with dynamic resolution (DM_UPSCALE_DYNAMIC=1 and a DM_UPSCALE_RATIO from 1.0 to 2.0 written first: the when terms on DM_UPSCALE_RATIO
+# DM_UPSCALE_SOFTEST F, the softest rate with dynamic resolution (DM_UPSCALE_DYNAMIC=1 and a DM_UPSCALE_RATIO from 1.0 to 2.0, or native-mfx (1.0), written first: the when terms on DM_UPSCALE_RATIO
 # test what that variable wrote): the clamp's min(s8, F) (two words of the dead snap loop, which run as harmless integer moves without it) and the step to softer's last
 # resort (main+0x38e278 fmov s2,s4, the current rate when no table rate is left below its max) -> fmov s2,#F, so the controller can reach a softest rate past its table.
 # A softest rate sharper than the sharpest is raised to it (its own rows per sharpest), and Ultra performance without a MetalFX upscaler is lowered to Performance; unset, the
@@ -45,6 +45,41 @@ DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic: the sharpest	main	e25c9
 DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38decc	5100054A	F9407A69	DM_UPSCALE_DYNAMIC=1
 DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38ded0	EB0C015F	17FFFFD8	DM_UPSCALE_DYNAMIC=1
 DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E2E1000
+# DM_UPSCALE_RATIO native-mfx (README.md, Native with MetalFX anti-aliasing): rate 1.0 as Native (its rate words, fixed or dynamic), with the upscaler path kept on so its
+# dispatch runs 1:1 and MetalFX's temporal scaler draws it; only with DM_UPSCALER=metalfx-temporal (no row holds otherwise). At rate 1.0 the scene size function (main+0x422e80)
+# stores table index 0 and NDSR's execute (main+0x325a80) then runs only its SMAA into the output; four words in the function's floor of the width (a branch for negative
+# sizes, dead) store index 0 as 1 (cmp w9,#0; csinc w11,w9,wzr,ne; str w11,[x0,#0x10]; nop) while the size keeps the index-0 path (cbz w9 at main+0x422f48): the scene at
+# the output's size, network entry 0 dispatched 1:1. The mip bias stays 0, the game's at 1.0. DM_NATIVE_MIP_BIAS=-0.5 keeps the -0.5 of its upscaled rates: the controller's
+# tail takes 1.0 as upscaling (b.le -> b.lt at main+0x38df3c, the turn-off b.eq at main+0x38df4c -> nop), and its early return (main+0x38de58) goes through a test of the
+# bias flag (ctrl+8 bit 3) in the snap loop the store no longer runs (main+0x38ded4-0x38dee0; fixed: the loop skipped at main+0x38deb8), so the tail runs once and sets it
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	-
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2E1008	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E2E1000	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dd04	BD406502	1E2E1002	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dd98	BD406545	1E201005	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e104	BD406503	1E201003	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e194	BD406542	1E2E1002	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38de2c	F9407A69	14000024	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dea4	BD400900	1E204100	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38deb8	3400028A	14000015	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38debc	7100055F	1E2E1000	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec0	AA1F03EC	1E206908	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38decc	5100054A	F9407A69	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), dynamic: the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38ded0	EB0C015F	17FFFFD8	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC=1
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E2E1000	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f04	1E202008	7100013F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f0c	1A9FA7EB	1A9F152B	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f10	5E21D842	B900100B	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f20	4B0B014A	D503201F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38df3c	54000C0D	54000C0B	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38df4c	54000C20	D503201F	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38de58	54000201	1400001F	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38ded4	54000140	54FFFE21	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38ded8	F100219F	B9400A6A	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38dedc	9100058D	361FFDEA	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38dee0	9A89316C	17FFFFDF	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38deb8	3400028A	14000014	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1&DM_NATIVE_MIP_BIAS=-0.5
 DM_UPSCALE_RATIO	1.5	Quality (1.5)	-
 DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALE_DYNAMIC!=1
 DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2F1008	DM_UPSCALE_DYNAMIC!=1
@@ -99,9 +134,9 @@ DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler), fixed	mai
 DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38df08	BD400120	1E211000	DM_UPSCALER=metalfx|metalfx-temporal
 DM_UPSCALE_RATIO	3.0	Ultra performance (3.0, with a MetalFX upscaler)	main	e25c90c1c136638885659fd55bf8a03b	0x16053a4	BD400120	1E211000	DM_UPSCALER=metalfx|metalfx-temporal
 DM_UPSCALE_SOFTEST	1.0	Native (1.0, no upscaler)	-
-DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2E1000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0
-DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0
-DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2E1002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0
+DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2E1000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx
+DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx
+DM_UPSCALE_SOFTEST	1.0	Native (1.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2E1002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx
 DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Quality (1.5), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F1000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.5
 DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Quality (1.5), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.5
 DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Quality (1.5), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F1002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.5
@@ -112,9 +147,9 @@ DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Performance (2.0), the sharpest	ma
 DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.0	Native (1.0) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	-
-DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F1000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5
-DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5
-DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F1002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5
+DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F1000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5
+DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5
+DM_UPSCALE_SOFTEST	1.5	Quality (1.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F1002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Balanced (1.69), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F7000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.6875
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Balanced (1.69), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.6875
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Balanced (1.69), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F7002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.6875
@@ -122,23 +157,23 @@ DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Performance (2.0), the sharpest	m
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.5	Quality (1.5) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	-
-DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F7000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875
-DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875
-DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F7002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875
+DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E2F7000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875
+DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875
+DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E2F7002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875
 DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	1.6875	Balanced (1.69) raised to Performance (2.0), the sharpest	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	-
-DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	2.0	Performance (2.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
 DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0, MetalFX only)	-
-DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E211000	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E211002	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
-DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E211000	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E211002	DM_UPSCALER=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
 # Effects resolution: the render buffer's size ladder (main+0x424a18: three levels, each the previous x s11, fmov s11,#0.5 at main+0x424a64) sizes the half-res effect targets
 # (the refraction scene copy, SSAO and its blur, the blob-shadow mask, half-res particles and depth); their viewports are the render viewport x 0.5 (main+0x423c74) and x 0.25 (main+0x423d64).
 # Full: the ladder's levels and both viewports at the render size, so each target is its viewport's size as in the game (its targets are made each frame at the scene's size). The shaders sample those targets by normalized coordinates with texel sizes from uniforms (README.md, Resolution model)

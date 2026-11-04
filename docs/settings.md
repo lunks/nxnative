@@ -142,6 +142,7 @@ Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic
 | Option | Rate | With Output resolution: Window (2880×1620) | With Game default (2304×1296) |
 |---|---|---|---|
 | Native | 1.0 | 2880×1620 | 2304×1296 |
+| Native (MetalFX AA) | 1.0, upscaler on | 2880×1620 | 2304×1296 |
 | Quality | 1.5 | 1920×1080 | 1536×864 |
 | Balanced | 1.69 | 1707×960 | 1366×768 |
 | Performance | 2.0 | 1440×810 | 1152×648 |
@@ -149,19 +150,20 @@ Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic
 
 Handheld, the output is 1920×1080 either way (Quality 1280×720).
 
-- **Native** draws the output itself. At this rate the game turns its upscaler off, and with it MetalFX: **Game's upscaler** does nothing then.
+- **Native** draws the output itself. At this rate the game turns its upscaler off and smooths edges with its own SMAA, and MetalFX is off with it: **Game's upscaler** does nothing then.
+- **Native (MetalFX AA)** draws the output itself too, but keeps the game's upscaler step running at the same size, so MetalFX's temporal scaler smooths the edges from frame to frame, the way DLAA does: steadier edges and finer detail than Native, for more GPU time (Native's, plus MetalFX at the output's size). Offered only with **Game's upscaler: MetalFX temporal**; turn on **Anti-aliasing (jitter)** too, without which MetalFX has little to smooth. **Texture mip bias** (shown with it): `0` (default) samples textures as the game does at native resolution, `-0.5` half a level sharper, as the game does while it upscales: more texture detail, and more shimmer for the anti-aliasing to settle. In `env.txt`: `DM_UPSCALE_RATIO=native-mfx`, `DM_NATIVE_MIP_BIAS=-0.5`.
 - **Ultra performance** is offered only with a MetalFX **Game's upscaler** (the game's own network was never run that far), and only without dynamic resolution.
 - **Without dynamic resolution** the rate is fixed: a busy scene lowers the frame rate instead.
 - **Cost:** GPU time and memory grow with the pixels drawn: Native at the window's size draws 2.95 times the pixels of the game's sharpest docked step.
-- **Not played yet:** 1.5, 1.69 and 3.0 are rates the game never picks itself. If the picture is wrong, misses parts, or the game crashes on entering a level, set it back to **Game default**.
-- In `env.txt`: `DM_UPSCALE_RATIO=1.6875` (`game`, `1.0`, `1.5`, `1.6875`, `2.0`, `3.0`).
+- **Not played yet:** 1.5, 1.69 and 3.0 are rates the game never picks itself, and Native (MetalFX AA) runs the game's upscaler step at a size it never uses. If the picture is wrong, misses parts, or the game crashes on entering a level, set it back to **Game default**.
+- In `env.txt`: `DM_UPSCALE_RATIO=1.6875` (`game`, `1.0`, `native-mfx`, `1.5`, `1.6875`, `2.0`, `3.0`).
 
 ### Dynamic resolution
 
-Shown with **Render resolution** at Native, Quality, Balanced or Performance. **On** lets the game render softer when frames run late, down to **Softest**, and come back to **Render resolution** when they fit again. It never renders sharper than **Render resolution**, also when a level starts. Off by default (a fixed rate).
+Shown with **Render resolution** at Native, Native (MetalFX AA), Quality, Balanced or Performance. **On** lets the game render softer when frames run late, down to **Softest**, and come back to **Render resolution** when they fit again. It never renders sharper than **Render resolution**, also when a level starts. Off by default (a fixed rate).
 
 - **How far it moves:** the game steps among rates of its own (1.375, 1.71 and 2.0 have been seen) and the two you chose; between two close choices, such as Quality and Balanced, it switches between those two.
-- **With a Native Render resolution:** the game's upscaler, and MetalFX, are off while it draws Native and on when it renders softer.
+- **With a Native Render resolution:** the game's upscaler, and MetalFX, are off while it draws Native and on when it renders softer. With Native (MetalFX AA) MetalFX stays on throughout: it smooths the native picture and upscales the softer ones, and **Softest** starts at Quality.
 - In `env.txt`: `DM_UPSCALE_DYNAMIC=1`.
 
 ### Softest
@@ -395,7 +397,8 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
 | [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `display` (Match display), `0` (default) |
-| [Render resolution](#render-resolution) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `1.5`, `1.6875`, `2.0`, `3.0` |
+| [Render resolution](#render-resolution) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `native-mfx` (with `DM_UPSCALER=metalfx-temporal`), `1.5`, `1.6875`, `2.0`, `3.0` |
+| [Texture mip bias](#render-resolution) (Mac) | `DM_NATIVE_MIP_BIAS` | `0` (default), `-0.5`; with `DM_UPSCALE_RATIO=native-mfx` |
 | [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
 | [Softest](#softest) (Mac) | `DM_UPSCALE_SOFTEST` | `1.0`, `1.5`, `1.6875`, `2.0` (default), `3.0`; not below `DM_UPSCALE_RATIO` |
 | [Effects resolution](#effects-resolution) (Mac) | `DM_EFFECTS_RES` | `game` (default), `full` |

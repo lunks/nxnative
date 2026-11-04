@@ -209,26 +209,31 @@ static void jitter_blocks(id<MTLTexture> depth, const float *view, const float *
     mtl_drain(); mtl_pool_del(mem); free(orig);
 }
 // A static scene through the temporal scaler for 48 frames, drawn with the frames' jitter as a jittered projection would (with=0: none), MetalFX told the offset with the given
-// sign; the mean absolute difference of the last 4 outputs from the scene supersampled at the output's pixels, over the picture less a margin
-static double jitter_run(NvShader *named, int with, double sign, const float *view, const float *vp, uint64_t f0, double *mv_max) {
-    enum { IW = 480, IH = 270, OW = 960, OH = 540 };
-    static tex_t in, out; static id<MTLTexture> depth; static float *truth; static uint8_t *mem;
-    if (!truth) {
-        in = texture(91, IW, IH, NVN_FORMAT_RGBA16F); out = texture(92, OW, OH, NVN_FORMAT_RGBA16F); out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
-        mtl_reg_tex(711, &in, NULL); mtl_reg_image(712, &out, NULL);
+// sign; the mean absolute difference of the last 4 outputs from the scene supersampled at the output's pixels, over the picture less a margin. one: a 1:1 dispatch (Bananza's
+// Native (MetalFX AA): the game's network path at rate 1.0), 480x270 into 480x270, where the jitter is the only source of anti-aliasing
+static double jitter_run(NvShader *named, int with, double sign, const float *view, const float *vp, uint64_t f0, double *mv_max, int one) {
+    const int IW = 480, IH = 270, OW = one ? 480 : 960, OH = one ? 270 : 540, tin = one ? 713 : 711, tout = one ? 714 : 712;
+    static tex_t ins[2], outs[2]; static id<MTLTexture> depth; static float *truths[2]; static uint8_t *mem;
+    tex_t *pin = &ins[one], *pout = &outs[one];
+    if (!mem) {
         MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:IW height:IH mipmapped:NO];
         dd.storageMode = MTLStorageModePrivate; dd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         depth = [g_dev newTextureWithDescriptor:dd]; res_add(depth); res_commit(); fill(depth, MTLClearColorMake(0, 0, 0, 0), 0.99);
-        truth = malloc(sizeof(float) * OW * OH);
-        for (int y = 0; y < OH; y++) for (int x = 0; x < OW; x++) { double s = 0; for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) s += scene_at((x + (i + 0.5) / 8) * IW / OW, (y + (j + 0.5) / 8) * IH / OH, IW, IH); truth[y * OW + x] = (float)(s / 64); }
         if (posix_memalign((void **)&mem, getpagesize(), 16384)) abort(); memset(mem, 0, 16384); mtl_pool_add(mem, 16384);
         memcpy(mem, view, 48); memcpy(mem + 0x30, vp, 64); memcpy(mem + 0x70, k_proj, 64);
     }
+    if (!truths[one]) {
+        *pin = texture(one ? 93 : 91, IW, IH, NVN_FORMAT_RGBA16F); *pout = texture(one ? 94 : 92, OW, OH, NVN_FORMAT_RGBA16F); pout->d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+        mtl_reg_tex(tin, pin, NULL); mtl_reg_image(tout, pout, NULL);
+        float *truth = truths[one] = malloc(sizeof(float) * OW * OH);
+        for (int y = 0; y < OH; y++) for (int x = 0; x < OW; x++) { double s = 0; for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) s += scene_at((x + (i + 0.5) / 8) * IW / OW, (y + (j + 0.5) / 8) * IH / OH, IW, IH); truth[y * OW + x] = (float)(s / 64); }
+    }
+    float *truth = truths[one]; tex_t in = *pin, out = *pout;
     g_jit.on = with; g_mfx_jit_sign = sign; g_jit.last_ok = 0; g_jit.idx = 0; g_mts.fresh = 1; g_mm.prev_ok = 0;   // the scaler's history starts again
     double err = 0; int n = 0; *mv_max = 0;
     for (int f = 0; f < 48; f++) {
         mtl_set_frame(f0 + f);
-        memset(&S, 0, sizeof S); S.tex[5][0] = 711; S.img[5][1] = 712; S.has_vp = 1; S.vp[0][2] = IW; S.vp[0][3] = IH;
+        memset(&S, 0, sizeof S); S.tex[5][0] = tin; S.img[5][1] = tout; S.has_vp = 1; S.vp[0][2] = IW; S.vp[0][3] = IH;
         { const uint32_t rects[8] = {0, 0, IW - 1, IH - 1, 0, 0, OW - 1, OH - 1}; memcpy(S.push[1], rects, sizeof rects); }
         mfx_cand_clear(); mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++;
         S.ubo[0][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)mem, .size = 2432};   // the scene pass: its depth and camera, and the frame's jitter
@@ -240,6 +245,8 @@ static double jitter_run(NvShader *named, int with, double sign, const float *vi
         int drawn = up_mfx_wanted(named) && up_mfx_encode(named);
         CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
         CHECK(drawn && g_mm.ok, "the temporal scaler draws the frame, with motion vectors");
+        if (one) CHECK(g_mts.n && g_mts.key[0] == (NSUInteger)OW && g_mts.key[2] == (NSUInteger)OW && g_mts.sc.inputContentWidth == (NSUInteger)IW, "a 1:1 dispatch: the scaler made at the output's size, its content the input's (scale 1)");
+        if (one && with && g_jit.act) CHECK(g_jit.phases == 8, "at a ratio of 1 the jitter has 8 phases");
         if (with && g_jit.act)   // (with the game's own offset, which the camera read from these matrices puts at a few thousandths of a pixel: float rounding)
             CHECK(fabs(g_mts.jx - sign * (g_jit.px + g_mm.cam.jx * IW / 2)) < 1e-4 && fabs(g_mts.jy + sign * (g_jit.py + g_mm.cam.jy * IH / 2)) < 1e-4 && fabs(g_mm.cam.jx * IW / 2) < 0.01,
                   "MetalFX is given the frame's offset in pixels of the content, y down the rows");
@@ -254,8 +261,8 @@ static double jitter_run(NvShader *named, int with, double sign, const float *vi
             if (f == 47) { double r[3] = {0}; int rc[3] = {0};   // by feature: the near-horizontal edge (the vertical jitter's), the near-vertical one, the thin line
                 for (int y = 8; y < OH - 8; y++) for (int x = 8; x < OW - 8; x++) { double d = fabs(o[y * OW + x] - truth[y * OW + x]);
                     int k = fabs(y - OH * 0.55) < 25 && x < OW * 0.75 ? 0 : fabs(x - OW * 0.8) < 25 ? 1 : y < OH * 0.5 ? 2 : -1; if (k >= 0) { r[k] += d; rc[k]++; } }
-                fprintf(stderr, "%s: mean difference at the near-horizontal edge %.5f, the near-vertical edge %.5f, the thin line %.5f\n", !with ? "no jitter" : sign > 0 ? "jitter" : "jitter, the other sign",
-                        r[0] / rc[0], r[1] / rc[1], r[2] / rc[2]); }
+                fprintf(stderr, "%s%s: mean difference at the near-horizontal edge %.5f, the near-vertical edge %.5f, the thin line %.5f\n", one ? "1:1, " : "",
+                        !with ? "no jitter" : sign > 0 ? "jitter" : "jitter, the other sign", r[0] / rc[0], r[1] / rc[1], r[2] / rc[2]); }
             free(o); err += s / c; n++;
         }
     }
@@ -385,11 +392,28 @@ int main(void) { @autoreleasepool {
     if (temporal && DM_GAME_CAM_JITTER_N) {   // the camera jitter (DM_MFX_JITTER): its blocks, then a static scene through the temporal scaler without it, with it, and with the other sign
         int keep = g_mfi_on; g_mfi_on = 0;
         jitter_blocks(depth, view, vp, &cam);
-        double mv[3], e[3] = {jitter_run(named, 0, 1, view, vp, 10000, &mv[0]), jitter_run(named, 1, 1, view, vp, 20000, &mv[1]), jitter_run(named, 1, -1, view, vp, 30000, &mv[2])};
+        double mv[3], e[3] = {jitter_run(named, 0, 1, view, vp, 10000, &mv[0], 0), jitter_run(named, 1, 1, view, vp, 20000, &mv[1], 0), jitter_run(named, 1, -1, view, vp, 30000, &mv[2], 0)};
         fprintf(stderr, "a static scene through the temporal scaler, mean difference from the supersampled scene: no jitter %.5f, jitter %.5f, jitter with the other sign %.5f; largest motion vector with jitter %g px\n", e[0], e[1], e[2], mv[1]);
         CHECK(e[1] < 0.8 * e[0], "with the jitter the edges converge toward the supersampled scene (a fifth closer than without)");
         CHECK(e[2] > e[1] * 1.2, "the other sign is further off: MetalFX takes the picture's move (in pixels, y down the rows)");
         CHECK(mv[1] < 1e-3, "the static camera's motion vectors are zero with the jitter (they come from the unjittered matrices)");
+        // A 1:1 dispatch (Bananza's Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx): the temporal scaler at scale 1, anti-aliasing the output's size. Without the jitter the
+        // output keeps the scene's stair steps; with it the edges converge toward the scene supersampled at the same pixels
+        double m1[2], e1[2] = {jitter_run(named, 0, 1, view, vp, 40000, &m1[0], 1), jitter_run(named, 1, 1, view, vp, 50000, &m1[1], 1)};
+        fprintf(stderr, "1:1 (480x270 into 480x270), mean difference from the supersampled scene: no jitter %.5f, jitter %.5f; largest motion vector with jitter %g px\n", e1[0], e1[1], m1[1]);
+        CHECK(e1[1] < 0.8 * e1[0], "1:1: with the jitter the edges converge toward the anti-aliased scene (a fifth closer than without)");
+        CHECK(m1[1] < 1e-3, "1:1: the static camera's motion vectors are zero with the jitter");
+        // A 1:1 frame the temporal scaler cannot draw (no scene depth or camera: a menu): the input copied into the output, not the spatial scaler nor the game's network
+        tex_t sin_ = texture(95, 64, 36, NVN_FORMAT_RGBA16F), sout = texture(96, 64, 36, NVN_FORMAT_RGBA16F); sout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+        mtl_reg_tex(715, &sin_, NULL); mtl_reg_image(716, &sout, NULL);
+        fill(tex_mtl(&sin_), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); fill(tex_mtl(&sout), MTLClearColorMake(0, 0, 0, 1), 0);
+        memset(&S, 0, sizeof S); S.tex[5][0] = 715; S.img[5][1] = 716; { const uint32_t r[8] = {0, 0, 63, 35, 0, 0, 63, 35}; memcpy(S.push[1], r, sizeof r); }
+        mfx_cand_clear(); uint64_t same = g_up_mfx_same; mtl_set_frame(60000);
+        mtl_sub_begin(); int copied = up_mfx_wanted(named) && up_mfx_encode(named);
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the 1:1 copy's submission completes");
+        float *o = read_rgba16f(tex_mtl(&sout));
+        CHECK(copied && g_up_mfx_same == same + 1 && fabs(o[0] - 0.5) < 1e-3 && fabs(o[64 * 36 - 1] - 0.5) < 1e-3, "a 1:1 frame without the scene's depth or camera: its input copied into the output");
+        free(o);
         g_mfx_jit_sign = 1; g_jit.on = 0; g_mfi_on = keep;
     }
     printf("t_mfx (%s%s): %d checks, %d failed\n", temporal ? "temporal" : "spatial / game", interp ? ", interpolation in SDR and HDR" : "", checks, failed);

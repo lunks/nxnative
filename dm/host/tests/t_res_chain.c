@@ -81,6 +81,18 @@ int main(void) {
     softest_label = NULL; softest_value = NULL;
     unsetenv("DM_UPSCALE_DYNAMIC"); ratio_label = "Native (1.0, no upscaler), fixed"; ratio_value = "1.0";
     expect(chain(1), "upscale rate 1 fixed, start 1 (Native (1.0, no upscaler), fixed); scene 2880x1620; upscaler none (rate 1.0: the game turns its upscaler off)", "Native: the window's size, no upscaler");
+    // Native (MetalFX AA): rate 1.0 with the upscaler kept on, MetalFX's temporal scaler at the output's size, the mip bias DM_NATIVE_MIP_BIAS chose
+    setenv("DM_UPSCALER", "metalfx-temporal", 1); ratio_label = "Native (MetalFX AA), fixed"; ratio_value = "native-mfx"; unsetenv("DM_NATIVE_MIP_BIAS");
+    expect(chain(1), "upscale rate 1 fixed, start 1 (Native (MetalFX AA), fixed); scene 2880x1620; upscaler metalfx-temporal at the output's size: native with MetalFX AA, mip bias 0",
+           "Native (MetalFX AA): the window's size through the temporal scaler, mip bias 0");
+    setenv("DM_NATIVE_MIP_BIAS", "-0.5", 1);
+    expect(chain(0), "output 2304x1296; upscale rate 1 fixed, start 1 (Native (MetalFX AA), fixed); scene 2304x1296; upscaler metalfx-temporal at the output's size: native with MetalFX AA, mip bias -0.5",
+           "Native (MetalFX AA) with the game's -0.5 mip bias, at the game's own output");
+    setenv("DM_UPSCALE_DYNAMIC", "1", 1); ratio_label = "Native (MetalFX AA), dynamic: the sharpest"; softest_label = "Balanced (1.69)"; softest_value = "1.6875"; unsetenv("DM_NATIVE_MIP_BIAS");
+    expect(chain(1), "upscale rate 1 (sharpest) to 1.6875 (softest), dynamic, start 1 (Native (MetalFX AA), dynamic: the sharpest; Balanced (1.69)); scene 2880x1620 to 1707x960; "
+                     "upscaler metalfx-temporal: native with MetalFX AA at the sharpest (mip bias 0), upscaling when softer", "Native (MetalFX AA) as the sharpest of a dynamic range");
+    unsetenv("DM_UPSCALE_DYNAMIC"); softest_label = NULL; softest_value = NULL; setenv("DM_UPSCALER", "metalfx", 1);
+    ratio_label = "Native (1.0, no upscaler), fixed"; ratio_value = "1.0";
     opmode = 0;
     expect(chain(1), "resolution: handheld, output 1920x1080; upscale rate 1 fixed", "handheld: its own output, single upscale or not");
     opmode = 1; ratio_label = NULL; ratio_value = NULL; unsetenv("DM_UPSCALER");
