@@ -2663,6 +2663,8 @@ def var_pairs(found):
         if g: var[g][st] = skey(ctl, code)
     return {(v['vs'], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() if 'vs' in v and 'ps' in v}
 
+WHOLE_RED = 1 << 30   # a loose file this large scanned whole gets a red line first (Star Fox's 14.5 GB data.zip, before zip_jobs read its VZIP header, held one worker for minutes)
+
 def scan_file(args):
     """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, 'defer' (no type tree, scanned again in the second pass), or ('unreadable', why).
     A file no reader can read (a format revision the reader does not know: its red line, or the exception it raised) is left out, and the split goes on: one such
@@ -2766,6 +2768,8 @@ def scan_file_in(args):
                 if '.fx' in entry[0] or '/shaders/' in entry[0] or entry[0].endswith(('.vs.bin', '.ps.bin', '.fs.bin')):
                     found += phyre_shaders(vbf.read(f, entry), f'/{rel}/{entry[0]}')
         return rel, uniq_keys(found), var_pairs(found), trees
+    if (n := os.path.getsize(path)) >= WHOLE_RED:   # no reader took it: one worker reads all of it into memory and scans it, which takes minutes and shows no count
+        print(f'[RED] /{rel}: {n / 2**30:.2f} GB scanned whole, by one worker: no archive reader takes it (head {head[:8].hex()})', flush=True)
     if head[:4] == ZSTD_MAGIC: d = unzs(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     else:
         with open(path, 'rb') as f: d = f.read()
@@ -2819,10 +2823,12 @@ def scan_batch(jobs):   # scan_file over a batch of jobs, in a pool worker
     return [scan_file(j) for j in jobs]
 
 
-def pooled(ex, jobs, total, start=0, chunk=1):
+def pooled(ex, jobs, total, start=0, chunk=1, single=0):
     """scan_file over jobs in the pool, the results in job order, with a 'progress: <done>/<total>' line at most twice a second (the NSP script shows it as
-    the stage's count). The count is of the jobs finished in any order: counted in order it would stall behind one slow archive range while the others finish"""
-    batches = [jobs[i:i + chunk] for i in range(0, len(jobs), chunk)]
+    the stage's count). The count is of the jobs finished in any order: counted in order it would stall behind one slow archive range while the others finish.
+    The first single jobs (archive ranges, each a long one) go one to a batch, the others chunk to a batch: all in one queue, so the loose files start as soon as a worker
+    is free, not after the slowest archive range (the count stood still while the last ranges ran, with the other workers idle)"""
+    batches = [jobs[i:i + 1] for i in range(min(single, len(jobs)))] + [jobs[i:i + chunk] for i in range(min(single, len(jobs)), len(jobs), chunk)]
     futures = {ex.submit(scan_batch, b): len(b) for b in batches}
     done, pending, shown = start, set(futures), 0.0
     while pending:
@@ -2896,7 +2902,7 @@ def main():
     files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in cras and p not in zips and p not in arhs and p not in fbs]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         n = len(big) + len(files)
-        results += pooled(ex, big, n) + pooled(ex, files, n, len(big), chunk=16)
+        results += pooled(ex, big + files, n, chunk=16, single=len(big))
     trees, defer = {}, []
     for rel, uniq, pr, extra in results:
         if extra == 'defer': defer.append(rel)
