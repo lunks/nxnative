@@ -7,10 +7,10 @@ using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
 
 namespace Ryujinx.Graphics.Shader.Instructions
 {
-    // Ampere warp-cooperative matrix instructions (HMMA, LDSM, MOVM) and packed-half compares, translated per thread. A matrix fragment is spread over the warp's 32
-    // lanes in NVIDIA's documented layouts (PTX mma.m16n8k16 / ldmatrix / movmatrix): lane L holds rows L / 4 (and L / 4 + 8) at columns 2 (L % 4) and + 1. Each lane
-    // gathers what it needs from the lanes that hold it with subgroup shuffles (Metal SIMD-groups are 32 wide, as the warp), and computes its own part. Field
-    // positions: Mesa NAK sm70_encode.rs (OpHmma, OpLdsm, OpMovm, OpHSetP2, OpHSet2, OpHMnMx2).
+    // Ampere warp-cooperative matrix instructions (HMMA, IMMA, LDSM, MOVM) and packed-half compares, translated per thread. A matrix fragment is spread over the warp's 32
+    // lanes in NVIDIA's documented layouts (PTX mma.m16n8k16 / m16n8k32 / ldmatrix / movmatrix): lane L holds rows L / 4 (and L / 4 + 8) at columns 2 (L % 4) and + 1. Each
+    // lane gathers what it needs from the lanes that hold it with subgroup shuffles (Metal SIMD-groups are 32 wide, as the warp), and computes its own part. Field
+    // positions: Mesa NAK sm70_encode.rs (OpHmma, OpImma, OpLdsm, OpMovm, OpHSetP2, OpHSet2, OpHMnMx2).
     static partial class InstEmit
     {
         public static void RegisterAmpereTensor(AmpereRegistrar x)
@@ -18,6 +18,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             const InstProps N = InstProps.None;
 
             x(0x23c, InstName.Hfma2, AHmma, N);
+            x(0x237, InstName.Idp, AImma, N);
             x(0x83b, InstName.Lds, ALdsm, N);
             x(0x23a, InstName.Mov, AMovm, N);
             x(0x3a1, InstName.Vote, AMatch, N);
@@ -238,6 +239,119 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 {
                     context.Copy(Register(x.Rd + row, RegisterType.Gpr), context.PackHalf2x16(acc[row * 2], acc[row * 2 + 1]));
                 }
+            }
+        }
+
+        // IMMA Rd, Ra, Rb, Rc: D (m x 8, s32) = A (m x k) * B (k x 8) + C in integers, PTX mma.sync .row.col.s32 on .s8 / .u8 (or .s4 / .u4) sources. Shape at 75 and 85..86
+        // (0 m8n8k16, 2 m8n8k32, 4 m16n8k16, 5 m16n8k32, 6 m16n8k64), A and B signed (76, 78), 4-bit elements (83, 84), .SAT (82: PTX .satfinite, the sum clamped to the s32 range;
+        // else it wraps); 74 is B column-major, PTX's only form. Lane L, g = L / 4, t = L % 4, e elements a register (4 bytes or 8 nibbles, element i at bits 32 / e * i): A regs
+        // (row g, and g + 8 on m16, alternating) x (k e t .. e t + e - 1, + 4e for each further pair), B regs (k the same, + 4e for each further one) x (column g), C / D (row g / g + 8)
+        // x (columns 2t, 2t + 1).
+        // nxnative: Star Fox's character networks (navi_archive_2604ki8_mixedtrqlrki8_mixedtrqllrki8_nvn2_glsl_b1.bin, 84 of its 165 compute shaders, 3,550 IMMAs, up to 216 a
+        // shader) use IMMA.16832.S8.S8 alone, without .SAT: 001fe40000405cff000000182c187237 is R24, R44, R24, RZ (09e46021dd6eb679), and D lies over A, B or C in others (every
+        // source is gathered before D is written). Each product fits in 17 bits and a dot product of k of them in s32, so the sum is exact and only C + sum can overflow.
+        public static void AImma(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            int size = x.Bits(75, 76) | (x.Bits(85, 87) << 1);
+            int bits = x.Bit(83) ? 4 : 8;
+            bool aSigned = x.Bit(76), bSigned = x.Bit(78), sat = x.Bit(82);
+
+            // The shapes and element sizes PTX has: 8 bits on m8n8k16, m16n8k16 and m16n8k32; 4 bits on m8n8k32, m16n8k32 and m16n8k64; A and B of one size
+            if (!x.Bit(74) || x.Bit(83) != x.Bit(84) || (size, bits) is not ((0, 8) or (4, 8) or (5, 8) or (2, 4) or (5, 4) or (6, 4)))
+            {
+                throw AFail(context, $"IMMA size {size}, {(x.Bit(83) ? 4 : 8)}-bit A, {(x.Bit(84) ? 4 : 8)}-bit B, B column-major {x.Bit(74)}");
+            }
+
+            int rows = size >= 4 ? 2 : 1;                                     // row blocks of 8: g, and g + 8 on m16
+            int k = size switch { 0 or 4 => 16, 2 or 5 => 32, _ => 64 };
+            int e = 32 / bits;                                                  // elements a register
+            int span = 4 * e;                                                   // the k one register covers over a lane group of 4
+            int aRegs = rows * k / span;
+            int bRegs = k / span;
+
+            Operand lane = ALaneId(context);
+            Operand g = context.ShiftRightU32(lane, Const(2));
+            Operand t = context.BitwiseAnd(lane, Const(3));
+
+            Operand Element(Operand v, int i, bool signed)
+            {
+                return signed ? context.BitfieldExtractS32(v, Const(bits * i), Const(bits)) : context.BitfieldExtractU32(v, Const(bits * i), Const(bits));
+            }
+
+            // A rows g (and g + 8), every k: from lanes 4g + j (j = 0..3), which hold k = e j .. e j + e - 1 (+ span for each further register or pair)
+            Operand[,] a = new Operand[rows, k];
+
+            for (int j = 0; j < 4; j++)
+            {
+                Operand src = context.IAdd(context.ShiftLeft(g, Const(2)), Const(j));
+
+                for (int r = 0; r < aRegs; r++)
+                {
+                    Operand v = context.Shuffle(AGpr(x.Ra + r), src);
+                    int row = r % rows, kb = r / rows * span + e * j;
+
+                    for (int i = 0; i < e; i++)
+                    {
+                        a[row, kb + i] = Element(v, i, aSigned);
+                    }
+                }
+            }
+
+            // B columns 2t and 2t + 1, every k: from lanes 4 col + j
+            Operand[,] b = new Operand[2, k];
+
+            for (int c = 0; c < 2; c++)
+            {
+                Operand col = context.IAdd(context.ShiftLeft(t, Const(1)), Const(c));
+
+                for (int j = 0; j < 4; j++)
+                {
+                    Operand src = context.IAdd(context.ShiftLeft(col, Const(2)), Const(j));
+
+                    for (int r = 0; r < bRegs; r++)
+                    {
+                        Operand v = context.Shuffle(AGpr(x.Rb + r), src);
+                        int kb = r * span + e * j;
+
+                        for (int i = 0; i < e; i++)
+                        {
+                            b[c, kb + i] = Element(v, i, bSigned);
+                        }
+                    }
+                }
+            }
+
+            // C / D: (row, column) of this lane's outputs, 2 rows x 2 columns on m16, 1 x 2 on m8
+            Operand[] d = new Operand[2 * rows];
+
+            for (int i = 0; i < d.Length; i++)
+            {
+                int row = i >> 1, c = i & 1;
+                Operand sum = context.IMultiply(a[row, 0], b[c, 0]);
+
+                for (int kk = 1; kk < k; kk++)
+                {
+                    sum = context.IAdd(sum, context.IMultiply(a[row, kk], b[c, kk]));
+                }
+
+                Operand acc = AGpr(x.Rc + i);
+                Operand res = context.IAdd(acc, sum);
+
+                if (sat)
+                {
+                    // Signed overflow: C and the sum of one sign, the result of the other; then the bound on C's side
+                    Operand overflow = context.ICompareLess(context.BitwiseAnd(context.BitwiseExclusiveOr(acc, res), context.BitwiseExclusiveOr(sum, res)), Const(0));
+                    Operand bound = context.ConditionalSelect(context.ICompareLess(acc, Const(0)), Const(int.MinValue), Const(int.MaxValue));
+                    res = context.ConditionalSelect(overflow, bound, res);
+                }
+
+                d[i] = res;
+            }
+
+            for (int i = 0; i < d.Length && x.Rd + i < RegisterConsts.RegisterZeroIndex; i++)
+            {
+                context.Copy(Register(x.Rd + i, RegisterType.Gpr), d[i]);
             }
         }
 

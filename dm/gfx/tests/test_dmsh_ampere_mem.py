@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Ampere instructions through the offline translator (dmsh_xlate, arch sm86): SUATOM (0x593), the image atomic Donkey Kong Bananza's agl technique compute shaders (agl_technique_pfx) take an
-append counter with; shared memory's scaled address, IMAD.HI and ATOMS.CAS; and the instructions tested on the atomic's result below. Needs DMSH_TEST_XLATE (the translator) like the other translator tests."""
+append counter with; shared memory's scaled address, IMAD.HI, ATOMS.CAS and ATOMG.CAS; and the instructions tested on the atomic's result below. Needs DMSH_TEST_XLATE (the translator) like the other translator tests."""
 import json, os, re, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
@@ -18,8 +18,9 @@ class Translated(unittest.TestCase):
     def translate(self, code, **extra):
         with tempfile.TemporaryDirectory(prefix='ampere_mem_') as d:
             work = Path(d); (work / 'k.bin').write_bytes(code)
-            # c0 layout (QueryAmpereComputeC0Layout): no uniform or storage buffers, 3 texture handles from 0x10, image handles from 0x28 (word 12 = image slot 1), 0x40 bytes
-            job = [dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=[0, 0, 3, 0x40, 0], **extra)]
+            # c0 layout (QueryAmpereComputeC0Layout): no uniform or storage buffers, 3 texture handles from 0x10, image handles from 0x28 (word 12 = image slot 1), 0x40 bytes;
+            # extra replaces any of these
+            job = [dict(dict(key='k', stage='cs', arch='sm86', code=str(work / 'k.bin'), tex={}, img={}, attr={}, fout={}, local=[32, 1, 1], debug=True, nvn2_cs=[0, 0, 3, 0x40, 0]), **extra)]
             (work / 'jobs.json').write_text(json.dumps(job))
             r = subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -168,6 +169,34 @@ def mov(rd, value):   # MOV Rd, imm32: values the tests can see in the output
 
 def sts(offset, rb):   # STS.U32 [RZ + offset], Rb: keeps its result
     return inst(0x000fe80000000800, offset << 40 | rb << 32 | 0xff << 24 | 0x7388)
+
+
+class AtomgCas(Translated):
+    """ATOMG.CAS (0x3a9) on a storage buffer, in Star Fox's encodings: its character compute shader 9ac392648752d3d2 takes slots from a counter up to a bound, retrying while the
+    exchange returns another value than the one it expected (+0x2f0..+0x330). Rd is the old value"""
+    ULDC = (0x000fe40000000a00, 0x0000100000067ab9)      # ULDC.64 UR6, c[0][0x40]: storage slot 0 with this job's c0 layout (3 uniform buffers, 1 storage buffer)
+    ADDR_LO = (0x000fe2000f8e00ff, 0x00000006ff027e24)   # IMAD.U32 R2, RZ, RZ, UR6
+    ADDR_HI = (0x001fca000f8e00ff, 0x00000007ff037e24)   # IMAD.U32 R3, RZ, RZ, UR7
+    CAS = (0x000ea400001ee105, 0x00000004020273a9)       # ATOMG.E.CAS.STRONG.GPU PT, R2, [R2.64], R4, R5; its result arrives on write barrier 2
+    KEEP = (0x004fe80000000800, 0x00002002ff007388)      # STS.U32 [RZ + 0x20], R2, waiting on barrier 2
+
+    def msl(self, cas):
+        code = mov(4, 5) + mov(5, 6) + b''.join(inst(*c) for c in (self.ULDC, self.ADDR_LO, self.ADDR_HI, cas, self.KEEP)) + inst(*EXIT)
+        return self.translate(code, shared=0x40, nvn2_cs=[3, 1, 0, 0x50, 0])
+
+    def test_exchange_on_the_storage_buffer(self):   # expected R4 = 5, new value R5 = 6, at the start of storage slot 0
+        msl = self.msl(self.CAS)
+        self.assertRegex(msl, r'atomic_compare_exchange_weak_explicit\(\(device atomic_uint\*\)&\(\*spvDescriptorSet0\.cp_s0\)\._m0\[0\], &\w+, 6u,')
+        self.assertRegex(msl, r'(_\d+) = 5u;\s*\} while \(!atomic_compare_exchange')
+
+    def test_rd_is_the_old_value(self):   # what the exchange leaves in its expected value is stored as it is: no comparison makes it a flag, as ATOMS.CAS's is
+        msl = self.msl(self.CAS)
+        old = re.search(r'(_\d+) = 5u;\s*\} while', msl).group(1)
+        self.assertRegex(msl, rf'uint (_\d+) = {old};\s*_\d+\[8\] = \1;')
+
+    def test_another_form_is_refused(self):   # 64-bit (type 2 at 73..76)
+        with self.assertRaises(AssertionError) as e: self.msl((self.CAS[0] | 2 << 9, self.CAS[1]))
+        self.assertIn('ATOMG.CAS type 2', str(e.exception))
 
 
 class Shared(Translated):
