@@ -146,6 +146,10 @@ DM_EFFECTS_RES	game	Game default (half)	-
 DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x424a64	1E2C100B	1E2E100B
 DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x423c74	1E2C1003	1E2E1003
 DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x423d64	1E2A1002	1E2E1002
+# The quarter-res ReduceBuffer (main+0x163e130, "gsys::RenderBuffer::color(ReduceBuffer)") is not a ladder level: it is allocated at the level-1 size x 0.5 (fmov s2,#0.5 at main+0x163e204)
+# but drawn with the level-2 size as its viewport (main+0x12045c, the frame at view+0x4058) and composited into the level-1 buffer by normalized coordinates (main+0x3273a8). With the ladder at
+# 1.0 it would be half its viewport: only the top-left quarter of its particles drawn, then magnified 2x from the top-left corner. #1.0 keeps it the level-2 size, as at the default (419x235 at 1676x943)
+DM_EFFECTS_RES	full	Full (half- and quarter-res effects at the render size)	main	e25c90c1c136638885659fd55bf8a03b	0x163e204	1E2C1002	1E2E1002
 # HDR highlights (DM_HDR=1, the HDR setting; no row of its own; README.md, HDR highlights): agl's alHdrCompose takes each channel through a normalised logistic of steepness K before its
 # shoulder (n(c) = (s(K(c-w)) - s(-Kw)) / (s(K(1-w)) - s(-Kw)), w = DRSigmoidMid 0.5, L = 1 - exp(-luma(n)), shoulder knee 0.65, exponent 0.75, top M = peak / paper white).
 # main+0x1b9af0 ldr s1,[x11,#0x18] loads K (DRSigmoidGain, the stage environment's env+0x708: the class default 1.0 in every Env archive of v458752, written by nothing at run time),

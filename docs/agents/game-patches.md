@@ -68,7 +68,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 125 | `build` → `game` ×2 |
+| [Donkey Kong Bananza](#donkey-kong-bananza) | 0 | 0 | 1 | 0 | 0 | 126 | `build` → `game` ×2 |
 | [EA SPORTS FC 27](#ea-sports-fc-27) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
 | [FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition](#final-fantasy-crystal-chronicles-remastered-edition) | 8 | 0 | 0 | 0 | 0 | 0 | `build` → `engine` |
 | [FINAL FANTASY TACTICS - The Ivalice Chronicles](#final-fantasy-tactics---the-ivalice-chronicles) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -393,6 +393,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x424a64` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2C100B` → `1E2E100B` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x423c74` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2C1003` → `1E2E1003` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x423d64` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2A1002` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
+  - setting patch `main+0x163e204` (`DM_EFFECTS_RES=full`, Full (half- and quarter-res effects at the render size)): `1E2C1002` → `1E2E1002` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.5 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2C1001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.4375 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2B9001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
   - setting patch `main+0x1b9af0` (`DM_HDR=1`, K 0.375 (modelled ceiling at least 98 % of the peak)): `BD401961` → `1E2B1001` ([setting_patches.tsv](../../dm/games/040074A01BF12000/setting_patches.tsv))
