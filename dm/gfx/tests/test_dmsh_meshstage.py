@@ -250,11 +250,13 @@ fragment main0_out main0(main0_in in [[stage_in]])
 """)
         self.assertEqual(mask, 1)
 
-    def test_smooth_input_gets_none(self):
-        self.assertIsNone(self.fs_uint(self.SRC % ('', '_26'))[0])
+    # Since PR #1232 every pixel shader with float colour outputs gets the integer entry (the host takes it for an integer attachment, keeping the output's bits), so a
+    # smooth input or a value computed from a flat one gets it too, where it used to get none
+    def test_smooth_input_gets_the_entry_too(self):
+        self.assertIn('main0_u(', self.fs_uint(self.SRC % ('', '_26'))[0])
 
-    def test_computed_from_a_flat_input_gets_none(self):
-        self.assertIsNone(self.fs_uint(self.SRC % (', flat', '_26 * 2.0'))[0])
+    def test_computed_from_a_flat_input_gets_the_entry_too(self):
+        self.assertIn('main0_u(', self.fs_uint(self.SRC % (', flat', '_26 * 2.0'))[0])
 
 
 if __name__ == '__main__':
