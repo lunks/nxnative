@@ -49,9 +49,7 @@ DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	main	e25c90c1c136638885659fd55bf8
 # dispatch runs 1:1 and MetalFX's temporal scaler draws it; only with DM_UPSCALER=metalfx-temporal (no row holds otherwise). At rate 1.0 the scene size function (main+0x422e80)
 # stores table index 0 and NDSR's execute (main+0x325a80) then runs only its SMAA into the output; four words in the function's floor of the width (a branch for negative
 # sizes, dead) store index 0 as 1 (cmp w9,#0; csinc w11,w9,wzr,ne; str w11,[x0,#0x10]; nop) while the size keeps the index-0 path (cbz w9 at main+0x422f48): the scene at
-# the output's size, network entry 0 dispatched 1:1. The mip bias stays 0, the game's at 1.0. DM_NATIVE_MIP_BIAS=-0.5 keeps the -0.5 of its upscaled rates: the controller's
-# tail takes 1.0 as upscaling (b.le -> b.lt at main+0x38df3c, the turn-off b.eq at main+0x38df4c -> nop), and its early return (main+0x38de58) goes through a test of the
-# bias flag (ctrl+8 bit 3) in the snap loop the store no longer runs (main+0x38ded4-0x38dee0; fixed: the loop skipped at main+0x38deb8), so the tail runs once and sets it
+# the output's size, network entry 0 dispatched 1:1. The mip bias is DM_MIP_BIAS's (below): the game's 0 at 1.0 by default, -0.5 with DM_NATIVE_MIP_BIAS=-0.5
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	-
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2E1008	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1
@@ -72,14 +70,6 @@ DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f0c	1A9FA7EB	1A9F152B	DM_UPSCALER=metalfx-temporal
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f10	5E21D842	B900100B	DM_UPSCALER=metalfx-temporal
 DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x422f20	4B0B014A	D503201F	DM_UPSCALER=metalfx-temporal
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38df3c	54000C0D	54000C0B	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38df4c	54000C20	D503201F	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38de58	54000201	1400001F	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38ded4	54000140	54FFFE21	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38ded8	F100219F	B9400A6A	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38dedc	9100058D	361FFDEA	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38dee0	9A89316C	17FFFFDF	DM_UPSCALER=metalfx-temporal&DM_NATIVE_MIP_BIAS=-0.5
-DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA), mip bias -0.5	main	e25c90c1c136638885659fd55bf8a03b	0x38deb8	3400028A	14000014	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_DYNAMIC!=1&DM_NATIVE_MIP_BIAS=-0.5
 DM_UPSCALE_RATIO	1.5	Quality (1.5)	-
 DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38dbc4	36081548	140000AA	DM_UPSCALE_DYNAMIC!=1
 DM_UPSCALE_RATIO	1.5	Quality (1.5), fixed	main	e25c90c1c136638885659fd55bf8a03b	0x38de6c	BD402E88	1E2F1008	DM_UPSCALE_DYNAMIC!=1
@@ -174,6 +164,117 @@ DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e25c90c1c136638885659fd55bf8
 DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec4	9100112B	1E201000	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
 DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38dec8	1A9FC54A	1E207908	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
 DM_UPSCALE_SOFTEST	3.0	Performance (2.0): Ultra performance needs a MetalFX upscaler	main	e25c90c1c136638885659fd55bf8a03b	0x38e278	1E204082	1E201002	DM_UPSCALER!=metalfx|metalfx-temporal&DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=1.0|native-mfx|1.5|1.6875|2.0
+# Texture mip bias (README.md, Texture mip bias; static analysis of main e25c90c1... / v458752 and an emulated run of the patched controller). The controller's tail
+# (main+0x38df14-0x38e0e4) runs only when it stores a new rate or the upscaler byte changed (the early return at main+0x38de30-0x38de58). Above 1.0 with the upscaler on and its
+# flag (ctrl+8 bit 3) clear it sets the flag, biases the sampler of every material of the scene's models by -0.5 (main+0x38e280: each sampler's own LOD bias + the bias, new
+# samplers through nn::g3d) and stores -0.5 at [[ctrl+0x48]+0x30a8]; at 1.0 or with the upscaler off it clears the flag and resets them (main+0x749824). A fixed rate R is
+# written at every parameter read (the parameter apply), so a controller (one per scene, its flag 0 at construction, main+0x479f98) finds the rate already R and never runs
+# its tail: fixed Quality, Balanced, Performance and Ultra performance ran with bias 0, and the dynamic range from R until its first step softer.
+# The tail becomes a check that runs at every return: want (0 at 1.0 or with the upscaler off; Game -0.5 above 1.0; NVIDIA -k - log2(rate)) against what this controller
+# applied (the flag and [[ctrl+0x48]+0x30a8]); when they differ, the game's own apply path (main+0x38e060) with want in place of -0.5. Common words: the early return's
+# b.ne -> b to the check's entry (main+0x38de58 -> main+0x38df18, which takes the b.ne first), a stored rate goes to the upscaler bytes and bloom first (main+0x38df14 ->
+# b main+0x38e084), the bloom code's two returns go to the check (main+0x38e00c, main+0x38e024), the check in the old turn-on / turn-off tests (main+0x38df18-0x38df50),
+# the apply's two fmov #-0.5 -> fmov s0,s1 / s9,s1 (main+0x38e064, main+0x38e070), and the store helper main+0x38e0e8 (its one caller) inlined at main+0x38e080. want sits in
+# the old turn-off code (main+0x38e0bc-0x38e0e8; no branch outside the replaced words enters it): Game, fmov #1.0; fcmp; b.le (b.lt with DM_NATIVE_MIP_BIAS=-0.5 at
+# Native (MetalFX AA)); fmov s1,#-0.5. NVIDIA (only with DM_UPSCALER=metalfx-temporal; else Game's words): L = rate's bits - (127 - k) << 23 (k 1 with DM_MFX_JITTER=1, else 0),
+# 0 when L <= k << 23 (rate <= 1.0; lt at Native (MetalFX AA) with jitter: -1), else -(L / 2^23 + 0.34375 (m - m^2)), m the mantissa's fraction: -k - log2(rate) within
+# 0.01, exact at 1, 2 and 4 (DLSS Programming Guide 3.5: NativeBias 0 + log2(render / display) - 1 with jitter). No log2 instruction: each rate change computes its own.
+# The game's own tail is right for its own range and Native (1.0), so Game writes nothing there. An unset DM_MIP_BIAS is game (hle_cheats.c sp_apply)
+DM_MIP_BIAS	game	Game	-
+DM_MIP_BIAS	game	Game: -0.5 while upscaling, 0 at native	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c4	1A8B03EB	54FFF3AD	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx&DM_NATIVE_MIP_BIAS!=-0.5
+DM_MIP_BIAS	game	Game, and -0.5 at Native (MetalFX AA) (DM_NATIVE_MIP_BIAS=-0.5)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c4	1A8B03EB	54FFF3AB	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx&DM_NATIVE_MIP_BIAS=-0.5
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38de58	54000201	14000030	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df14	1E2E1000	1400005C	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df18	F9407A68	54FFFC01	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df1c	F9413909	F9407A69	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df20	39400128	F9413929	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df24	B940052A	3940012A	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df28	B9400A69	B940052B	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df2c	7100011F	2F00E401	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df30	1A9F07EB	3400004A	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df34	1E202100	37000C4B	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df38	0A0A016B	B9400A69	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df3c	54000C0D	36180929	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df40	34000BEB	F940266A	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df44	361808E9	BD70A940	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df48	1E202100	1E212000	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df4c	54000C20	540008A1	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38df50	5280002A	17FFFFC3	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e00c	B4FFF288	B4FFF888	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e024	17FFFF8E	17FFFFBE	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e064	1E3C1000	1E204020	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e070	1E3C1009	1E204029	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e080	9400001A	BD30A800	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e0bc	1E202100	1E2E1000	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c0	1200014A	1E202100	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c8	361FF489	1E3C1001	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	game	Game	main	e25c90c1c136638885659fd55bf8a03b	0x38e0cc	3707F46B	17FFFF9B	DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0|native-mfx
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	-
+DM_MIP_BIAS	nvidia	NVIDIA (temporal), jitter on: -1 - log2(rate)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c0	1200014A	52A7E00D	DM_UPSCALER=metalfx-temporal&DM_MFX_JITTER=1
+DM_MIP_BIAS	nvidia	NVIDIA (temporal), jitter off: -log2(rate)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c0	1200014A	52A7F00D	DM_UPSCALER=metalfx-temporal&DM_MFX_JITTER!=1
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c4	1A8B03EB	54FFF3AD	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c8	361FF489	7160019F	DM_UPSCALER=metalfx-temporal&DM_MFX_JITTER=1
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c8	361FF489	7100019F	DM_UPSCALER=metalfx-temporal&DM_MFX_JITTER!=1
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0cc	3707F46B	54FFF36D	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_RATIO!=native-mfx
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0cc	3707F46B	54FFF36D	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_RATIO=native-mfx&DM_MFX_JITTER!=1
+DM_MIP_BIAS	nvidia	NVIDIA (temporal), -1 at Native (MetalFX AA)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0cc	3707F46B	54FFF36B	DM_UPSCALER=metalfx-temporal&DM_UPSCALE_RATIO=native-mfx&DM_MFX_JITTER=1
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0bc	1E202100	1E26010C	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c4	1A8B03EB	4B0D018C	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0d0	F9403660	1E02A580	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0d4	121C7928	1200598C	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0d8	B9000A68	1E02A582	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0dc	940EEDD2	1F028842	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0e0	2F00E409	1E2AD003	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0e4	17FFFFE5	1F230041	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e0e8	BD30A800	17FFFF94	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38de58	54000201	14000030	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df14	1E2E1000	1400005C	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df18	F9407A68	54FFFC01	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df1c	F9413909	F9407A69	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df20	39400128	F9413929	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df24	B940052A	3940012A	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df28	B9400A69	B940052B	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df2c	7100011F	2F00E401	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df30	1A9F07EB	3400004A	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df34	1E202100	37000C4B	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df38	0A0A016B	B9400A69	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df3c	54000C0D	36180929	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df40	34000BEB	F940266A	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df44	361808E9	BD70A940	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df48	1E202100	1E212000	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df4c	54000C20	540008A1	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38df50	5280002A	17FFFFC3	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e00c	B4FFF288	B4FFF888	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e024	17FFFF8E	17FFFFBE	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e064	1E3C1000	1E204020	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e070	1E3C1009	1E204029	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	NVIDIA (temporal)	main	e25c90c1c136638885659fd55bf8a03b	0x38e080	9400001A	BD30A800	DM_UPSCALER=metalfx-temporal
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38de58	54000201	14000030	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df14	1E2E1000	1400005C	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df18	F9407A68	54FFFC01	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df1c	F9413909	F9407A69	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df20	39400128	F9413929	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df24	B940052A	3940012A	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df28	B9400A69	B940052B	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df2c	7100011F	2F00E401	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df30	1A9F07EB	3400004A	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df34	1E202100	37000C4B	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df38	0A0A016B	B9400A69	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df3c	54000C0D	36180929	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df40	34000BEB	F940266A	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df44	361808E9	BD70A940	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df48	1E202100	1E212000	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df4c	54000C20	540008A1	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38df50	5280002A	17FFFFC3	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e00c	B4FFF288	B4FFF888	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e024	17FFFF8E	17FFFFBE	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e064	1E3C1000	1E204020	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e070	1E3C1009	1E204029	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e080	9400001A	BD30A800	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e0bc	1E202100	1E2E1000	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c0	1200014A	1E202100	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e0c8	361FF489	1E3C1001	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
+DM_MIP_BIAS	nvidia	Game: NVIDIA (temporal) needs DM_UPSCALER=metalfx-temporal	main	e25c90c1c136638885659fd55bf8a03b	0x38e0cc	3707F46B	17FFFF9B	DM_UPSCALER!=metalfx-temporal&DM_UPSCALE_RATIO=1.5|1.6875|2.0|3.0
 # Effects resolution: the render buffer's size ladder (main+0x424a18: three levels, each the previous x s11, fmov s11,#0.5 at main+0x424a64) sizes the half-res effect targets
 # (the refraction scene copy, SSAO and its blur, the blob-shadow mask, half-res particles and depth); their viewports are the render viewport x 0.5 (main+0x423c74) and x 0.25 (main+0x423d64).
 # Full: the ladder's levels and both viewports at the render size, so each target is its viewport's size as in the game (its targets are made each frame at the scene's size). The shaders sample those targets by normalized coordinates with texel sizes from uniforms (README.md, Resolution model)

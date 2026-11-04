@@ -58,6 +58,7 @@ typedef struct {
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
     int single_upscale;        // the build's stub reads state +0x38 (fixups SINGLE_UPSCALE: Donkey Kong Bananza; DM_SINGLE_UPSCALE)
     int match_display;         // its window-size stubs read state +0x3c / +0x40 (fixups MATCH_DISPLAY: Donkey Kong Bananza; DM_SINGLE_UPSCALE=display)
+    int mip_bias_log;          // its stub writes each texture mip bias applied into state +0xa0..+0xa8 (fixups MIP_BIAS_LOG: Donkey Kong Bananza; loader.c dm_mip_bias_tick)
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none

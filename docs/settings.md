@@ -151,7 +151,7 @@ Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic
 Handheld, the output is 1920×1080 either way (Quality 1280×720).
 
 - **Native** draws the output itself. At this rate the game turns its upscaler off and smooths edges with its own SMAA, and MetalFX is off with it: **Game's upscaler** does nothing then.
-- **Native (MetalFX AA)** draws the output itself too, but keeps the game's upscaler step running at the same size, so MetalFX's temporal scaler smooths the edges from frame to frame, the way DLAA does: steadier edges and finer detail than Native, for more GPU time (Native's, plus MetalFX at the output's size). Offered only with **Game's upscaler: MetalFX temporal**; turn on **Anti-aliasing (jitter)** too, without which MetalFX has little to smooth. **Texture mip bias** (shown with it): `0` (default) samples textures as the game does at native resolution, `-0.5` half a level sharper, as the game does while it upscales: more texture detail, and more shimmer for the anti-aliasing to settle. In `env.txt`: `DM_UPSCALE_RATIO=native-mfx`, `DM_NATIVE_MIP_BIAS=-0.5`.
+- **Native (MetalFX AA)** draws the output itself too, but keeps the game's upscaler step running at the same size, so MetalFX's temporal scaler smooths the edges from frame to frame, the way DLAA does: steadier edges and finer detail than Native, for more GPU time (Native's, plus MetalFX at the output's size). Offered only with **Game's upscaler: MetalFX temporal**; turn on **Anti-aliasing (jitter)** too, without which MetalFX has little to smooth. **Mip bias at native** (shown with it, under [Texture mip bias](#texture-mip-bias) Game): `0` (default) samples textures as the game does at native resolution, `-0.5` half a level sharper, as the game does while it upscales: more texture detail, and more shimmer for the anti-aliasing to settle. In `env.txt`: `DM_UPSCALE_RATIO=native-mfx`, `DM_NATIVE_MIP_BIAS=-0.5`.
 - **Ultra performance** is offered only with a MetalFX **Game's upscaler** (the game's own network was never run that far), and only without dynamic resolution.
 - **Without dynamic resolution** the rate is fixed: a busy scene lowers the frame rate instead.
 - **Cost:** GPU time and memory grow with the pixels drawn: Native at the window's size draws 2.95 times the pixels of the game's sharpest docked step.
@@ -171,6 +171,15 @@ Shown with **Render resolution** at Native, Native (MetalFX AA), Quality, Balanc
 Shown while **Dynamic resolution** is on: the softest the game renders when frames run late. **Performance** (2.0) by default, the game's own limit. Options sharper than **Render resolution** are not offered, and when you make **Render resolution** softer than **Softest**, **Softest** follows it and says so under its name. **Ultra performance** (3.0) needs a MetalFX **Game's upscaler**.
 
 - In `env.txt`: `DM_UPSCALE_SOFTEST=1.6875` (`1.0`, `1.5`, `1.6875`, `2.0`, `3.0`). A value sharper than `DM_UPSCALE_RATIO` is raised to it when the game starts, and Ultra performance without MetalFX becomes Performance; the game log says so (`setting DM_UPSCALE_SOFTEST=1.5 (Quality (1.5) raised to Balanced (1.69), the sharpest)`).
+
+### Texture mip bias
+
+Mac only, for Donkey Kong Bananza. How sharp textures are sampled while the game renders smaller than its output. A smaller render picks smaller texture levels, so an upscaled picture loses texture detail unless the textures are sampled sharper.
+
+- **Game** (default): the game's own: half a level sharper whenever it upscales (any **Render resolution** but Native), none at Native. The fixed rates and the start of a dynamic range used to lose that half level; this setting keeps it.
+- **NVIDIA (temporal)**: NVIDIA's rule for a temporal upscaler (DLSS): sharper by the render resolution, log2(render width / output width), set again each time dynamic resolution changes it, and one level more with **Anti-aliasing (jitter)**, whose sub-pixel camera moves let MetalFX recover that detail. Performance (2.0) with jitter samples two levels sharper, Quality (1.5) 1.6, Native (MetalFX AA) one. Offered only with **Game's upscaler: MetalFX temporal**; without it the game log says so and Game is used.
+- **What to look for:** sharper ground and walls at glancing angles. Fine patterns (grates, fences, stripes) may shimmer, more so without jitter. The game biases its 3D models' textures only: 2D menus and HUD text should look as before.
+- In `env.txt`: `DM_MIP_BIAS=nvidia` (`game`, `nvidia`). The game log names it at launch (`resolution: … mip bias …`, `mip bias: nvidia, rate 1.5 → bias -1.586 (jitter on) at launch`) and each rate's first use (`mip bias: nvidia, rate 1.375 → bias -1.456 (jitter on)`).
 
 ## Effects
 
@@ -417,7 +426,8 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Game's upscaler | `DM_UPSCALER` | `game`, `metalfx`, `metalfx-temporal` |
 | [Output resolution](#output-resolution) (Mac) | `DM_SINGLE_UPSCALE` | `1` (Window), `display` (Match display), `0` (default) |
 | [Render resolution](#render-resolution) (Mac) | `DM_UPSCALE_RATIO` | `game` (default), `1.0`, `native-mfx` (with `DM_UPSCALER=metalfx-temporal`), `1.5`, `1.6875`, `2.0`, `3.0` |
-| [Texture mip bias](#render-resolution) (Mac) | `DM_NATIVE_MIP_BIAS` | `0` (default), `-0.5`; with `DM_UPSCALE_RATIO=native-mfx` |
+| [Texture mip bias](#texture-mip-bias) (Mac) | `DM_MIP_BIAS` | `game` (default), `nvidia` (with `DM_UPSCALER=metalfx-temporal`) |
+| [Mip bias at native](#render-resolution) (Mac) | `DM_NATIVE_MIP_BIAS` | `0` (default), `-0.5`; with `DM_UPSCALE_RATIO=native-mfx` and `DM_MIP_BIAS=game` |
 | [Dynamic resolution](#dynamic-resolution) (Mac) | `DM_UPSCALE_DYNAMIC` | `1`, `0` (default) |
 | [Softest](#softest) (Mac) | `DM_UPSCALE_SOFTEST` | `1.0`, `1.5`, `1.6875`, `2.0` (default), `3.0`; not below `DM_UPSCALE_RATIO` |
 | [Effects resolution](#effects-resolution) (Mac) | `DM_EFFECTS_RES` | `game` (default), `full` |

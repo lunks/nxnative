@@ -237,6 +237,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** `samp_by_id` (NVN) and `vkCreateSampler` set it, clamped to that range (Vulkan to the ±15 the device reports as `maxSamplerLodBias`).
 - **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md) (the Vulkan red line). MacNativeGames uses the property for its own MetalFX bias, which pointed to it.
 
+### Texture mip bias for an upscaled render (NVIDIA's rule)
+
+- **Symptom:** while a game renders smaller than its output and upscales (MetalFX in place of its upscaler), textures look as blurry as the render size, not the output; with a stronger bias and no camera jitter, fine patterns shimmer.
+- **Cause:** a smaller render picks smaller mip levels, and an upscaler restores edges, not that texture detail. Games bias their samplers while they upscale (Donkey Kong Bananza: -0.5), and a patch that holds the game's rate can skip where the game sets it. NVIDIA's DLSS Super Resolution Programming Guide (18 December 2025, section 3.5) gives the bias for a temporal upscaler: NativeBias + log2(render width / display width) - 1.0 + epsilon (Performance, 0.5: -2.0), set again whenever dynamic resolution changes the render size (or one of a few biases); backed off toward log2(render / display) if it flickers or shows moiré; high-frequency textures (LED screens, tickers) left at their default; any engine-wide clamp on the bias disabled. The -1 is what the upscaler's sub-pixel camera jitter recovers: without jitter, log2(render / display) alone.
+- **Fix:** per game, at the place the game sets its own bias: a setting patch that keeps the game's bias under the patched rates, and one that applies NVIDIA's rule at each rate the game sets (no log2 instruction: from the float's exponent and mantissa, within 0.01), -log2 without jitter. The host passes every sampler bias to Metal clamped only to Metal's range ([Sampler LOD bias](#sampler-lod-bias)).
+- **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#texture-mip-bias-current-opt-in-not-played-yet) (its fixed rates had run with bias 0 instead of its -0.5).
+
 ### Border colours Metal has no sampler state for
 
 - **Symptom:** whatever a game keeps in a texture that it samples past its edge with clamp-to-border reads the wrong value there: grass flattened along Link's path in Tears of the Kingdom, its bend map filled with "bent" wherever the window scrolled.

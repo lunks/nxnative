@@ -785,6 +785,22 @@ int main(void) {
         EP_RESET(); setenv("DM_T_BIAS", "-0.50", 1);
         CHECK(sp_apply(np, nn) == 1 && rd32(0x1304) == 0x33333333u, "setting patches: a negative value matches whole only (-0.50 is not -0.5)");
         unsetenv("DM_T_RATIO"); unsetenv("DM_T_UP"); unsetenv("DM_T_BIAS"); EP_RESET();
+        // a variable whose value game has rows (Bananza's Game mip bias): unset, it takes game, quietly when no row's condition holds; set, its own value
+        static const setting_patch_t gp[] = {
+            {"DM_T_RATIO", "1.5", "Quality", "main", B1, 0x1300, 0x11111111u, 0x22222222u},
+            {"DM_T_MIP", "game", "Game", "main", B1, 0x1304, 0x33333333u, 0x44444444u, "DM_T_RATIO=1.5"},
+            {"DM_T_MIP", "nvidia", "NVIDIA", "main", B1, 0x1304, 0x33333333u, 0x55555555u, "DM_T_RATIO=1.5"},
+        };
+        const int ng = (int)(sizeof gp / sizeof gp[0]);
+        EP_RESET(); setenv("DM_T_RATIO", "1.5", 1); unsetenv("DM_T_MIP");
+        CHECK(sp_apply(gp, ng) == 2 && rd32(0x1304) == 0x44444444u && dm_setting_patch_applied("DM_T_MIP", &val) && !strcmp(val, "game"),
+              "setting patches: a variable unset takes its value game when that value has rows");
+        EP_RESET(); setenv("DM_T_MIP", "nvidia", 1);
+        CHECK(sp_apply(gp, ng) == 2 && rd32(0x1304) == 0x55555555u, "setting patches: set, the variable's own value");
+        EP_RESET(); unsetenv("DM_T_MIP"); unsetenv("DM_T_RATIO");
+        CHECK(sp_apply(gp, ng) == 0 && rd32(0x1304) == 0x33333333u && !dm_setting_patch_applied("DM_T_MIP", NULL),
+              "setting patches: unset, game's conditions do not hold: nothing written (the game's own code)");
+        EP_RESET();
         #undef EP_RESET
         #undef B1
     }

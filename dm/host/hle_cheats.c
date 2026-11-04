@@ -585,7 +585,7 @@ static uint64_t main_rx_end(void) { static long pg; if (!pg) pg = getpagesize();
 
 // Words of main that a setting patch wrote at launch (dm_setting_patches_apply, below), each with the setting that holds
 // it: a cheat's write over one is refused (the setting wins), and a cheat that stores into one is turned off at load
-#define SP_HELD_MAX 64
+#define SP_HELD_MAX 128   // every word one launch holds (Bananza: about 75 with a dynamic range, the NVIDIA mip bias, HDR and the rest)
 static struct { uint64_t off; char who[96]; } g_sp_held[SP_HELD_MAX]; static int g_sp_nheld;
 static int sp_held_hit(uint64_t off, uint64_t len) {
     for (int i = 0; i < g_sp_nheld; i++) if (g_sp_held[i].off < off + len && off < g_sp_held[i].off + 4) return i;
@@ -1784,7 +1784,8 @@ static void sources_scan(void) {
 // whole or not at all: every word must hold its original and pass the cheats' own write checks (main_refusal: not past the
 // image, the writable alias for code, not a word the rewriter changed or moved), else nothing of the group is written and a
 // [RED] line says why. A value with rows for other builds only is refused the same way: fixed addresses never run on a
-// build they were not found in. A variable unset, or set to a value without rows (the game's own, "game"), writes nothing.
+// build they were not found in. A variable set to a value without rows (the game's own, "game") writes nothing; an unset one
+// takes the value game when that value has rows (a default that is itself a patch: Bananza's Game mip bias), else writes nothing.
 // A row may carry a condition on a quantity the host knows at launch (sp_quantity: the HDR peak ratio it will report) or on another
 // setting's value in the environment (sp_when_env: Bananza's upscale ratio fixed or dynamic, DM_UPSCALE_DYNAMIC; for a variable of the table, the value it
 // wrote), so one value can choose among words: only the rows whose condition holds are written, and two that hold for the same word refuse.
@@ -1891,8 +1892,9 @@ const char *dm_setting_patch_applied(const char *var, const char **value) {
 }
 static const char *sp_applied_value(const char *var) { const char *v = NULL; return dm_setting_patch_applied(var, &v) ? v : NULL; }
 
-// One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written
-static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val) {
+// One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written. dflt: the variable is unset
+// and val is its value game, so no row's condition holding needs no line (the game's own code, as for any unset variable)
+static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val, int dflt) {
     const setting_patch_t *g[SP_HELD_MAX], *first = NULL; int ng = 0, nbuild = 0, conds = 0; char cond[160] = "";
     for (int i = 0; i < n; i++) {
         if (strcmp(t[i].var, var) || strcmp(t[i].value, val)) continue;
@@ -1914,6 +1916,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         return 0;
     }
     if (!ng) {   // conditions none of which holds at this launch (HDR on, but no screen with HDR headroom): the game's own code, as intended
+        if (dflt) return 0;
         LOG("setting %s=%s: no patch row's condition holds (%s): nothing written, the game's own code runs", var, val, cond[0] ? cond : "?");
         return 0;
     }
@@ -1943,7 +1946,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         LOG("[RED] setting %s=%s (%s): not applied, nothing written: %s", var, val, label, bad ? why : "too many held words");
         return 0;
     }
-    char list[1024]; size_t used = 0; list[0] = 0;
+    char list[4096]; size_t used = 0; list[0] = 0;
     for (int i = 0; i < ng; i++) {
         uint64_t off = g[i]->off; uint32_t w = g[i]->new_;
         main_write_pages((uint64_t)(uintptr_t)g_main_mod->base + off, 4, &w);
@@ -1953,7 +1956,8 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         int k = snprintf(list + used, sizeof list - used, "%smain+0x%llX %08X -> %08X", i ? ", " : "", (unsigned long long)off, g[i]->orig, w);
         if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
     }
-    LOG("setting %s=%s (%s): %d word%s written: %s%s%s%s", var, val, label, ng, ng == 1 ? "" : "s", list, conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
+    LOG("setting %s=%s%s (%s): %d word%s written: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, ng, ng == 1 ? "" : "s", list,
+        conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
     if (g_sp_napplied < SP_APPLIED_MAX) {
         snprintf(g_sp_applied[g_sp_napplied].var, sizeof g_sp_applied[0].var, "%s", var); snprintf(g_sp_applied[g_sp_napplied].value, sizeof g_sp_applied[0].value, "%s", val);
         snprintf(g_sp_applied[g_sp_napplied].label, sizeof g_sp_applied[0].label, "%s", label); g_sp_napplied++;
@@ -1962,7 +1966,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
 }
 
 // Apply a table of setting patches (the profile's DM_GAME_SETTING_PATCHES; the unit test passes its own): each variable
-// once, by its value in the environment. Returns the words written
+// once, by its value in the environment; an unset one by its value game when that value has rows. Returns the words written
 static int sp_apply(const setting_patch_t *t, int n) {
     int done = 0;
     g_sp_tab = t; g_sp_ntab = n;
@@ -1971,7 +1975,8 @@ static int sp_apply(const setting_patch_t *t, int n) {
         for (int k = 0; k < i; k++) if (!strcmp(t[k].var, t[i].var)) { first = 0; break; }
         if (!first) continue;
         const char *v = getenv(t[i].var);
-        if (v && *v) done += sp_apply_group(t, n, t[i].var, v);
+        if (v && *v) { done += sp_apply_group(t, n, t[i].var, v, 0); continue; }
+        for (int k = i; k < n; k++) if (!strcmp(t[k].var, t[i].var) && !strcmp(t[k].value, "game")) { done += sp_apply_group(t, n, t[i].var, "game", 1); break; }
     }
     g_sp_tab = NULL; g_sp_ntab = 0;
     return done;

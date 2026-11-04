@@ -25,6 +25,26 @@ def frame_step(ctx):
     emit(B(here(), 0x539d70))
     fs_put(0x539d6c, [B(0x539d6c, start)], 'display scales 0.8 / 2/3 -> 1.0 with single upscale (state page +0x38): the upscaler writes the window size')
     match_display(ctx)
+    mip_bias_log(ctx)
+
+
+# Mip bias log (state +0xa0 float the rate, +0xa4 float the bias, +0xa8 u32 a count, written last after a store barrier; loader.c dm_mip_bias_tick reads them at each present).
+# The dynamic-resolution controller applies every texture mip bias through one call, main+0x38e074 bl main+0x38e280 (the materials' sampler bias, s0; the rate in s8):
+# the game's own -0.5 and every bias of the setting DM_MIP_BIAS (setting_patches.tsv, which never writes this word). The call becomes a branch-and-link to a stub that
+# records s8 and s0 and goes on to main+0x38e280 with the call's return address; x16 and x17 are free at a call (AAPCS's intra-procedure-call registers)
+def mip_bias_log(ctx):
+    here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
+    fs_site(0x38e074, '83000094')   # bl main+0x38e280
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xb940aa11,   # ldr w17,[x16,#0xa8]   the count
+              0x11000631,   # add w17,w17,#1
+              0xbd00a208,   # str s8,[x16,#0xa0]    the rate
+              0xbd00a600,   # str s0,[x16,#0xa4]    the bias
+              0xd5033abf,   # dmb ishst             both before the count
+              0xb900aa11):  # str w17,[x16,#0xa8]
+        emit(w)
+    emit(B(here(), 0x38e280))
+    fs_put(0x38e074, [B(0x38e074, start) | 0x80000000], 'the controller\'s mip bias call: its rate and bias into state page +0xa0 / +0xa4, a count at +0xa8 (mip bias log)')
 
 
 # Match display (DM_SINGLE_UPSCALE=display; state +0x3c u32 width, +0x40 u32 height, written by the loader from the screen at launch, 0 = the game's 2880x1620). The window size
@@ -53,8 +73,9 @@ def match_display(ctx):
 
 FRAME_STEP = {'e25c90c1c136638885659fd55bf8a03b': frame_step}
 # The fixups table's keys: SINGLE_UPSCALE, the loader writes state +0x38 from DM_SINGLE_UPSCALE and logs it, and the Mac settings window offers the setting (dm/games/settings.tsv);
-# MATCH_DISPLAY, the window-size stubs read +0x3c / +0x40, which the loader writes for DM_SINGLE_UPSCALE=display
-CAPABILITIES = {'e25c90c1c136638885659fd55bf8a03b': ('SINGLE_UPSCALE', 'MATCH_DISPLAY')}
+# MATCH_DISPLAY, the window-size stubs read +0x3c / +0x40, which the loader writes for DM_SINGLE_UPSCALE=display; MIP_BIAS_LOG, the mip bias stub writes +0xa0..+0xa8,
+# which the host logs at each rate's first application
+CAPABILITIES = {'e25c90c1c136638885659fd55bf8a03b': ('SINGLE_UPSCALE', 'MATCH_DISPLAY', 'MIP_BIAS_LOG')}
 
 # How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
 # purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)
@@ -67,4 +88,8 @@ BINDING = [
      'why': "the game's fixed window size (sead's framework argument and gsys's display argument) in this build",
      'blocked': 'frame-step stubs have no function-matched form yet',
      'checked': "static: every call of the getters main+0x5bf770 / 0x5bf780 (six pairs) and every 2880 / 1620 constant in main; the framework's use of its argument (main+0x5c6038)"},
+    {'what': 'mip bias log: the controller\'s bias call reports its rate and bias in the state page (+0xa0..+0xa8)', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the game's dynamic-resolution controller (main+0x38db98) in this build",
+     'blocked': 'frame-step stubs have no function-matched form yet',
+     'checked': 'static: main+0x38e280 has this one caller (main+0x749824, the reset, applies 0 through its own loop); an emulated run of the controller with the setting patches (README.md, Texture mip bias)'},
 ]

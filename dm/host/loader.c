@@ -268,6 +268,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
         else if (!strcmp(key, "SINGLE_UPSCALE")) m->single_upscale = v != 0;
         else if (!strcmp(key, "MATCH_DISPLAY")) m->match_display = v != 0;
+        else if (!strcmp(key, "MIP_BIAS_LOG")) m->mip_bias_log = v != 0;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -300,9 +301,11 @@ static void read_layout(module_t *m, const char *dir) {
 uint8_t *dm_fps_state;
 static const char *g_fps_mod;   // the module holding the state page (for the log)
 static int g_single_upscale_stub, g_match_display_stub;   // its build's stubs read state +0x38 (SINGLE_UPSCALE) and +0x3c / +0x40 (MATCH_DISPLAY)
+static int g_mip_bias_stub;   // its build's stub writes each texture mip bias the game applies into state +0xa0 / +0xa4 / +0xa8 (MIP_BIAS_LOG; dm_mip_bias_tick)
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x100 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name; g_single_upscale_stub = m->single_upscale; g_match_display_stub = m->match_display;
+    g_mip_bias_stub = m->mip_bias_log;
 }
 // No screen to match without a front end that knows one (unit tests, iOS); the Mac's front_mac.m defines it (front.h)
 __attribute__((weak)) int front_match_display(int *w, int *h, char *how, size_t n) { (void)w; (void)h; (void)how; (void)n; return 0; }
@@ -329,14 +332,56 @@ static int single_upscale_apply(int *mw, int *mh) {
     return on;
 }
 
+// The texture mip bias (Bananza's DM_MIP_BIAS setting patches; its README.md, Texture mip bias). NVIDIA's words compute -k - log2(rate) in the game's controller from the
+// rate's bits (k 1 with camera jitter, DM_MFX_JITTER=1): L = bits - (127 - k) << 23, 0 up to rate 1.0 (-1 at Native (MetalFX AA) with jitter), else
+// -(L / 2^23 + 0.34375 (m - m^2)), m the mantissa's fraction. The same arithmetic here, so a line names the bias the words apply (within 0.01 of the exact one)
+static float dm_mip_bias_nvidia(float rate, int jitter, int native_aa) {
+    uint32_t b; memcpy(&b, &rate, sizeof b);
+    int32_t L = (int32_t)(b - (jitter ? 0x3f000000u : 0x3f800000u)), one = jitter ? 0x800000 : 0;
+    if (L < one || (L == one && !(native_aa && jitter))) return 0.0f;
+    float l = (float)L / 8388608.0f, m = (float)(L & 0x7fffff) / 8388608.0f;
+    return -fmaf(fmaf(-m, m, m), 0.34375f, l);   // fmsub, then fnmadd: each rounded once, as the words
+}
+// What DM_MIP_BIAS wrote: 2 NVIDIA (its rows hold only with MetalFX temporal), 1 Game (its words: the game's -0.5 under our rates; also NVIDIA's without MetalFX
+// temporal), 0 nothing (the game's own tail: -0.5 while it upscales). *label: the rows' label
+static int mip_bias_mode(const char **label) {
+    const char *v = NULL, *l = dm_setting_patch_applied("DM_MIP_BIAS", &v), *up = getenv("DM_UPSCALER");
+    if (label) *label = l;
+    if (!l) return 0;
+    return v && !strcmp(v, "nvidia") && up && !strcmp(up, "metalfx-temporal") ? 2 : 1;
+}
+static int mip_bias_jitter(void) { const char *j = getenv("DM_MFX_JITTER"); return j && !strcmp(j, "1"); }
+// The rates a launch can reach (the fixed one, a dynamic range's ends and the game's own rates between them), each with the bias NVIDIA's words give it
+static void mip_bias_launch_log(double r0, double r1, double lo, double hi, int aa) {
+    const char *label = NULL, *want = getenv("DM_MIP_BIAS"), *up = getenv("DM_UPSCALER");
+    int mode = mip_bias_mode(&label), jit = mip_bias_jitter();
+    if (mode != 2) {
+        int temporal = up && !strcmp(up, "metalfx-temporal");
+        if (want && !strcmp(want, "nvidia") && temporal) LOG("[RED] mip bias: nvidia asked for, but its setting patch was not written (its setting line says why): the game's own -0.5 while upscaling");
+        else if (want && !strcmp(want, "nvidia")) LOG("mip bias: nvidia needs DM_UPSCALER=metalfx-temporal (DM_UPSCALER=%s): the game's -0.5 while upscaling instead", up && *up ? up : "game");
+        else LOG("mip bias: game, -0.5 while upscaling (rate above 1.0), 0 at 1.0%s%s%s", label ? " (" : " (the game's own)", label ? label : "", label ? ")" : "");
+        return;
+    }
+    double rates[4]; int n = 0;
+    if (r0 < 1.0) { rates[n++] = lo; rates[n++] = hi; }   // the game's own range (0 at its start, 1.0)
+    else {
+        rates[n++] = r0;
+        if (lo > r0 && lo < r1) rates[n++] = lo;
+        if (hi > r0 && hi < r1) rates[n++] = hi;
+        if (r1 > r0) rates[n++] = r1;
+    }
+    for (int i = 0; i < n; i++)
+        LOG("mip bias: nvidia, rate %.5g → bias %.3f (jitter %s) at launch", rates[i], dm_mip_bias_nvidia((float)rates[i], jit, aa && rates[i] <= 1.0), jit ? "on" : "off");
+}
+
 // The resolution chain at launch, for a profile with res_chain (game.py; Bananza's README.md, Resolution model): the upscaler's output for the mode (docked with or
 // without single upscale, handheld); the upscale rate the setting patches wrote: fixed (DM_UPSCALE_RATIO), or dynamic from it (the sharpest) to the softest
 // (DM_UPSCALE_SOFTEST as written: raised to the sharpest, past the game's highest only with a MetalFX upscaler; without it, the game's own highest), else the game's
 // own range; the rate each stage starts at (the parameter apply writes the fixed or the sharpest rate; the game's own starts at 1.0); the scene's size (output / rate,
 // rounded up, as the game's 2304 / 1.375 = 1676); the upscaler and whether it runs at the sharpest rate (at 1.0 the game turns its upscaler off, and MetalFX with
-// it; Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx, is rate 1.0 with the upscaler kept on: MetalFX's temporal scaler anti-aliases at the output's size, with the
-// mip bias DM_NATIVE_MIP_BIAS chose); the effects' and shadows' setting patches. A prediction from what was written at launch; the upscaler: output line at the first
-// upscale names the sizes drawn
+// it; Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx, is rate 1.0 with the upscaler kept on: MetalFX's temporal scaler anti-aliases at the output's size, with its
+// mip bias); the texture mip bias (DM_MIP_BIAS: Game, or NVIDIA by the rate); the effects' and shadows' setting patches. A prediction from what was written at launch;
+// the upscaler: output line at the first upscale names the sizes drawn, and the mip bias: lines (dm_mip_bias_tick) each bias the game applies
 static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 the window, 2 match display (the window mw x mh)
     int ow[3], oh[3]; double lo, hi;
     if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], &lo, &hi) != 8) return;
@@ -346,7 +391,9 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     const char *fval = NULL, *fl = dm_setting_patch_applied("DM_UPSCALE_SOFTEST", &fval);
     int mfx = up && (!strcmp(up, "metalfx") || !strcmp(up, "metalfx-temporal"));
     int aa = rl && val && !strcmp(val, "native-mfx");   // native with MetalFX AA: rate 1.0, the upscaler on (its rows hold only with metalfx-temporal)
-    const char *mb = getenv("DM_NATIVE_MIP_BIAS"), *bias = aa && mb && !strcmp(mb, "-0.5") ? "-0.5" : "0";   // the rows' condition: DM_NATIVE_MIP_BIAS=-0.5
+    const char *mbl = NULL, *mb = getenv("DM_NATIVE_MIP_BIAS");
+    int mode = mip_bias_mode(&mbl), jit = mip_bias_jitter();
+    const char *bias = mode == 2 ? (jit ? "-1" : "0") : mode == 1 && mb && !strcmp(mb, "-0.5") ? "-0.5" : "0";   // at 1.0: NVIDIA's -k, Game's -0.5 with DM_NATIVE_MIP_BIAS=-0.5
     double r0 = aa ? 1.0 : rl && val ? atof(val) : 0, r1 = r0;   // the sharpest and the softest rate (equal: fixed)
     int dynamic = r0 >= 1.0 && r0 <= hi && dy && !strcmp(dy, "1");   // setting_patches.tsv's dynamic rows: a sharpest rate from 1.0 to the game's highest
     if (dynamic) {
@@ -372,9 +419,29 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
         else snprintf(ups, sizeof ups, "%s, on at the sharpest", name);
     }
     const char *eff = dm_setting_patch_applied("DM_EFFECTS_RES", NULL), *shd = dm_setting_patch_applied("DM_SHADOW_RES", NULL);
-    LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
-        docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups,
+    char mip[160];
+    if (mode == 2) snprintf(mip, sizeof mip, "nvidia (%s log2(rate) at each rate, jitter %s)", jit ? "-1 -" : "-", jit ? "on" : "off");
+    else if (mode == 1) snprintf(mip, sizeof mip, "game (%s)", mbl);
+    else snprintf(mip, sizeof mip, "the game's own (-0.5 while upscaling)");
+    LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; mip bias %s; effects %s; shadows %s", docked ? "docked" : "handheld", w, h,
+        docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups, mip,
         eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)");
+    mip_bias_launch_log(r0, r1, lo, hi, aa);
+}
+// The texture mip bias the game applies (MIP_BIAS_LOG: Bananza's stub on the controller's apply call, main+0x38e074, writes the rate at +0xa0, the bias at +0xa4, then a
+// count at +0xa8 after a store barrier): at each present (hle_nvn.c), one line at the first application of each rate
+void dm_mip_bias_tick(void) {
+    if (!dm_fps_state || !g_mip_bias_stub) return;
+    static uint32_t seen; static float rates[32]; static int nr;
+    uint32_t n = __atomic_load_n((uint32_t *)(dm_fps_state + 0xa8), __ATOMIC_ACQUIRE);
+    if (n == seen) return;
+    seen = n;
+    float r, b; memcpy(&r, dm_fps_state + 0xa0, sizeof r); memcpy(&b, dm_fps_state + 0xa4, sizeof b);
+    for (int i = 0; i < nr; i++) if (rates[i] == r) return;
+    if (nr < (int)(sizeof rates / sizeof *rates)) rates[nr++] = r;
+    int mode = mip_bias_mode(NULL);
+    LOG("mip bias: %s, rate %.5g → bias %.3f%s", mode == 2 ? "nvidia" : mode == 1 ? "game" : "the game's own", r, b,
+        mode == 2 ? (mip_bias_jitter() ? " (jitter on)" : " (jitter off)") : "");
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs

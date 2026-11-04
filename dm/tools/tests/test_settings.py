@@ -69,7 +69,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
     def rows(self,gid,fixups,platform='mac'):
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
             (Path(tmp)/'main.fixups.tsv').write_text(fixups)
-            return {s['env']:s for s in settings.build(gid,tmp,'unused')['settings'] if s['env'] in ('DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_UPSCALE_RATIO','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_EFFECTS_RES','DM_FPS_LOCK')}
+            return {s['env']:s for s in settings.build(gid,tmp,'unused')['settings'] if s['env'] in ('DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_UPSCALE_RATIO','DM_MIP_BIAS','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_EFFECTS_RES','DM_FPS_LOCK')}
     def test_bananza_shadow_rows(self):
         r=self.rows(self.DKB,f'# BUILD_ID\t{self.DKB_MAIN}\n')
         self.assertEqual([k for k in r if k.startswith('DM_SHADOW')],['DM_SHADOW_RES','DM_SHADOW_MAP_SIZE'])
@@ -85,7 +85,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         sec={}
         for s in listed: sec.setdefault(s['section'],[]).append(s['env'])
         self.assertEqual(list(sec),['Game','Resolution','Effects','Frame rate','HDR','Controls','Performance'])
-        want=['DM_SINGLE_UPSCALE','DM_UPSCALER','DM_UPSCALE_RATIO','DM_NATIVE_MIP_BIAS','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_PRESENT_UPSCALE']
+        want=['DM_SINGLE_UPSCALE','DM_UPSCALER','DM_UPSCALE_RATIO','DM_UPSCALE_DYNAMIC','DM_UPSCALE_SOFTEST','DM_MIP_BIAS','DM_NATIVE_MIP_BIAS','DM_PRESENT_UPSCALE']
         self.assertEqual([e for e in sec['Resolution'] if e in want],want,'in the picture\'s order (other rows, such as a MetalFX temporal option after the upscaler, may come between)')
         self.assertEqual(sec['Effects'],['DM_EFFECTS_RES','DM_SHADOW_RES','DM_SHADOW_MAP_SIZE','DM_ANISO','DM_TRILINEAR'])
         self.assertEqual(sec['Frame rate'],['DM_FPS_LOCK','DM_MFX_INTERP'])
@@ -99,8 +99,13 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertEqual(q['options'][2][1],'Native (MetalFX AA)')
         self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0|native-mfx,DM_UPSCALER=metalfx:native-mfx','Ultra performance only with a MetalFX upscaler, Native (MetalFX AA) only with the temporal one')
         self.assertEqual(q['rates'],'native-mfx:1','Native (MetalFX AA) renders at rate 1: its render size is the output\'s')
-        mb=r['DM_NATIVE_MIP_BIAS']
-        self.assertEqual((mb['kind'],mb['default'],mb['needs'],[o[0] for o in mb['options']]),('choice','0','DM_UPSCALE_RATIO=native-mfx',['0','-0.5']))
+        mb=r['DM_MIP_BIAS']   # Game, the game's -0.5 while upscaling (its own rows keep it under the fixed rates); NVIDIA's DLSS guidance, only with MetalFX temporal
+        self.assertEqual((mb['kind'],mb['default'],mb['label'],mb['section'],mb['options']),
+                         ('choice','game','Texture mip bias','Resolution',[['game','Game'],['nvidia','NVIDIA (temporal)']]))
+        self.assertEqual(mb['conflicts'],'DM_UPSCALER=game:nvidia,DM_UPSCALER=metalfx:nvidia')
+        nb=r['DM_NATIVE_MIP_BIAS']   # Native (MetalFX AA)'s -0.5 under Game
+        self.assertEqual((nb['kind'],nb['default'],nb['needs'],nb['conflicts'],[o[0] for o in nb['options']]),
+                         ('choice','0','DM_UPSCALE_RATIO=native-mfx','DM_MIP_BIAS=nvidia',['0','-0.5']))
         base={'docked':[2304,1296],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]},
                                                                   {'is':'DM_SINGLE_UPSCALE=display','docked':[0,0],'handheld':[1920,1080],'display':True}]}
         self.assertEqual(q['rate_base'],base,'the output sizes a rate divides (res_chain), for each option\'s render size; Match display\'s docked size is the screen\'s, filled in at launch')
