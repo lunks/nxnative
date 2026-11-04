@@ -18,7 +18,7 @@ SITE, BACK, AREA, STATE = 0x539d6c, 0x539d70, 0x2944000, 0x2814000
 ONE, P8, P23 = 0x3f8000003f800000, 0x3f4ccccd3f4ccccd, 0x3f2aaaab3f2aaaab
 # the calls of the window-size getters (mov w0,#2880; ret / mov w0,#1620; ret) the match display stubs replace: (site, the getter it calls, the state offset)
 CALLS = ((0x5bf0d8, 0x5bf770, 0x3c), (0x5bf0e0, 0x5bf780, 0x40), (0x53999c, 0x5bf770, 0x3c), (0x5399a4, 0x5bf780, 0x40))
-SITES = {(SITE, '08c00cf8'), (0x5bf770, '00688152c0035fd6'), (0x5bf780, '80ca8052c0035fd6')} | {(c, struct.pack('<I', 0x94000000 | ((g - c) >> 2 & 0x3ffffff)).hex()) for c, g, _ in CALLS}
+SITES = {(SITE, '08c00cf8'), (0x5bf770, '00688152c0035fd6'), (0x5bf780, '80ca8052c0035fd6')} | {(c, struct.pack('<I', 0x94000000 | ((g - c) >> 2 & 0x3ffffff)).hex()) for c, g, _ in CALLS} | {(0x38e074, '83000094')}   # and the mip-bias log stub's call site (patches.py, Texture mip bias)
 
 
 def assemble():
@@ -89,7 +89,7 @@ class SingleUpscale(unittest.TestCase):
 
     def test_match_display_calls(self):   # the window-size calls: the getter's constant with the state's words 0, the matched size with them set
         _, code, puts = assemble()
-        self.assertEqual(set(puts), {SITE} | {c for c, _, _ in CALLS})
+        self.assertEqual(set(puts), {SITE, 0x38e074} | {c for c, _, _ in CALLS})   # 0x38e074: the mip-bias log stub
         for c, g, off in CALLS:
             game = 2880 if g == 0x5bf770 else 1620
             self.assertEqual(run_call(code, puts, c, {}), game, f'{c:#x}: off, the getter\'s {game}')
@@ -97,7 +97,7 @@ class SingleUpscale(unittest.TestCase):
 
     def test_capability_names_the_setting(self):   # the fixups keys settings.tsv's row and the loader look for
         m, _, _ = assemble()
-        self.assertEqual(m.CAPABILITIES[BID], ('SINGLE_UPSCALE', 'MATCH_DISPLAY'))
+        self.assertEqual(m.CAPABILITIES[BID], ('SINGLE_UPSCALE', 'MATCH_DISPLAY', 'MIP_BIAS_LOG'))
         row = next(line.split('\t') for line in (REPO / 'dm/games/settings.tsv').read_text().splitlines() if line.startswith('DM_SINGLE_UPSCALE\t'))
         self.assertEqual((row[1], row[3], row[4]), ('choice', '0', 'fixups:SINGLE_UPSCALE&platform:mac'))   # Output resolution: 0 the game's, 1 the window's, display the screen's (the loader)
         self.assertEqual([v.split('=', 1)[0] for v in row[2].split(',')], ['0', '1', 'display'])
