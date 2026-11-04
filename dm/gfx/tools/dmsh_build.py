@@ -444,7 +444,7 @@ def publish_cache(key, digest, rule_fp, code_fp):
         for name in names:
             if name.endswith('.json'):
                 src = os.path.join(out if label == 'mac' else IOSOUT, name)
-                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None); value.pop('pull', None); value.pop('alpha', None); value.pop('logic', None); value.pop('tensor', None); value.pop('border', None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish, alpha_finish, logic_finish, tensor_finish)
+                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None); value.pop('pull', None); value.pop('alpha', None); value.pop('logic', None); value.pop('tensor', None); value.pop(abi.KIND_BORDER, None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish, alpha_finish, logic_finish, tensor_finish)
                 atomic_json(os.path.join(d, name), value)
     atomic_json(cache_meta_path(key), {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp})
 
@@ -604,7 +604,7 @@ def ps_libraries(key, msl, full):
             try: os.unlink(pm)
             except FileNotFoundError: pass
     base = '_bb' if plain != full else '_b'   # where the compile unit's own entry points go
-    border = {'border': {'entries': [m.group(1) for m in re.finditer(r'^\s*fragment\s+\S+\s+(\w+)\s*\(', full, re.M)]}} if plain != full else {}
+    border = {abi.KIND_BORDER: {'entries': [m.group(1) for m in re.finditer(r'^\s*fragment\s+\S+\s+(\w+)\s*\(', full, re.M)]}} if plain != full else {}
     src, info = dmsh_side.unit(full)
     if src:
         u = os.path.join(w, key + '_bu.metal'); open(u, 'w').write(src)
