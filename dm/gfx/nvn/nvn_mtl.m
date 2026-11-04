@@ -4654,18 +4654,25 @@ static int hmma_tensor_on(void) {
     });
     return v;
 }
-// The TensorOps pipeline of compute shader cs once it is built, else nil: the first call starts its compile in the background (the prewarm's compute lines and the first dispatch call it)
+// The TensorOps pipeline of compute shader cs once it is built, else nil: the first call starts its compile in the background (the prewarm's compute lines and the first dispatch call it).
+// The compiles run one at a time on a background queue: Metal's compiler service takes minutes for some (Star Fox's 60f3f31a0e0132e1: 96.4 s for its <key>_bt library, 1.9 s for
+// its <key>_b one), and 26 started at once held both of its connections, so every pipeline compile and reflection the submit thread asked for queued behind them for minutes and the
+// game's watchdog stopped it ("vgame_sim appears dead"). Serialized, no submit waited over 20 ms in three boots; the dispatches use simdgroup_matrix until their pipeline is ready
 static id<MTLComputePipelineState> tensor_pso(NvShader *cs) {
     if (!cs || !cs->tfn) return nil;
     int st = atomic_load(&cs->tps_state), zero = 0;
     if (st == 2) return (__bridge id<MTLComputePipelineState>)atomic_load(&cs->tps);
     if (st || !atomic_compare_exchange_strong(&cs->tps_state, &zero, 1)) return nil;
-    uint64_t t0 = bp_now();
-    [g_dev newComputePipelineStateWithFunction:cs->tfn completionHandler:^(id<MTLComputePipelineState> ps, NSError *e) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.tensor-pso", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_BACKGROUND, 0)); });
+    uint64_t tq = bp_now();
+    dispatch_async(q, ^{
+        uint64_t t0 = bp_now(); NSError *e = nil;
+        id<MTLComputePipelineState> ps = [g_dev newComputePipelineStateWithFunction:cs->tfn error:&e];
         if (!ps) { MLOG("[RED] compute shader %s: its TensorOps pipeline failed (%s): it runs through simdgroup_matrix", cs->key, e ? e.localizedDescription.UTF8String : "no error given"); atomic_store(&cs->tps_state, 3); return; }
         atomic_store(&cs->tps, (__bridge_retained void *)ps); atomic_store(&cs->tps_state, 2);
-        MLOG("compute shader %s: TensorOps pipeline ready after %.1f s", cs->key, (bp_now() - t0) / 1e9);
-    }];
+        MLOG("compute shader %s: TensorOps pipeline ready after %.1f s (queued %.1f s)", cs->key, (bp_now() - t0) / 1e9, (t0 - tq) / 1e9);
+    });
     return nil;
 }
 // layer: a vertex shader's layer entry points (entry_layer / entry_layer_z, which also write the layer) instead of main0 / main0_z, for a program whose geometry shader is a slice writer (prog_fold_gs)
