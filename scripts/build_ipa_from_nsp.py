@@ -34,12 +34,13 @@
 # unless ALLOW_OTHER_METAL / --allow-other-metal. Issue #242 reported corruption with another compiler; the cause is still unconfirmed.
 # Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
-import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
+import ast, collections, concurrent.futures, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
 import romfs as rfs
 import nso   # the code module loader: nso.Error is a damaged module (its file cut short or not what its header says)
 import nro_collect   # its FORMAT keys the collected NROs
+import nso_syms   # the host hooks the survey's import report compares against
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pack_dump   # a folder of a game's files instead of NSPs
 import pack_nup   # a game in a NUP container instead of NSPs
@@ -797,7 +798,67 @@ def check_versions_aarch64(dirs, logs, g, name):   # every extracted version of 
                       f'; game profile {g.id} registers {", ".join(other)}: pack {"that version" if len(other) == 1 else "one of those versions"} (-p / PACKAGE) with its update in the folder' if other else '')
 
 
+def to_json(v):   # the survey's facts (profile_guess.facts_of) as JSON: sets, Counters, tuples and bytes tagged, so that from_json gives back the same types (a Counter keeps its order)
+    if isinstance(v, collections.Counter): return {'__counter__': [[to_json(k), n] for k, n in v.items()]}
+    if isinstance(v, dict):
+        if all(isinstance(k, str) and not k.startswith('__') for k in v): return {k: to_json(x) for k, x in v.items()}
+        return {'__dict__': [[to_json(k), to_json(x)] for k, x in v.items()]}
+    if isinstance(v, (set, frozenset)): return {'__frozenset__' if isinstance(v, frozenset) else '__set__': sorted((to_json(x) for x in v), key=repr)}
+    if isinstance(v, tuple): return {'__tuple__': [to_json(x) for x in v]}
+    if isinstance(v, list): return [to_json(x) for x in v]
+    if isinstance(v, bytes): return {'__bytes__': v.hex()}
+    if v is None or isinstance(v, (bool, int, float, str)): return v
+    raise TypeError(f'a survey fact of type {type(v).__name__}')
+
+
+def from_json(v):
+    if isinstance(v, list): return [from_json(x) for x in v]
+    if not isinstance(v, dict): return v
+    if len(v) == 1:
+        (tag, x), = v.items()
+        if tag == '__counter__': return collections.Counter({from_json(k): n for k, n in x})
+        if tag == '__dict__': return {from_json(k): from_json(y) for k, y in x}
+        if tag == '__set__': return {from_json(y) for y in x}
+        if tag == '__frozenset__': return frozenset(from_json(y) for y in x)
+        if tag == '__tuple__': return tuple(from_json(y) for y in x)
+        if tag == '__bytes__': return bytes.fromhex(x)
+    return {k: from_json(x) for k, x in v.items()}
+
+
+def survey_key(repo, ex):
+    """What the survey's slow steps (profile_guess.facts_of, the rewrite-site census, nso_syms.py) read: the code modules by build ID (any other ExeFS file, main.npdm, by content), the
+    RomFS manifest, the tools that read them (their imports at any depth) and the host hooks the import report compares against; and where the extraction is (the census names its files)"""
+    mods, other = [], []
+    for p in sorted((ex / 'ExeFS').iterdir()):
+        with open(p, 'rb') as f: code = f.read(4) == b'NSO0'
+        if code: mods.append((p.name, build_id(p)))
+        else: other.append(p)
+    tools = {f for entry, roots in (('dm/games/profile_guess.py', ('dm/games', 'dm/tools')), ('dm/tools/insn_census.py', ('dm/tools',)), ('dm/tools/nso_syms.py', ('dm/tools',)))
+             for f in python_tool_files(repo, entry, roots)}
+    return fingerprint('survey-v1', str(ex), mods, ('files', other + [ex / 'romfs_manifest.tsv']), ('files', sorted(tools)), sorted(nso_syms.host_hooks(str(repo / 'dm/host'))))
+
+
+def survey_facts(path, key):   # the facts the last survey of the same files kept beside survey.md ({'F', 'census', 'syms'}), or None
+    try: d = json.loads(path.read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(d, dict) or d.get('key') != key: return None
+    try: return {'F': from_json(d['F']), 'census': list(d['census']), 'syms': list(d['syms'])}
+    except (KeyError, TypeError, ValueError): return None
+
+
+def census_lines(py, repo, mods, logs, env):
+    """insn_census.py's report of each module, in the order of mods: the modules at once, as many as the Mac has cores, each with its own log (one after another, with a call to capstone
+    per word, the census of a 192 MB main took 1:48 while the rewrite of every module took 0:43; insn_census.py now decodes runs of words, and a large text on every core)"""
+    PROG.set(step=f'rewrite sites in {", ".join(m.name for m in mods)}', done=0, total=len(mods), unit='modules')
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(len(mods), os.cpu_count() or 1))) as pool:
+        runs = [pool.submit(run, [py, repo / 'dm/tools/insn_census.py', m], logs / f'census_{m.name}.log', env=env) for m in mods]
+        for i, r in enumerate(concurrent.futures.as_completed(runs)): r.result(); PROG.set(done=i + 1)
+    return [l for m in mods for l in (logs / f'census_{m.name}.log').read_text(errors='replace').rstrip().splitlines()]
+
+
 def survey(nsp_dir, app, fam, keys, repo, py, env):
+    """The survey of a game with no profile: survey.md and the facts write_profile needs. What the slow steps found is kept in survey.json beside survey.md, keyed by survey_key:
+    a --survey-only run and the normal run after it read the code modules once, and a changed module (another build ID) is surveyed again"""
     work = nsp_dir / f'{app:016X}_survey'; logs, ex = work / 'logs', work / 'extract'
     say(f'no game profile for {app:016X}: surveying first')
     files = fam.get('nup')   # a NUP: its newest version's files are read from the container, with no nx_extract
@@ -819,7 +880,12 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     PROG.stage('survey: code modules', step='reading')
     dv = nacp.version(ex / 'control.nacp') if files else (m.group(1) if (m := re.search(r'display version (\S+)', (logs / 'extract.log').read_text(errors='replace'))) else '')
     check_aarch64(ex / 'ExeFS', f'{nacp.name(ex / "control.nacp") or "?"} ({app:016X})')
-    F = pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
+    facts, key = work / 'survey.json', survey_key(repo, ex)
+    kept = survey_facts(facts, key)
+    if kept: say(f'reusing the facts of the last survey of these files: {facts}')
+    F = kept['F'] if kept else pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
+    try: saved = None if kept else to_json(F)   # before the rules below read (or change) F
+    except TypeError as e: saved = None; say(f'[RED] the survey\'s facts are not kept for the next run: {e}')
     def size(k): return package_size(fam, k)[1] / 2**30
     R = [f'# Survey: {nacp.name(ex / "control.nacp") or "?"} ({app:016X})', '', f'- display version: {dv or "?"}']
     R += [f'- base: `{package_size(fam, fam["base"])[0]}` ({size(fam["base"]):.2f} GB)' if fam['base'] is not None else '- base: none (the update is the whole game)']
@@ -846,15 +912,15 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     # Rewrite-site census and SDK surface
     R += ['', '## Rewrite-site census (insn_census.py)', '', '```']
     census = [ex / 'ExeFS' / n for n in mods if n != 'rtld']   # rtld is replaced by the host
-    for i, m in enumerate(census):
-        PROG.set(step=f'rewrite sites in {m.name}', done=i, total=len(census), unit='modules')
-        run([py, repo / 'dm/tools/insn_census.py', m], logs / f'census_{m.name}.log', env=env)
-        R += (logs / f'census_{m.name}.log').read_text(errors='replace').rstrip().splitlines()
-    R += ['```', '', '## Imports vs host hooks (nso_syms.py)', '', '```']
+    sites = kept['census'] if kept else census_lines(py, repo, census, logs, env)
+    R += sites + ['```', '', '## Imports vs host hooks (nso_syms.py)', '', '```']
     PROG.stage('survey: imports vs host hooks')
-    run([py, repo / 'dm/tools/nso_syms.py', repo / 'dm/host', '-', ex / 'ExeFS'], logs / 'nso_syms.log', env=env)
-    PROG.end()
-    R += (logs / 'nso_syms.log').read_text(errors='replace').rstrip().splitlines() + ['```']
+    if kept: syms = kept['syms']
+    else:
+        run([py, repo / 'dm/tools/nso_syms.py', repo / 'dm/host', '-', ex / 'ExeFS'], logs / 'nso_syms.log', env=env)
+        syms = (logs / 'nso_syms.log').read_text(errors='replace').rstrip().splitlines()
+    PROG.end('reused (inputs unchanged)' if kept else '')
+    R += syms + ['```']
 
     # What it means for a port
     G = pg.guess(F)   # the provisional profile's keys (write_profile writes the same)
@@ -901,6 +967,8 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     R += [f'{k}\t{v}' + (f'\t# {why}' if why else '') for k, (v, why) in G.items()] + ['```']
     R += ['', 'Next steps: docs/agents (02 survey, 03 bring-up, symptoms.md for each failure).']
     (work / 'survey.md').write_text('\n'.join(R) + '\n')
+    if saved is not None: atomic_text(facts, json.dumps({'key': key, 'F': saved, 'census': sites, 'syms': syms}) + '\n')
+    elif not kept: facts.unlink(missing_ok=True)
     for n in notes: say(n)
     say(f'survey report: {work / "survey.md"}')
     upv = ups[-1][0] if ups else None

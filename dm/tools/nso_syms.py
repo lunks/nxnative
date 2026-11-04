@@ -60,12 +60,12 @@ def host_hooks(host, forced=True):
     forced=False leaves out the HLE_FORCE hooks: some wrap the module's own function (glslcCompile), so the module that defines it is still needed"""
     hooks = set()
     for f in glob.glob(os.path.join(host, '*.c')) + glob.glob(os.path.join(host, '../gfx/*.c')) + glob.glob(os.path.join(host, '../gfx/nvn/*.c')):
-        t = open(f, encoding='utf-8', errors='replace').read()
+        with open(f, encoding='utf-8', errors='replace') as h: t = h.read()
         hooks |= set(re.findall(r'\bHLE\(\s*"([^"]+)"', t))
         if forced: hooks |= set(re.findall(r'\bHLE_FORCE(?:_BIG)?\(\s*"([^"]+)"', t))
         if os.path.basename(f) == 'hle_table.c': hooks |= set(re.findall(r'\bL\((\w+)\)', t))
     for f in glob.glob(os.path.join(host, '../gfx/vk/*.m')):
-        hooks |= set(re.findall(r'^VKB?\((vk\w+),', open(f, encoding='utf-8', errors='replace').read(), re.M))
+        with open(f, encoding='utf-8', errors='replace') as h: hooks |= set(re.findall(r'^VKB?\((vk\w+),', h.read(), re.M))
     return hooks
 
 if __name__ == '__main__':

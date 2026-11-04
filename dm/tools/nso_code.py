@@ -8,6 +8,7 @@ rest read as instructions that use x18, which a linear sweep would rewrite. Code
 import struct
 
 DATA_MIN = 0x1000
+CHUNK = 0x10000   # bytes capstone decodes in one call: it decodes a run up to the first word that is not an instruction, into memory it allocates for the whole run
 
 
 def eh_frame_hdr(img):
@@ -85,6 +86,18 @@ def fde_ranges(img):
     return sorted(out)
 
 
+def undecodable(img, s, e, md):
+    """How many words in [s, e) (word aligned) capstone does not decode: one disasm_lite call per run of decodable words, where a call per word made a module without unwind
+    information take seconds per 8 MB of text; a word it stops at is counted and the count goes on after it, as a word-by-word count would"""
+    view, bad = memoryview(img), 0
+    for p in range(s, e, CHUNK):
+        off, end = p, min(p + CHUNK, e)
+        while off < end:
+            off += 4 * sum(1 for _ in md.disasm_lite(view[off:end], off))
+            if off < end: bad += 1; off += 4
+    return bad
+
+
 def data_blocks(img, text_end, md):
     """Sorted [(start, end)] of the data blocks in text [0, text_end) (see the module docstring). md: a capstone AArch64 disassembler"""
     # An NRO's text includes its header: the build ID at +0x40 is arbitrary bytes, not instructions. FFX/X-2's magic_0898_2015.nro has a literal ldr x18 there.
@@ -100,8 +113,7 @@ def data_blocks(img, text_end, md):
     for s, e in gaps:
         s, e = (s + 3) & ~3, e & ~3
         if e - s < DATA_MIN: continue
-        undecodable = sum(1 for a in range(s, e, 4) if next(md.disasm_lite(bytes(img[a:a + 4]), a), None) is None)
-        if undecodable * 4 > (e - s) // 4: out.append((s, e))
+        if undecodable(img, s, e, md) * 4 > (e - s) // 4: out.append((s, e))
     return out
 
 

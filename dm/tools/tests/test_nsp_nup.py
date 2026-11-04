@@ -1,7 +1,9 @@
 """NSP script with a NUP container (scripts/pack_nup.py): the container is read and checked, its versions and DLC packed into what the script's later steps read, its control data saved,
 and the script asks for no keys. The NUPs are written here (SPEC v1, https://github.com/a55uka/nup). The run stops at the prerequisite check; no game files, keys or Xcode needed."""
+import collections
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import struct
@@ -15,6 +17,8 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'dm/tools'))
 import nacp
 import romfs_image
+sys.path.insert(0, str(REPO / 'dm/games'))
+import profile_guess
 spec = importlib.util.spec_from_file_location('build_ipa_from_nsp', REPO / 'scripts/build_ipa_from_nsp.py')
 if spec is None or spec.loader is None: raise ImportError('scripts/build_ipa_from_nsp.py')
 nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
@@ -230,6 +234,76 @@ class Survey(Base):
             with self.assertRaises(Stop): nsp.main(nsp.parse_args([str(self.path), '--survey-only']))
         self.assertEqual(seen['app'], NEW)
         self.assertIsNone(seen['base'])
+
+
+def code_module(bid, imports=('nvnBootstrapLoader',), exports=('nnMain',)):   # an uncompressed NSO whose text holds MOD0 and a dynamic symbol table (what profile_guess.facts_of reads)
+    text = bytearray(0x1000)
+    struct.pack_into('<I', text, 4, 0x10)
+    struct.pack_into('<4si', text, 0x10, b'MOD0', 0x100 - 0x10)
+    struct.pack_into('<qQqQqQq', text, 0x100, 5, 0x400, 6, 0x200, 4, 0x300, 0)   # DT_STRTAB, DT_SYMTAB, DT_HASH
+    names = list(imports) + list(exports)
+    struct.pack_into('<II', text, 0x300, 1, len(names) + 1)
+    pool = b'\0'
+    for i, s in enumerate(names, 1):
+        struct.pack_into('<IBBHQQ', text, 0x200 + 24 * i, len(pool), 0x12 if s in exports else 0x10, 0, 1 if s in exports else 0, 0, 0); pool += s.encode() + b'\0'
+    text[0x400:0x400 + len(pool)] = pool
+    head = bytearray(0x100); head[:4] = b'NSO0'
+    for i in range(3): struct.pack_into('<III', head, 0x10 + 0x10 * i, 0x100 + 0x1000 * i, 0x1000 * i, 0x1000)
+    head[0x40:0x60] = bytes.fromhex(bid) + bytes(16)
+    struct.pack_into('<III', head, 0x60, 0x1000, 0x1000, 0x1000)
+    return bytes(head + text + bytes(0x2000))
+
+
+@unittest.skipIf(zstd is None, 'no zstd module')
+class SurveyReuse(unittest.TestCase):   # a --survey-only run and the normal run after it read the code modules once; another build of a module is surveyed again
+    def setUp(self):
+        td = tempfile.TemporaryDirectory(); self.addCleanup(td.cleanup)
+        self.dir = Path(td.name).resolve() / 'game'; self.dir.mkdir()
+        self.path = self.dir / 'game.nup'
+
+    def survey(self, main_bid):
+        romfs = {'Shader/a.bnsh': b'BNSH' + bytes(300), 'Data/b.bin': b'data'}
+        write_nup(self.path, [(0, NEW, 0, {'exefs': {'main': code_module(main_bid), 'sdk': code_module('cd' * 16, (), ('nnsdk',)), 'main.npdm': npdm(NEW)}, 'romfs': romfs}, META)])
+        n = pack_nup.Nup(self.path); self.addCleanup(n.close)
+        app, fam = nsp.scan_nup(self.path)
+        runs = []
+        def run(argv, log, **kw):
+            runs.append(Path(argv[1]).name); log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(f'{Path(argv[2]).name}: census\n' if Path(argv[1]).name == 'insn_census.py' else 'HLE hooks in host: 1\n')
+        facts_of = mock.Mock(wraps=profile_guess.facts_of)
+        with mock.patch.object(nsp, 'pg', profile_guess, create=True), mock.patch.object(nsp, 'nacp', nacp, create=True), mock.patch.object(nsp, 'run', side_effect=run), \
+             mock.patch.object(nsp, 'check_aarch64'), mock.patch.object(nsp, 'say'), mock.patch.object(profile_guess, 'facts_of', facts_of):
+            facts = nsp.survey(self.dir, app, fam, None, REPO, 'py', {})
+        return facts, sorted(runs), facts_of.call_count, (self.dir / f'{NEW:016X}_survey/survey.md').read_text()
+
+    def test_the_second_survey_reads_nothing_again(self):
+        first = self.survey('ab' * 16)
+        self.assertEqual(first[1:3], (['insn_census.py', 'insn_census.py', 'nso_syms.py'], 1))
+        self.assertIn('main: census', first[3]); self.assertLess(first[3].index('main: census'), first[3].index('sdk: census'))   # the report in module order, though they ran at once
+        again = self.survey('ab' * 16)
+        self.assertEqual(again[1:3], ([], 0))
+        self.assertEqual(again[3], first[3])
+        self.assertEqual(again[0], first[0])   # write_profile gets the same facts: the same values, and the same types (sets, Counters in their order, tuples)
+        F, G = first[0]['F'], again[0]['F']
+        self.assertIsInstance(G['mods']['main']['imports'], set)
+        self.assertIsInstance(G['romfs']['tops'], collections.Counter)
+        self.assertEqual(list(G['romfs']['exts'].items()), list(F['romfs']['exts'].items()))
+        self.assertIsInstance(G['romfs']['biggest'], tuple)
+        self.assertEqual(profile_guess.guess(G), profile_guess.guess(F))
+
+    def test_another_build_of_a_module_is_surveyed_again(self):
+        self.survey('ab' * 16)
+        changed = self.survey('ef' * 16)
+        self.assertEqual(changed[1:3], (['insn_census.py', 'insn_census.py', 'nso_syms.py'], 1))
+        self.assertEqual(changed[0]['F']['mods']['main']['bid'], 'ef' * 16)
+
+    def test_facts_round_trip(self):
+        v = {'s': {'a', 'b'}, 'f': frozenset({1}), 'c': collections.Counter({'z': 2, 'a': 2, 'm': 1}), 't': (0, 'x'), 'l': [b'\x01', None, True, 1.5], 'd': {1: 'int key'}, '__x': 1}
+        back = nsp.from_json(json.loads(json.dumps(nsp.to_json(v))))
+        self.assertEqual(back, v)
+        self.assertEqual(list(back['c']), ['z', 'a', 'm'])   # most_common breaks ties by this order
+        self.assertEqual([type(back[k]) for k in v], [type(v[k]) for k in v])
+        with self.assertRaises(TypeError): nsp.to_json(object())
 
 
 class Pack(Base):
