@@ -66,6 +66,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- A [reboot packed the 24.4 GB RomFS image again](../../../docs/reference/packing.md#a-reboot-packs-a-romfs-image-again): 12 minutes from a NUP on a network share.
 - The online library's [eventfd for its poller](../../../docs/reference/services.md#eventfds-served-offline) and the [virtual audio input list](../../../docs/reference/audio.md#output-streams-and-virtual-audio-devices-sdk-20-auddmgu) blocked startup.
 - The SDK's [NDVE pack](../../../docs/reference/shaders.md#the-movie-librarys-ndve-shader-pack) contains 22 compute programs. The title route uses 11.
 - The two NDVE programs named by its NDSR-form record table (`c2fc2ddd604c25e7`, `4f41ccf24f163e0d`) counted as [the game's upscaler](../../../docs/reference/rendering.md#a-games-own-upscaler-drawn-by-metalfx) beside agl's 59 (resolved statically: `upscaler_keys` leaves them out; not run with `DM_UPSCALER=metalfx` before or after).

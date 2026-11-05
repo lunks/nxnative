@@ -67,10 +67,10 @@
 
 ### A reboot packs a RomFS image again
 
-- **Symptom:** the first build after restarting the Mac spends minutes in `unpack` (`[1/5] unpack v131072: 5%, 1.2/~24.4 GB`) although the game, the packer and the image are as they were: 8 minutes for a 24.4 GB image from a NUP on a network share.
+- **Symptom:** the first build after restarting the Mac spends minutes in `unpack` (`[1/5] unpack v131072: 5%, 1.2/~24.4 GB`) although the game, the packer and the image are as they were: 8 to 12 minutes for a 24.4 GB image from a NUP on a network share.
 - **Cause:** the stamp beside an image (`RomFS.img.inputs.json`) held `st_dev` in the image's identity, and macOS numbers a volume when it mounts it. Across one reboot the Data volume went from 16777234 to 16777232 while inode, size and both times stayed, so `reusable()` refused every game's image at once.
 - **Fix:** `file_identity` leaves `st_dev` out. Inode, size, modification and change times still catch an image replaced or written over, and a stamp written before keeps its image (`reusable` compares its last four fields). An image packed from a folder (`source_digest`, which hashes each source file's identity) is packed once more, as a reboot would have done.
-- **Found on:** [Ocarina of Time](../../dm/games/0400486024DEC000/README.md); the stamps of Star Fox and Mario Kart World show the same two numbers. `dm/tools/tests/test_romfs_image.py` remounts an image under another device number and reads a stamp of the old form.
+- **Found on:** [Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game); the stamps of Star Fox and Mario Kart World show the same two numbers. `dm/tools/tests/test_romfs_image.py` remounts an image under another device number and reads a stamp of the old form.
 
 ### A stale `DM_ROMFS` path crashes the game soon after `nnMain`
 
