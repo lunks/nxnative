@@ -59,8 +59,7 @@ static void eviction(void) {
     mtl_sub_commit(); mtl_drain();
     mtl_tex_release(&dead); mtl_tex_release(&seen); mtl_tex_release(&base);
     for (int i = 0; i < ALIAS_IDLE; i++) settle();
-    alias_key k; memset(&k, 0, sizeof k); k.pool = (uint64_t)(uintptr_t)&pool; k.off = seen.off; k.d = seen.d;
-    pthread_mutex_lock(&g_smu); nvn_hm_put(&g_alias_seen, &k, (void *)(uintptr_t)(g_fence + 1)); pthread_mutex_unlock(&g_smu);   // a lookup just now
+    mtl_set_frame(100); mtl_sub_begin(); tex_mtl(&seen); mtl_sub_commit(); mtl_drain();   // a lookup just now
     id<MTLBuffer> staging = [g_dev newBufferWithLength:1 << 20 options:MTLResourceStorageModePrivate]; res_add(staging); g_up_slot_blk[1] = staging; __weak id<MTLBuffer> w_staging = staging; staging = nil;
     uint64_t idle = g_alias_idle, gen = g_ser_gen;
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
