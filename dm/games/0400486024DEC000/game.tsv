@@ -1,4 +1,4 @@
-# The Legend of Zelda: Ocarina of Time (Switch 2), base dump. Nintendo SDK 22.2.8, NVN2.
+# The Legend of Zelda: Ocarina of Time (Switch 2): the base dump and update v131072 (1.1.1). Nintendo SDK 22.2.8, NVN2.
 
 # ---- Identity ----
 title_id	0400486024DEC000
@@ -10,9 +10,12 @@ ipa	OcarinaOfTime.ipa
 app_category	public.app-category.games
 
 # ---- Versions ----
+# v0 is the base dump the profile was brought up on; v131072 (1.1.1) is the update a NUP carries alone, the whole game. Their modules are the same builds, and the shader tables
+# split from v131072 are v0's key for key: the tables are v131072's, so a NUP of the update packs from the profile as it is
 build	v0	v0	main=e0f3ccfaf50065ae4ea01eb5aeb13b1a	subsdk0=b0110087a7b339ef74588d3bd0b4dd5d	sdk=1643a838814f9c10c696f930ed681e7f
-package	v0
-shader_versions	v0
+build	v131072	1.1.1	main=e0f3ccfaf50065ae4ea01eb5aeb13b1a	subsdk0=b0110087a7b339ef74588d3bd0b4dd5d	sdk=1643a838814f9c10c696f930ed681e7f
+package	v131072
+shader_versions	v131072
 
 # ---- Files ----
 modules	main subsdk0 sdk

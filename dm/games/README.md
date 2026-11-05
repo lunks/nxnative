@@ -210,7 +210,7 @@ The games below have completed a gameplay check. Each profile links to its `READ
 
 | Game | Title ID | Build | SDK | Engine | Graphics |
 |---|---|---|---|---|---|
-| [The Legend of Zelda: Ocarina of Time](0400486024DEC000/README.md) | `0400486024DEC000` | v0 (Switch 2) | 22.2.8 (Ounce) | sead / agl / gsys, Havok | NVN2 |
+| [The Legend of Zelda: Ocarina of Time](0400486024DEC000/README.md) | `0400486024DEC000` | 1.1.1 and v0 (Switch 2) | 22.2.8 (Ounce) | sead / agl / gsys, Havok | NVN2 |
 
 ## Keys
 
