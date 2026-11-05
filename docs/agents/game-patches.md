@@ -25,9 +25,9 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 | Now → goal | Patch | Purpose | Status | Evidence | Games | Where | Why |
 |---|---|---|---|---|---|---|---|
+| `build` → `game` | setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch | rendering | gap | judgement | 3 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md); [Star Fox](../../dm/games/0400E88025B1A000/README.md); [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) | fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function |
 | `build` → `game` | 60 fps intervals and dynamic-resolution constants | frame rate | gap | checked: both releases' mains, where the host's rows for them were found | 2 | [NieR:Automata The End of YoRHa Edition (010056B015FE8000)](../../dm/games/010056B015FE8000/README.md); [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](../../dm/games/0100B8E016F76000/README.md) | the game's own constants; the Asian release's function is the global one's 0x13c0 further on, so one function-matched rule could serve both releases |
 | `build` → `game` | NieR's frame interval and dynamic-resolution floor at fixed addresses | frame rate | gap | checked: both releases' mains, where these rows were found | 2 | [NieR:Automata The End of YoRHa Edition (010056B015FE8000)](../../dm/games/010056B015FE8000/README.md); [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](../../dm/games/0100B8E016F76000/README.md) | the game's own display object; the Asian release's function is the global one's 0x13c0 further on, so the rewriter's function match could give the host both releases' addresses |
-| `build` → `game` | setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch | rendering | gap | judgement | 2 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md); [Star Fox](../../dm/games/0400E88025B1A000/README.md) | fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function |
 | `build` → `host` | frame limiter wait: yield → sleep | power | gap | checked: Mac runs with the cut undone, 2026-10-26 (the game note) | 1 | [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md) | without it the host's yield back-off (thr_yield) holds 59.7 to 59.8 fps, at 0.9 to 1.2 W of CPU against 0.14 to 0.42 W (2026-10-26): a back-off that reaches a yield-and-tick loop's deadline sooner would make the cut unnecessary for every game |
 | `game` → `host` | one vertex shader's visibility counter (VertexCounterLowering) | shaders | gap | judgement | — | [Program.cs:266](../../dm/gfx/tools/dmsh_xlate/Program.cs#L266) | a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way |
 | `build` → `engine` | Unity QualitySettings.vSyncCount held at 1 | frame rate | gap | judgement | 1 | [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md) | an IL2CPP player registers the setter by its icall name, so the place can be found in any Unity game; holding it at 1 stays this profile's choice (its logic steps by the count) |
@@ -93,6 +93,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 5 | `build` → `game` |
 | [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 
@@ -875,6 +876,19 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **1.1.0 `main`** `909e904a…` ([patches.py:12](../../dm/games/01006BB00C6F0000/patches.py#L12))
   - cut `+0x10cd070`: physics completion task release (calls its own destructor): ldr x8,[x0] → ret (no longer destroyed; the step function rebuilds it in place every step)
+
+### The Legend of Zelda: Ocarina of Time
+
+[The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), `0400486024DEC000`.
+
+- **`build` → `game`**, rendering, gap, judgement: setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch. Fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function
+
+- **v0 `main`** `e0f3ccfa…`
+  - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=1.0`, Native (1.0, no upscaler)): `1E260109` → `52A7F009` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=1.5`, Quality (1.5)): `1E260109` → `52A7E569` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=1.6875`, Balanced (1.69)): `1E260109` → `52A7E309` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=2.0`, Performance (2.0)): `1E260109` → `52A7E009` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=3.0`, Ultra performance (3.0)): `1E260109` → `52A7D569` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
 
 ### The Legend of Zelda: Tears of the Kingdom
 

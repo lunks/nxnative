@@ -1,0 +1,15 @@
+# Setting patches (dm/games/README.md, Setting patches): words of the game's code the host writes at launch when a setting has a value, each after checking the original word on the build it was found in.
+# variable	value	label	module	build	offset	original	new	[when]   (a label row: variable value label -)
+#
+# Render resolution (README.md, Upscaler and resolution). The scene is the output (2560x1440 docked, 1920x1080 handheld) times a scale the dynamic-resolution controller picks each
+# frame from its level palette (RomFS ModelSceneExtensionParam: 0.75 down to 0.333 docked, to 0.4445 handheld; never 1.0), built at stage start from the palette's level entries
+# (main+0x31c3b30: {scale, priority} nodes in a list at ctrl+0x190). The controller's update (main+0x805aa0) returns the scale in the low word of x0 with a level-changed flag above
+# it, which its caller (main+0x31d3ee0) turns into the scene's scale (ctrl+0xe5c) whenever the level changes or the stage starts. Both of its paths return through main+0x805ff0
+# (fmov w9,s8: the chosen level's scale, aligned to the controller's width step). A fixed render resolution writes the scale there (movz w9,#hi,lsl #16: the float's upper half,
+# so 1.5 is 0.66797 and 1.6875 0.59375): every level then has that scale. Rate 1.0 is the game's own path without its network (NDSR's scale-1.0 branch, main+0x251440)
+DM_UPSCALE_RATIO	game	Game default (dynamic, 1.33 to 3)	-
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x805ff0	1E260109	52A7F009
+DM_UPSCALE_RATIO	1.5	Quality (1.5)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x805ff0	1E260109	52A7E569
+DM_UPSCALE_RATIO	1.6875	Balanced (1.69)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x805ff0	1E260109	52A7E309
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x805ff0	1E260109	52A7E009
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x805ff0	1E260109	52A7D569
