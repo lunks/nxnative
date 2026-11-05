@@ -121,6 +121,85 @@ static void from_storage(void) {
     CHECK(same, "with the storage's content");
     back = nil; mtl_reg_tex(6, NULL, NULL); mtl_alias_drop_pool(&pool);
 }
+// A table of handles traced to no slot, as a draw would take it, and one of its entries
+static uint64_t table_entry(int tid, uint64_t *dummy) {
+    __unsafe_unretained id<MTLBuffer> b = nil; os_unfair_lock_lock(&g_rmu); pool_gpu(0, MTLTextureType2D, 0, 0, &b); os_unfair_lock_unlock(&g_rmu);
+    const uint64_t *e = (const uint64_t *)((const uint8_t *)b.contents + DMSH_POOL_HEAD); uint32_t n = *(const uint32_t *)b.contents;
+    if (dummy) *dummy = e[n];
+    return e[tid];
+}
+// What changes a sharing entry reaches the tables as notes: they are patched, and no table is built whole
+static pool_t g_tpool; static uint8_t *g_tmem;
+static tex_t nt(int64_t off, uint32_t size, uint32_t format) {   // a render target over real storage: its IDs have storage, and it has nothing a walk could take from it
+    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=g_ser_next++, .pool=&g_tpool, .off=off, .mem=g_tmem + off};
+    t.d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=format, .flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE, .width=size, .height=size, .depth=1, .levels=1, .samples=1};
+    nvn_tex_layout(&t.d, &t.L); mtl_tex_init(&t);
+    return t;
+}
+static void notes(void) {
+    const size_t len = 16 << 20; g_tmem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (g_tmem == MAP_FAILED) abort();
+    pool_builder_t pb = {.mem=g_tmem, .size=len, .flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&g_tpool, (const NVNmemoryPoolBuilder *)&pb), "the pool");
+    uint64_t dummy, builds;
+    // Takeover and retired IDs: the ID's view goes at the end of the submission, the table takes the dummy at the next one
+    mtl_set_frame(10000);
+    tex_t a = nt(0, 64, NVN_FORMAT_RGBA8); mtl_reg_tex(7, &a, NULL);
+    mtl_sub_begin(); tex_mtl(&a); CHECK(table_entry(7, &dummy) != dummy, "the table holds the texture"); mtl_sub_commit();
+    mtl_tex_release(&a);
+    for (int i = 0; i <= ALIAS_IDLE; i++) { mtl_sub_begin(); table_entry(7, NULL); mtl_sub_commit(); }
+    mtl_drain();
+    mtl_sub_begin(); table_entry(7, NULL); builds = g_stat_pool_builds; tex_t over = nt(0, 128, NVN_FORMAT_RGBA8); tex_mtl(&over); CHECK(!shared(&a), "takeover took the entry"); mtl_sub_commit();
+    mtl_sub_begin(); CHECK(table_entry(7, &dummy) == dummy, "the retired ID reads the dummy after its submission"); mtl_sub_commit();
+    CHECK(g_stat_pool_builds == builds, "takeover builds no table whole");
+    mtl_tex_release(&over); mtl_reg_tex(7, NULL, NULL);
+    // A walk left a retired ID empty: a new entry over its key fills it, and over its sRGB twin's too
+    mtl_sub_begin();
+    tex_t e1 = nt(1 << 20, 64, NVN_FORMAT_RGBA8), e2 = nt(2 << 20, 64, NVN_FORMAT_RGBA8_SRGB);
+    mtl_reg_tex(8, &e1, NULL); mtl_reg_tex(9, &e2, NULL); mtl_tex_release(&e1); mtl_tex_release(&e2);
+    CHECK(table_entry(8, &dummy) == dummy && table_entry(9, NULL) == dummy, "the walk leaves them empty");
+    mtl_sub_commit(); mtl_sub_begin(); table_entry(8, NULL); builds = g_stat_pool_builds;
+    tex_t n1 = nt(1 << 20, 64, NVN_FORMAT_RGBA8), n2 = nt(2 << 20, 64, NVN_FORMAT_RGBA8);
+    id<MTLTexture> t1 = tex_mtl(&n1), t2 = tex_mtl(&n2);
+    CHECK(table_entry(8, NULL) == t1.gpuResourceID._impl, "a new entry over the key reaches the ID left empty");
+    CHECK(table_entry(9, NULL) != dummy && ((__bridge id<MTLTexture>)g_treg[9].view).parentTexture == t2, "and over its sRGB twin");
+    CHECK(g_stat_pool_builds == builds, "without a whole table");
+    mtl_sub_commit(); mtl_drain(); t1 = t2 = nil;
+    mtl_tex_release(&n1); mtl_tex_release(&n2); mtl_reg_tex(8, NULL, NULL); mtl_reg_tex(9, NULL, NULL);
+    // A live sRGB view whose parent's entry left: the stale view goes, and the object's next bind makes it on what holds the storage now
+    mtl_set_frame(11000);
+    tex_t par = nt(3 << 20, 64, NVN_FORMAT_RGBA8), srgb = nt(3 << 20, 64, NVN_FORMAT_RGBA8_SRGB); mtl_reg_tex(10, &srgb, NULL);
+    mtl_sub_begin(); tex_mtl(&par); tex_mtl(&srgb); uint64_t was = table_entry(10, &dummy); mtl_sub_commit();
+    CHECK(was != dummy, "the table holds the view");
+    mtl_tex_release(&par);
+    alias_key k; tex_alias_key(&par, &k);
+    pthread_mutex_lock(&g_smu); alias_let_go(&k, 1); g_alias_taken++; pthread_mutex_unlock(&g_smu);
+    mtl_sub_begin(); table_entry(10, NULL); mtl_sub_commit();   // this submission ends with the sweep; the ID's table takes it at the next
+    mtl_sub_begin(); builds = g_stat_pool_builds; CHECK(table_entry(10, &dummy) == dummy, "the stale view leaves the table");
+    id<MTLTexture> again = tex_mtl(&srgb); CHECK(again && !again.parentTexture, "a bind of the live object makes it again");
+    CHECK(table_entry(10, NULL) == again.gpuResourceID._impl, "and the table takes it"); mtl_sub_commit(); mtl_drain(); again = nil;
+    CHECK(g_stat_pool_builds == builds, "without a whole table");
+    mtl_tex_release(&srgb); mtl_reg_tex(10, NULL, NULL); mtl_alias_drop_pool(&g_tpool);
+}
+// A memory pool added or removed changes no table but for the IDs that found storage in it or lost their pool
+static void pool_notes(void) {
+    const size_t len = 1 << 20; uint64_t dummy, builds;
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (mem == MAP_FAILED) abort();
+    memset(mem, 0x5a, len);
+    static pool_t pool = {.magic=MAGIC('P','O','O','L'), .flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    tex_t t = rt(0, 64); t.pool = &pool; t.mem = mem; mtl_reg_tex(11, &t, NULL); mtl_tex_release(&t);
+    mtl_sub_begin(); CHECK(table_entry(11, &dummy) == dummy, "an ID whose storage no pool holds reads the dummy"); mtl_sub_commit();
+    mtl_sub_begin(); table_entry(11, NULL); builds = g_stat_pool_builds;
+    uint8_t *other = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (other == MAP_FAILED) abort();
+    mtl_pool_add(other, len); mtl_pool_del(other); table_entry(11, NULL);
+    CHECK(g_stat_pool_builds == builds, "a pool coming and going builds no table whole");
+    mtl_pool_add(mem, len);
+    CHECK(table_entry(11, NULL) != dummy, "a pool that holds the ID's storage reaches the table");
+    CHECK(g_stat_pool_builds == builds, "by a note");
+    mtl_sub_commit(); mtl_drain();
+    mtl_sub_begin(); mtl_alias_drop_pool(&pool); pool.magic = 0; mtl_pool_del(mem); table_entry(11, NULL); mtl_sub_commit(); mtl_drain();
+    mtl_sub_begin(); CHECK(table_entry(11, &dummy) == dummy, "an ID that lost its pool leaves the table"); mtl_sub_commit();
+    mtl_reg_tex(11, NULL, NULL);
+}
 // The pass's own cost, at the sizes Ocarina of Time reached: 8,000 serial objects, 2,000 entries in a few layers of one pool
 static void cost(void) {
     mtl_set_frame(8000);
@@ -145,7 +224,7 @@ int main(void) { @autoreleasepool {
     setenv("DM_NVN_RES_LIMIT_MB", "0", 1);
     mtl_init();
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
-    overlap(); kept_bytes(); live_object(); retired_id(); from_storage(); cost();
+    overlap(); kept_bytes(); live_object(); retired_id(); from_storage(); notes(); pool_notes(); cost();
     printf("t_alias_age: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 } }

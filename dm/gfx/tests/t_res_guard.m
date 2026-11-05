@@ -61,10 +61,10 @@ static void eviction(void) {
     for (int i = 0; i < ALIAS_IDLE; i++) settle();
     mtl_set_frame(100); mtl_sub_begin(); tex_mtl(&seen); mtl_sub_commit(); mtl_drain();   // a lookup just now
     id<MTLBuffer> staging = [g_dev newBufferWithLength:1 << 20 options:MTLResourceStorageModePrivate]; res_add(staging); g_up_slot_blk[1] = staging; __weak id<MTLBuffer> w_staging = staging; staging = nil;
-    uint64_t idle = g_alias_idle, gen = g_ser_gen;
+    uint64_t idle = g_alias_idle;
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
     guard_evict(1);
-    CHECK(g_alias_idle == idle + 1 && g_ser_gen == gen + 1, "one entry left, one bump");
+    CHECK(g_alias_idle == idle + 1, "one entry left");
     settle();
     CHECK(!w_dead, "the idle entry nothing holds is gone");
     CHECK(w_live && in_set(w_live), "a live object's texture stays, and stays resident");
