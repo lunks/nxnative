@@ -1362,7 +1362,15 @@ static NSArray<NSURL *> *found_cheat_files(NSString *build) {
 void front_run(void (*guest)(void)) {
     // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped
     static id activity; activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
-    if (!getenv("DM_WINDOW")) { guest(); return; }
+    if (!getenv("DM_WINDOW")) {   // headless: with HDR output (DM_HDR=1) the main screen's EDR headroom stands in for the window's, as at launch (front_launch_edr_potential)
+        const char *h = getenv("DM_HDR");
+        if (h && atoi(h) > 0) @autoreleasepool {
+            NSScreen *s = NSScreen.mainScreen;
+            if (s) { g_edr_potential = (float)s.maximumPotentialExtendedDynamicRangeColorComponentValue; g_edr_current = (float)s.maximumExtendedDynamicRangeColorComponentValue;
+                     LOG("front end: headless, the main screen's EDR headroom %.2f potential, %.2f now", g_edr_potential, g_edr_current); }
+        }
+        guest(); return;
+    }
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
