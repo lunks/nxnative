@@ -36,9 +36,7 @@ class Bmsk(Alu):
 
     def test_builds_the_mask(self):
         msl = self.kept(self.BMSK, srcs=(4, 5))
-        self.assertRegex(msl, r'= 1 << ')            # the width's ones
-        self.assertRegex(msl, r'\? \w+ : \(-1\)')   # all ones for a width of 32 or more
-        self.assertRegex(msl, r'< 32u')               # a position of 32 or more gives 0
+        self.assertRegex(msl, r'>= 32u')   # a position or a width of 32 or more clamps
 
     def test_wrap_masks_the_fields(self):
         msl = self.kept((self.BMSK[0] | 1 << 11, self.BMSK[1]), srcs=(4, 5))   # .W

@@ -26,7 +26,7 @@ class GuardedWrites(Translated):
         msl = self.translate(code, shared=0x1000)
         self.assertRegex(msl, r'int (_\d+) = as_type<int>\(_\d+\) \+ 8;\s*uint _\d+ = uint\(int\(uint\(\1\)')   # the odd clusters' load, at +8, is still there
         self.assertEqual(len(re.findall(r'cp_c8\)\._m0', msl)), 4)                                   # two words for each parity
-        self.assertRegex(msl, r'= _\d+ \? _\d+ : ')                                                    # each lands in the threads that ran it
+        self.assertEqual(len(re.findall(r'if \(_\d+\)\s*\{\s*_\d+ = _\d+;\s*\}', msl)), 4)                  # each lands in the threads that ran it
 
 
 class GuardedLastInBlock(Translated):

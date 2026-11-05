@@ -31,7 +31,7 @@ class GuardedHandle(Alu):
 
     def test_the_read_takes_the_texture_and_sampler_words(self):
         msl = self.msl()
-        self.assertIn('cp_t_cb196610_10248170', msl)   # words 0x170 (c2 0x5c0) and 0x92 (c2 0x248), handle type 1
+        self.assertIn('cp_t_cb196610_105C0092', msl)   # the texture word 0x92 (c2 0x248) and the sampler word 0x170 (c2 0x5c0), handle type 1
         self.assertNotIn('cp_t_cb2_170', msl)            # the sampler word as a texture handle: no texture slot holds it
 
     def test_voteu_leaves_the_thread_predicate(self):   # the vote goes to UP0: written to P0, it took the place of each thread's own P0 at the read and at the store (@!P0 STS)

@@ -19,7 +19,7 @@ TOOLS = Path(__file__).resolve().parents[1] / 'tools'
 build_module = ast.parse((TOOLS / 'dmsh_build.py').read_text())
 output_functions = [
     node for node in build_module.body
-    if isinstance(node, ast.FunctionDef) and node.name in ('int_outputs', 'fs_uint')
+    if isinstance(node, ast.FunctionDef) and node.name in ('in_word', 'int_outputs', 'fs_uint')
 ]
 namespace: dict[str, Any] = {'re': re, 'collections': collections}
 isolated_module = ast.Module(body=output_functions, type_ignores=[])
