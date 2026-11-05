@@ -12352,9 +12352,9 @@ static dlss_scaler *dlss_scaler_for(const p_dlss *c, id<MTLTexture> col, id<MTLT
     NSUInteger key[9] = {col.pixelFormat, dep.pixelFormat, mot.pixelFormat, out.pixelFormat, iw, ih, out.width, out.height, c->flags};
     dlss_scaler *e = NULL, *spare = NULL;
     for (int i = 0; i < 4 && !e; i++) { if (g_dlss[i].net == c->net) e = &g_dlss[i]; else if (!g_dlss[i].net && !spare) spare = &g_dlss[i]; }
-    if (!e) { e = spare ? spare : &g_dlss[0]; e->net = c->net; e->sc = nil; memset(e->key, 0, sizeof e->key); }
+    if (!e) { e = spare ? spare : &g_dlss[0]; e->net = c->net; defer_obj_release(e->sc); e->sc = nil; memset(e->key, 0, sizeof e->key); }   // a recorded frame may still use a replaced scaler
     if (!memcmp(e->key, key, sizeof key)) return e->sc ? e : NULL;
-    memcpy(e->key, key, sizeof key); e->sc = nil; e->fresh = 1;
+    memcpy(e->key, key, sizeof key); defer_obj_release(e->sc); e->sc = nil; e->fresh = 1;
     NSError *err = nil;
     if (!g_dlss_comp) g_dlss_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&err];
     float scale = (float)out.width / (float)iw;

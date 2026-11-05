@@ -313,16 +313,27 @@ static struct {
     struct { uint64_t frame; double off; int reset, used; } slot[MFX_CHECK];   // what the CPU knew of each slot's frame
     uint64_t bad_in, bad_out, hl; int said_in, said_out, said_hl;
 } g_mck;
-// The frame's motion: g_mm.mv[k] / dep[k] (k = cur) hold this frame's, at the origin, cw x ch of the textures' w x h (the upscaler's output size: the most the input can have)
+// The frame's motion: g_mm.mv[k] / dep[k] (k = cur) hold this frame's, at the origin, cw x ch of the textures' w x h (the largest output rectangle so far: the most the input can have)
 static struct {
     id<MTLComputePipelineState> ps; id<MTL4ArgumentTable> at; int failed;
     id<MTLTexture> mv[MFX_RING], dep[MFX_RING]; NSUInteger w, h; int cur;
     mfx_cam prev; int prev_ok; uint64_t prev_frame;   // the previous upscaler frame's camera, and the frame (g_cur_frame) it was taken in
     uint64_t frames, made, no_depth, no_cam, cuts, gaps, shaken; int said[4];
     double jmax, jlast;   // the largest projection offset seen, and this frame's, in pixels; shaken: frames whose offset is half a pixel or more
-    // this frame's (valid while made_frame == g_cur_frame + 1)
-    uint64_t made_frame; int ok, reset; mfx_cam cam; NSUInteger cw, ch;
+    // this frame's (valid while made_frame == g_cur_frame + 1); vw x vh: the temporal scaler's content (mfx_content)
+    uint64_t made_frame; int ok, reset; mfx_cam cam; NSUInteger cw, ch, vw, vh;
 } g_mm;
+// The sizes under a dynamic rate. A game's dynamic resolution moves the upscaler's input rectangle, and a game can move its output rectangle with it: Donkey Kong Bananza's softest rate
+// went between 3840x2160 from 1280x720 and 3836x2157 from 1279x719 every few frames. Everything sized for the upscaler (the motion and depth rings, the scene copies, the temporal scaler,
+// the frame interpolator) is sized once for the largest output rectangle so far and never smaller, so a rate that moves makes nothing again. That is not only the 100 ms of making them:
+// MetalFX's Metal 4 frame interpolator never gives its GPU memory back, on macOS 27 beta on an M5 Pro. Its object is freed, its 343 MB at 3840x2160 (87 at 1920x1080) stay allocated (a
+// standalone run: 8 made and released, 2.8 GB; the Metal 3 class and the temporal scaler give it back), so one per size change ended Bananza at the memory watchdog after 70 of them.
+// A smaller output later keeps the larger sizes: only the GPU's time, and only a change of operation mode gets there.
+// MetalFX takes its content (vw x vh at the origin of its inputs) over its whole output, and the game wants its input over its output rectangle, so the content is what fills the scaler's
+// output at the game's own scale: the rectangle is then the output's top left part, cropped as it is, with no second resample. full: the scaler's output; out: the game's output
+// rectangle; in: its input rectangle, all in one dimension. The content past the input repeats the input's edge. 1279 of 3836 at an output of 3840 is 1280: the device's largest
+// scale, 3.0, where stretching the 1279 over the 3840 would be past it
+static NSUInteger mfx_content(NSUInteger full, NSUInteger out, NSUInteger in) { NSUInteger v = (full * in + out / 2) / out; return v < in ? in : v > full ? full : v; }
 static int mfx_mv_dyn(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_MFX_MV_DYN"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("[mfx] DM_MFX_MV_DYN=0: every pixel gets the camera's motion"); } return v; }
 // The depth pass of the upscaler's input: a candidate whose depth has the input texture's size and a camera, the one with the most passes (the scene's), the latest on a tie
 static int mfx_pick(const mfx_io *io, id<MTLTexture> __strong *depth, mfx_cam *cam) {
@@ -368,7 +379,7 @@ static int mfx_motion(const mfx_io *io) {
     }
     if (!g_mm.ps && !g_mm.failed) { g_mm.ps = mfx_kernel(@"mfx_mv"); g_mm.at = mfx_table(); g_mm.failed = !g_mm.ps || !g_mm.at; }
     if (g_mm.failed) return 0;
-    NSUInteger w = (NSUInteger)MAX(io->orr.width, io->ir.width), h = (NSUInteger)MAX(io->orr.height, io->ir.height);   // the most the input can have: the output's size
+    NSUInteger w = MAX(g_mm.w, (NSUInteger)io->orr.width), h = MAX(g_mm.h, (NSUInteger)io->orr.height);   // the most the input can have: the output's size, the largest so far
     if (g_mm.w != w || g_mm.h != h || !g_mm.mv[0]) {
         for (int k = 0; k < MFX_RING; k++) { mfx_drop(&g_mm.mv[k]); mfx_drop(&g_mm.dep[k]); }
         for (int k = 0; k < MFX_RING; k++) {
@@ -376,7 +387,7 @@ static int mfx_motion(const mfx_io *io) {
             g_mm.dep[k] = mfx_tex(MTLPixelFormatR32Float, w, h, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite, @"mfx depth");
         }
         res_commit(); g_mm.w = w; g_mm.h = h; g_mm.prev_ok = 0;
-        MLOG("[mfx] motion vectors and depth copies %lux%lu (at most the upscaler's output; the input's rectangle at their origin)", (unsigned long)w, (unsigned long)h);
+        MLOG("[mfx] motion vectors and depth copies %lux%lu (the upscaler's largest output so far; the input's rectangle at their origin)", (unsigned long)w, (unsigned long)h);
     }
     double ojx = cam.jx * io->ir.width / 2, ojy = cam.jy * io->ir.height / 2, jpx = mfx_cam_split(&cam, (unsigned)io->ir.width, (unsigned)io->ir.height);
     if (jpx > 0.01 && !g_mm.said[1]++) MLOG("[mfx] the game's projection is offset by %.4f, %.4f pixels: its whole pixels go into the motion vectors (the image moved: a camera shake), the rest to MetalFX as its jitter", ojx, ojy);
@@ -394,11 +405,12 @@ static int mfx_motion(const mfx_io *io) {
     float *pf = (float *)pb; uint32_t *pu = (uint32_t *)(pb + 96);
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) pf[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     pf[16] = (float)g_mm.prev.p[10]; pf[17] = (float)g_mm.prev.p[11]; pf[18] = (float)g_mm.prev.p[14]; pf[19] = reset ? 0.0f : 1.0f;
-    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96
+    NSUInteger cw = io->ir.width, ch = io->ir.height, vw = mfx_content(w, io->orr.width, cw), vh = mfx_content(h, io->orr.height, ch);
+    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112 (the frame before's content: g_mm.cw and ch are still its)
     uint32_t *po = (uint32_t *)(pb + 80); po[0] = (uint32_t)io->ir.xoffset; po[1] = (uint32_t)io->ir.yoffset; po[2] = (uint32_t)io->ir.width; po[3] = (uint32_t)io->ir.height;
     pu[0] = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll; pu[1] = !atomic_load(&g_depth_zero); pu[2] = (uint32_t)mfx_mv_dyn(); pu[3] = 0;
+    pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)g_mm.cw; pu[7] = (uint32_t)g_mm.ch;
     id<MTLComputePipelineState> ps = g_mm.ps; id<MTL4ArgumentTable> at = g_mm.at; id<MTLTexture> mv = g_mm.mv[k], dout = g_mm.dep[k], pdep = g_mm.dep[pk];
-    NSUInteger cw = io->ir.width, ch = io->ir.height;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     rec_cb_block(g_cb, ^(id<MTL4CommandBuffer> cb) {
@@ -407,13 +419,13 @@ static int mfx_motion(const mfx_io *io) {
         [at setTexture:depth.gpuResourceID atIndex:0]; [at setTexture:mv.gpuResourceID atIndex:1]; [at setTexture:dout.gpuResourceID atIndex:2]; [at setTexture:pdep.gpuResourceID atIndex:3];
         [at setAddress:gpu atIndex:0];
         [e setComputePipelineState:ps]; [e setArgumentTable:at];
-        [e dispatchThreads:MTLSizeMake(cw, ch, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        [e dispatchThreads:MTLSizeMake(vw, vh, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
         [e barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // what reads them comes after
         [e endEncoding];
     });
     g_last_end_relaxed = 0; args_dirty_all();
     g_mm.prev = cam; g_mm.prev_ok = 1; g_mm.prev_frame = ep;
-    g_mm.ok = 1; g_mm.reset = reset; g_mm.cam = cam; g_mm.cw = cw; g_mm.ch = ch; g_mm.made++;
+    g_mm.ok = 1; g_mm.reset = reset; g_mm.cam = cam; g_mm.cw = cw; g_mm.ch = ch; g_mm.vw = vw; g_mm.vh = vh; g_mm.made++;
     if (!g_mm.said[2]++) MLOG("[mfx] first motion vectors: depth %lux%lu format %lu, content %lux%lu at %d,%d; camera near %.3f far %.1f fov %.2f aspect %.4f, depth %s, window origin %s, depth mode %s",
                               (unsigned long)depth.width, (unsigned long)depth.height, (unsigned long)depth.pixelFormat, (unsigned long)cw, (unsigned long)ch, io->ir.xoffset, io->ir.yoffset,
                               cam.near, cam.far, cam.fov, cam.aspect, cam.rev ? "reversed" : "not reversed", pu[0] ? "lower left" : "upper left", pu[1] ? "near=-w (GL)" : "near=0");
@@ -483,7 +495,7 @@ enum { MFX_COL_LINEAR, MFX_COL_ENC, MFX_COL_DEC, MFX_COL_SQRT };   // MFX_COL_SQ
 // The dispatch drawn by the temporal scaler (see the top): 1 when drawn, 0 to fall back to the spatial scaler
 static int mfx_temporal(const mfx_io *io, int cm) {
     if (!mfx_cam_on() || !mfx_motion(io)) { g_mts.fallback++; return 0; }
-    NSUInteger ow = io->orr.width, oh = io->orr.height, iw = g_mm.w, ih = g_mm.h;
+    NSUInteger ow = g_mm.w, oh = g_mm.h, iw = g_mm.w, ih = g_mm.h, vw = g_mm.vw, vh = g_mm.vh;   // the largest output so far: the game's rectangle is its top left part (mfx_content)
     // Encoded output as up_mfx_dlss stores it: raw only into an 8-bit RGBA image's own format (an sRGB one would encode it again), decoded only into an image that is not sRGB
     MTLPixelFormat opf = io->out.pixelFormat;
     if ((cm == MFX_COL_ENC && (pf_srgb_linear(opf) != MTLPixelFormatInvalid || (opf != MTLPixelFormatRGBA8Unorm && opf != MTLPixelFormatBGRA8Unorm))) ||
@@ -495,7 +507,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     MTLPixelFormat cf = cm ? MTLPixelFormatRGBA16Float : mfx_fx_format(io->in.pixelFormat), of = !lin ? MTLPixelFormatRGBA16Float : mfx_fx_format(opf);
     NSUInteger key[7] = {iw, ih, ow, oh, cf, of, (NSUInteger)!lin};
     if (memcmp(g_mts.key, key, sizeof key)) {
-        memcpy(g_mts.key, key, sizeof key); g_mts.sc = nil; g_mts.refused = 1; mfx_drop(&g_mts.col); mfx_drop(&g_mts.res);
+        memcpy(g_mts.key, key, sizeof key); defer_obj_release(g_mts.sc); g_mts.sc = nil; g_mts.refused = 1; mfx_drop(&g_mts.col); mfx_drop(&g_mts.res);   // the scaler too: a recorded frame may still use its history
         NSError *e = nil; uint64_t t0 = now_ns();
         if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
         float smax = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:g_dev];
@@ -503,7 +515,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         d.colorTextureFormat = cf; d.depthTextureFormat = MTLPixelFormatR32Float; d.motionTextureFormat = MTLPixelFormatRG16Float; d.outputTextureFormat = of;
         d.inputWidth = iw; d.inputHeight = ih; d.outputWidth = ow; d.outputHeight = oh;
         d.autoExposureEnabled = lin;   // linear HDR scene colour, with no exposure value of the game's to hand over; encoded colour is display-referred already
-        d.inputContentPropertiesEnabled = YES; d.inputContentMinScale = 1.0f; d.inputContentMaxScale = smax > 1 ? smax : 2.0f;   // dynamic resolution: the input's rectangle changes every few frames
+        d.inputContentPropertiesEnabled = YES; d.inputContentMinScale = 1.0f; d.inputContentMaxScale = smax > 1 ? smax : 2.0f;   // dynamic resolution: the content changes every few frames (above g_mm)
         id<MTL4FXTemporalScaler> sc = g_fx_comp && [MTLFXTemporalScalerDescriptor supportsMetal4FX:g_dev] ? [d newTemporalScalerWithDevice:g_dev compiler:g_fx_comp] : nil;
         if (sc) {
             g_mts.col = mfx_tex(cf, iw, ih, sc.colorTextureUsage | MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget, @"mfx temporal colour"); res_commit();
@@ -514,12 +526,12 @@ static int mfx_temporal(const mfx_io *io, int cm) {
              g_mts.refused ? ": MetalFX made none; the spatial scaler draws this size" : "");
     }
     if (g_mts.refused) { g_mts.fallback++; return 0; }
-    if ((NSUInteger)io->ir.width > iw || (NSUInteger)io->ir.height > ih || ow < (NSUInteger)io->ir.width || oh < (NSUInteger)io->ir.height ||
-        (float)ow / io->ir.width > g_mts.sc.inputContentMaxScale + 1e-3f || (float)oh / io->ir.height > g_mts.sc.inputContentMaxScale + 1e-3f) { g_mts.fallback++; return 0; }
+    if ((float)ow / vw > g_mts.sc.inputContentMaxScale + 1e-3f || (float)oh / vh > g_mts.sc.inputContentMaxScale + 1e-3f) { g_mts.fallback++; return 0; }
     id<MTL4FXTemporalScaler> sc = g_mts.sc;
     id<MTLTexture> out = io->out, col = g_mts.col, res = g_mts.res;
-    // Straight out into the game's texture when it covers it and has the scaler's usage
-    int direct = lin && out.pixelFormat == of && !io->orr.xoffset && !io->orr.yoffset && (NSUInteger)io->orr.width == out.width && (NSUInteger)io->orr.height == out.height &&
+    // Straight out into the game's texture when its size is the scaler's output (a rectangle of that size has covered it, so what the rectangle leaves out now is free) and it has the
+    // scaler's usage
+    int direct = lin && out.pixelFormat == of && !io->orr.xoffset && !io->orr.yoffset && ow == out.width && oh == out.height &&
                  out.storageMode == MTLStorageModePrivate && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage && out.textureType == MTLTextureType2D;
     if (!direct && !(out.usage & MTLTextureUsageRenderTarget) && (!lin || out.pixelFormat != of)) { g_mts.fallback++; return 0; }   // encoded colour is always stored by a draw
     if (!direct && !g_mts.res) { g_mts.res = mfx_tex(of, ow, oh, sc.outputTextureUsage | MTLTextureUsageShaderRead, @"mfx temporal output"); res_commit(); res = g_mts.res; if (!res) { g_mts.fallback++; return 0; } }   // only when it cannot write the game's texture
@@ -527,10 +539,16 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     zskip_del(io->out_ser);
     if (io->in.pixelFormat == cf && cm != MFX_COL_SQRT) enc_b_copy_texture(blit(), io->in, 0, 0, MTLOriginMake(io->ir.xoffset, io->ir.yoffset, 0), MTLSizeMake(io->ir.width, io->ir.height, 1), col, 0, 0, MTLOriginMake(0, 0, 0));
     else if (!copy_t2t_draw(io->in, col, 0, 0, 0, 0, &io->ir, &at0, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) { g_mts.fallback++; return 0; }
+    NSUInteger cw = io->ir.width, ch = io->ir.height;
+    if (vw > cw || vh > ch) {   // the content past the input: its last column and row repeated, as mfx_mv does for the motion and depth
+        NVNcopyRegion lc = {io->ir.xoffset + io->ir.width - 1, io->ir.yoffset, 0, 1, io->ir.height, 1}, rs = {io->ir.width, 0, 0, (int)vw - io->ir.width, io->ir.height, 1};
+        NVNcopyRegion lr = {io->ir.xoffset, io->ir.yoffset + io->ir.height - 1, 0, io->ir.width, 1, 1}, bs = {0, io->ir.height, 0, (int)vw, (int)vh - io->ir.height, 1};
+        if ((vw > cw && !copy_t2t_draw(io->in, col, 0, 0, 0, 0, &lc, &rs, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) ||
+            (vh > ch && !copy_t2t_draw(io->in, col, 0, 0, 0, 0, &lr, &bs, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0))) { g_mts.fallback++; return 0; }
+    }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     id<MTLTexture> dst = direct ? out : res, mv = g_mm.mv[g_mm.cur], dep = g_mm.dep[g_mm.cur];
-    NSUInteger cw = io->ir.width, ch = io->ir.height;
     // The projection's offset: the rest of the game's own (a camera shake, less its whole pixels: mfx_cam_split; at most half a pixel) and the camera jitter's (mfx_jit_used), in normalized
     // device units; to MetalFX in pixels of the content, y down the rows, as MetalFX takes them (g_mfx_jit_sign: the picture's move, checked by t_mfx)
     double ojx, ojy; int jit = mfx_jit_used(&g_mm.cam, &ojx, &ojy);
@@ -545,7 +563,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     mfx_check_blk check = mfx_check_prep(col, dst, cw, ch, io->orr.width, io->orr.height, g_mm.jlast, reset);
     rec_cb_block(g_cb, ^(id<MTL4CommandBuffer> cb) {
         sc.colorTexture = col; sc.depthTexture = dep; sc.motionTexture = mv; sc.outputTexture = dst; sc.exposureTexture = nil;
-        sc.inputContentWidth = cw; sc.inputContentHeight = ch;
+        sc.inputContentWidth = vw; sc.inputContentHeight = vh;
         sc.motionVectorScaleX = 1; sc.motionVectorScaleY = 1; sc.jitterOffsetX = jx; sc.jitterOffsetY = jy; sc.preExposure = 1;
         sc.depthReversed = rev; sc.reset = reset;
         [sc encodeToCommandBuffer:cb];
@@ -558,7 +576,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         else if (!copy_t2t_draw(res, out, 0, 0, 0, 0, &at0o, &io->orr, cm == MFX_COL_DEC ? COPY_SRGB_DECODE : 0, 0)) { MLOG("[RED] [mfx] the temporal scaler's result could not be drawn into format %lu", (unsigned long)out.pixelFormat); }
     }
     args_dirty_all();
-    g_jit.last = g_mm.cam; g_jit.last_ok = 1; g_jit.last_frame = atomic_load(&g_cur_frame); g_jit.ratio = (double)ow / cw;   // the camera and sizes the next frames' jitter goes by
+    g_jit.last = g_mm.cam; g_jit.last_ok = 1; g_jit.last_frame = atomic_load(&g_cur_frame); g_jit.ratio = (double)io->orr.width / cw;   // the camera and sizes the next frames' jitter goes by
     if (jit && !g_mts.jit++) MLOG("[mfx] first jittered frame drawn by the temporal scaler: offset %.4f, %.4f px of the %lux%lu content (jitterOffset %.4f, %.4f)", ojx * cw / 2, ojy * ch / 2,
                                   (unsigned long)cw, (unsigned long)ch, jx, jy);
     if (!g_mts.n++) MLOG("upscaler: first dispatch drawn by MetalFX's temporal scaler, %ux%u at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", (unsigned)cw, (unsigned)ch, io->ir.xoffset, io->ir.yoffset,
@@ -613,7 +631,7 @@ static void mfx_after(const mfx_io *io) {
     static uint64_t last; if (last == ep + 1) { static int said; if (!said++) MLOG("[RED] [mfx] a second upscaler dispatch in one frame: only the first frame's is interpolated (logged once)"); return; }
     last = ep + 1;
     int ok = mfx_motion(io);
-    NSUInteger w = io->orr.width, h = io->orr.height; MTLPixelFormat f = io->out.pixelFormat;
+    NSUInteger w = MAX(g_mfi.sw, (NSUInteger)io->orr.width), h = MAX(g_mfi.sh, (NSUInteger)io->orr.height); MTLPixelFormat f = io->out.pixelFormat;   // the largest so far (above g_mm): the picture at their origin
     if (g_mfi.sw != w || g_mfi.sh != h || g_mfi.sf != f || !g_mfi.scene[0]) {
         for (int k = 0; k < MFX_RING; k++) { mfx_drop(&g_mfi.scene[k]); mfx_drop(&g_mfi.fin[k]); }
         for (int k = 0; k < MFX_RING; k++) { g_mfi.scene[k] = mfx_tex(f, w, h, MTLTextureUsageShaderRead, @"mfx scene"); g_mfi.fin[k] = mfx_tex(f, w, h, MTLTextureUsageShaderRead, @"mfx scene with the UI"); }
@@ -622,7 +640,7 @@ static void mfx_after(const mfx_io *io) {
     }
     if (g_mfi_pend) g_mfi.no_window++;
     int s = g_mfi.s = (g_mfi.s + 1) % MFX_RING;
-    if (g_mfi.scene[s]) enc_b_copy_texture(blit(), io->out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0), MTLSizeMake(w, h, 1), g_mfi.scene[s], 0, 0, MTLOriginMake(0, 0, 0));
+    if (g_mfi.scene[s]) enc_b_copy_texture(blit(), io->out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0), MTLSizeMake(io->orr.width, io->orr.height, 1), g_mfi.scene[s], 0, 0, MTLOriginMake(0, 0, 0));
     g_mfi.pend = (mfx_frame){.frame = ep, .ok = ok && g_mfi.scene[s] && g_mfi.fin[s], .reset = !ok || g_mm.reset, .out = io->out, .scene = g_mfi.scene[s], .fin = g_mfi.fin[s],
                              .dep = ok ? g_mm.dep[g_mm.cur] : nil, .mv = ok ? g_mm.mv[g_mm.cur] : nil, .orr = io->orr, .cw = g_mm.cw, .ch = g_mm.ch, .mw = g_mm.w, .mh = g_mm.h, .cam = g_mm.cam};
     g_mfi_pend = 1;
@@ -713,7 +731,8 @@ static int mfx_present_frame(const tex_t *t, double period, unsigned busy, uint6
         g_mfi.prev_ok = 0; return -1;
     }
     NSUInteger ww = win.width, wh = win.height;
-    // The interpolator and the window-sized textures, by the motion's size and the window texture's size and format
+    // The interpolator and the window-sized textures, by the motion's size and the window texture's size and format. Another interpolator's memory is lost for good (above g_mm): what
+    // this key holds must not move with a dynamic rate
     NSUInteger key[5] = {fr.mw, fr.mh, ww, wh, wf};
     if (memcmp(g_mfi.key, key, sizeof key)) {
         if (busy) { g_mfi.slots_busy++; g_mfi.prev_ok = 0; return -1; }   // a queued present still shows a slot
@@ -759,7 +778,7 @@ static int mfx_present_frame(const tex_t *t, double period, unsigned busy, uint6
     int k = g_mfi.ck ^ 1;
     id<MTLTexture> raw = present_raw_src(win), frm = g_mfi.frm, col = g_mfi.col[k], pcol = g_mfi.col[k ^ 1], res = g_mfi.res, slot = s >= 0 ? g_mfi.slot[s] : nil;
     uint64_t gpu; uint8_t *pb = mfx_par(&gpu); float *pf = (float *)pb; uint32_t *pu = (uint32_t *)(pb + 16);
-    pf[0] = hp[0]; pf[1] = hp[1]; pf[2] = hp[2]; pf[3] = 0; pu[0] = (uint32_t)ww; pu[1] = (uint32_t)wh; pu[2] = pu[3] = 0;   // present.metal MfxWin
+    pf[0] = hp[0]; pf[1] = hp[1]; pf[2] = hp[2]; pf[3] = 0; pu[0] = (uint32_t)ww; pu[1] = (uint32_t)wh; pu[2] = (uint32_t)fr.orr.width; pu[3] = (uint32_t)fr.orr.height;   // present.metal MfxWin
     MTLSize grid = MTLSizeMake(ww, wh, 1), tg = MTLSizeMake(16, 16, 1);
     [g_mfi.alloc[a] reset];
     id<MTL4CommandBuffer> cb = g_mfi.cb[a];

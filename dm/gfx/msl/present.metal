@@ -37,7 +37,7 @@ fragment float4 fs_hdr(V in [[stage_in]], texture2d<float> t [[texture(0)]], sam
 // Frame interpolation (DM_MFX_INTERP, nvn_mfx.inc mfx_present_frame): the game's finished window frames, decoded to linear light as the present decodes them, are the input, and the
 // picture is encoded back the same way into a texture of the window texture's format, which the present then shows as a game frame. hdr.x: decode (as fs_hdr's hdr.x); hdr.y: scale
 // after decoding (fs_hdr's hdr.y: paper white at 1.0 for HDR content, 1 otherwise); hdr.z: the window's primaries are BT.2020 (HDR content)
-struct MfxWin { float4 hdr; uint2 wsize; uint2 pad; };
+struct MfxWin { float4 hdr; uint2 wsize; uint2 pic; };   // pic: the size of the game's picture at the origin of the scene and fin textures (mfx_win_decode)
 // mfx_win_decode: per window pixel, the frame decoded (frm) and the scene under its UI (col: MetalFX's colour texture). The scene is the frame less what the UI added to the game's upscaled
 // picture: the difference between that picture after the UI (fin, taken when the game starts drawing its window texture) and before it (scene, taken after the upscale), both linear and
 // stretched over the window as the game's last pass stretches them. Where the UI drew nothing the difference is 0 and the scene is the frame exactly; under the UI the difference is
@@ -48,7 +48,7 @@ kernel void mfx_win_decode(texture2d<float, access::read> win [[texture(0)]], te
     float3 d = win_decode(win.read(g).rgb, p.hdr.x) * p.hdr.y;
     frm.write(float4(d, 1), g);
     constexpr sampler s(filter::linear, address::clamp_to_edge, coord::normalized);
-    float2 uv = (float2(g) + 0.5) / float2(p.wsize);
+    float2 pic = float2(p.pic), uv = min((float2(g) + 0.5) / float2(p.wsize) * pic, pic - 0.5) / float2(scene.get_width(), scene.get_height());   // the textures can be larger than the picture
     float3 dt = fin.sample(s, uv, level(0)).rgb - scene.sample(s, uv, level(0)).rgb;
     if (p.hdr.z != 0) dt = bt709_to_2020 * dt;
     col.write(float4(max(d - dt, 0.0), 1), g);
