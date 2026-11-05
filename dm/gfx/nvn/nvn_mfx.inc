@@ -318,7 +318,7 @@ static struct {
     id<MTLComputePipelineState> ps; id<MTL4ArgumentTable> at; int failed;
     id<MTLTexture> mv[MFX_RING], dep[MFX_RING]; NSUInteger w, h; int cur;
     mfx_cam prev; int prev_ok; uint64_t prev_frame;   // the previous upscaler frame's camera, and the frame (g_cur_frame) it was taken in
-    uint64_t frames, made, no_depth, no_cam, cuts, gaps, shaken; int said[4];
+    uint64_t frames, made, no_depth, no_cam, cuts, gaps, shaken, moves; int said[4];   // moves: frames whose input rectangle is not the previous frame's (a dynamic rate)
     double jmax, jlast;   // the largest projection offset seen, and this frame's, in pixels; shaken: frames whose offset is half a pixel or more
     // this frame's (valid while made_frame == g_cur_frame + 1); vw x vh: the temporal scaler's content (mfx_content)
     uint64_t made_frame; int ok, reset; mfx_cam cam; NSUInteger cw, ch, vw, vh;
@@ -364,9 +364,9 @@ static int mfx_motion(const mfx_io *io) {
     uint64_t ep = atomic_load(&g_cur_frame);
     if (g_mm.made_frame == ep + 1) return g_mm.ok;   // already this frame (made_frame is the frame + 1, so 0 is never a frame's)
     g_mm.made_frame = ep + 1; g_mm.ok = 0;
-    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu; projection offset of half a pixel or more %llu (largest %.2f px); scaler checks: non-finite input %llu, output non-finite or dark %llu, highlights dimmed %llu%s",
+    if (++g_mm.frames % 600 == 0) MLOG("[mfx] up to upscaler frame %llu: motion vectors %llu (no depth pass %llu, no camera %llu), history resets at camera cuts %llu, after frames without the upscaler %llu; temporal scaler %llu, spatial instead %llu; the rate moved %llu times; projection offset of half a pixel or more %llu (largest %.2f px); scaler checks: non-finite input %llu, output non-finite or dark %llu, highlights dimmed %llu%s",
                                        (unsigned long long)g_mm.frames, (unsigned long long)g_mm.made, (unsigned long long)g_mm.no_depth, (unsigned long long)g_mm.no_cam, (unsigned long long)g_mm.cuts,
-                                       (unsigned long long)g_mm.gaps, (unsigned long long)g_mts.n, (unsigned long long)g_mts.fallback, (unsigned long long)g_mm.shaken, g_mm.jmax,
+                                       (unsigned long long)g_mm.gaps, (unsigned long long)g_mts.n, (unsigned long long)g_mts.fallback, (unsigned long long)g_mm.moves, (unsigned long long)g_mm.shaken, g_mm.jmax,
                                        (unsigned long long)g_mck.bad_in, (unsigned long long)g_mck.bad_out, (unsigned long long)g_mck.hl,
                                        g_jit.on > 0 ? [NSString stringWithFormat:@"; camera jitter: %llu frames jittered, %llu of them drawn by the temporal scaler, %llu block copies, %llu cameras of another lens",
                                                        (unsigned long long)g_jit.frames, (unsigned long long)g_mts.jit, (unsigned long long)g_jit.copies, (unsigned long long)g_jit.lens_miss].UTF8String : "");
@@ -427,6 +427,7 @@ static int mfx_motion(const mfx_io *io) {
     });
     g_last_end_relaxed = 0; args_dirty_all();
     g_mm.prev = cam; g_mm.prev_ok = 1; g_mm.prev_frame = ep;
+    if (g_mm.cw && (g_mm.cw != cw || g_mm.ch != ch)) g_mm.moves++;
     g_mm.ok = 1; g_mm.reset = reset; g_mm.cam = cam; g_mm.cw = cw; g_mm.ch = ch; g_mm.vw = vw; g_mm.vh = vh; g_mm.made++;
     if (!g_mm.said[2]++) MLOG("[mfx] first motion vectors: depth %lux%lu format %lu, content %lux%lu at %d,%d; camera near %.3f far %.1f fov %.2f aspect %.4f, depth %s, window origin %s, depth mode %s",
                               (unsigned long)depth.width, (unsigned long)depth.height, (unsigned long)depth.pixelFormat, (unsigned long)cw, (unsigned long)ch, io->ir.xoffset, io->ir.yoffset,
