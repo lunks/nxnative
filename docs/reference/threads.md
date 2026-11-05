@@ -128,8 +128,9 @@ Guest threads, their synchronization and how the host schedules them. Each entry
 
 - **Symptom:** a 64-bit wait could return at once or block when it should not (not met in a game).
 - **Cause:** Horizon 18 added a 64-bit "wait if equal" arbitration type, which SDK 19 exports as `nn::os::WaitForAddress(const long*, long)`; the host used to fall into its 32-bit "wait if less than" test.
-- **Fix:** type 3 compares the 64-bit value (`hle_thread.c`).
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (SDK 19.3.11): Z-A does not call it, but the SDK has it.
+- **Fix:** type 3 compares the 64-bit value (`hle_thread.c`). As the kernel's own checks do, a misaligned address (8 bytes for type 3, 4 for the others and for `SignalToAddress`) is InvalidAddress (0xcc01), and an arbitration type past 3 or a signal type past 2 is InvalidEnumValue (0xf001); before, an unknown type fell into the less-than test. An emulator without type 3 returns InvalidEnumValue, and The Legend of Zelda: Ocarina of Time (SDK 22.2.8) panics at boot on it (`0xf001` as its termination result).
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (SDK 19.3.11): Z-A does not call it, but the SDK has it. The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, no profile yet) waits with it at boot.
+- **Check:** `make -C dm/host/tests GAME=<id> run` runs `t_arbiter`: each arbitration and signal type, a 64-bit wait whose low word matches and a 64-bit wait woken by a signal, and the two Results.
 
 ### Unity's stream buffer handshake loses a wake-up on Apple cores
 

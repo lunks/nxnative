@@ -26,6 +26,8 @@
 #define R_BAD_HANDLE  0xE401u   // 114
 #define R_BAD_STATE   0xFA01u   // 125
 #define R_OUT_OF_RES  0xCE01u   // 103
+#define R_BAD_ADDR    0xCC01u   // 102
+#define R_BAD_ENUM    0xF001u   // 120
 #define WAITERS_BIT   0x40000000u
 #define H_CUR_THREAD  0xFFFF8000u
 
@@ -1072,7 +1074,10 @@ static int svc_thread_impl(int num, uint64_t *regs) {
 
     case 0x34: {  // WaitForAddress(x0 address, w1 type, x2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal, 3 wait if the 64-bit value is equal
         // (Horizon 18; SDK 19's nn::os::WaitForAddress(const long*, long) uses it, which before fell into the 32-bit less-than test)
+        // As mesosphere's svc::WaitForAddress checks before it arbitrates: the address aligned to the value's size (8 bytes for type 3, else 4), then the type
         thr_t *t = cur(); uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2];
+        if (addr & (type == 3 ? 7 : 3)) { regs[0] = R_BAD_ADDR; return 1; }
+        if ((uint32_t)type > 3) { regs[0] = R_BAD_ENUM; return 1; }
         pthread_mutex_lock(&G);
         int64_t r; uint32_t v = ld32(addr);
         int ok = type == 3 ? ld64(addr) == regs[2] : type == 2 ? (int32_t)v == val : (int32_t)v < val;
@@ -1085,6 +1090,8 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     }
     case 0x35: {  // SignalToAddress(x0 address, w1 type, w2 value, w3 count): 0 wake, 1 increment if equal and wake, 2 if equal modify the value by waiter count and wake
         uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2]; int cnt = (int)regs[3];
+        if (addr & 3) { regs[0] = R_BAD_ADDR; return 1; }   // svc::SignalToAddress: a 4-byte aligned address, then a type of the three (there is no 64-bit signal)
+        if ((uint32_t)type > 2) { regs[0] = R_BAD_ENUM; return 1; }
         pthread_mutex_lock(&G);
         int nw = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 3 && w->waddr == addr) nw++;
         int64_t r = 0;
