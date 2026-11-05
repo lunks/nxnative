@@ -259,6 +259,7 @@ Each step below stopped the boot before its fix:
 
 ## Found on this game
 
+- [Sizes that move with a dynamic rate](../../../docs/reference/rendering.md#sizes-that-move-with-a-dynamic-rate): the softest rate moved the output rectangle by 4 pixels every few frames, and 70 frame interpolators that never gave their memory back ended the game at the memory watchdog (resident 24.8 GB, GPU allocated 30.5 GB at frame 2100).
 - [The graphics scale is the GPU share, not the operation mode](../../../docs/reference/services.md#the-graphics-scale-is-the-gpu-share-not-the-operation-mode): the docked output is the 2880x1620 window, no longer 2304x1296 (`res_chain` updated, so the render-target pool takes the 2880x1620 tier by default).
 - [Compile pools smaller than Metal's compiler](../../../docs/reference/shaders.md#compile-pools-smaller-than-metals-compiler): the pipeline prebuild of its 21,225 shader pairs, M5 Pro, 393-452 s on 4 workers against 187-272 s on Metal's 14 (resolved).
 - [A depth clear over the whole target with a partial stencil mask](../../../docs/reference/rendering.md#a-depth-clear-over-the-whole-target-with-a-partial-stencil-mask): 22.8 MB of depth and stencil loaded a frame for a stencil mask of 1 (resolved).

@@ -334,7 +334,7 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, in
     const double expect = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.75; const int limit = hdr ? 4 : 2;
     fill(tex_mtl(in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); fill(tex_mtl(out), MTLClearColorMake(0, 0, 0, 1), 0);
     g_test_hdr = hdr ? 1 : -1; g_mm.w = g_mm.h = 0; g_mfi.sw = g_mfi.sh = 0;
-    id sc0 = nil, fi0 = nil; id<MTLTexture> mv0 = nil, scene0 = nil; uint64_t alloc0 = 0; int same = 1, drawn_all = 1, pics = 0, worst_pic = 0, worst_over = 0, grown = 0; double edge = 1e9;
+    id sc0 = nil, fi0 = nil; id<MTLTexture> mv0 = nil, scene0 = nil; uint64_t alloc0 = 0, moves0 = g_mm.moves; int same = 1, drawn_all = 1, pics = 0, worst_pic = 0, worst_over = 0, grown = 0; double edge = 1e9;
     for (int f = 0; f < 32; f++) @autoreleasepool {   // the read-backs' buffers go with their frame: the allocated size is the host's
         const uint32_t *r = f & 1 ? full : less; unsigned ow = r[6] + 1, oh = r[7] + 1;   // the smaller first: the larger makes them all once more, and that is the last time
         drawn_all &= dyn_frame(named, r, depth, cam, frame);
@@ -356,6 +356,7 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, in
     double grew = ((double)g_dev.currentAllocatedSize - (double)alloc0) / 1048576;
     fprintf(stderr, "dynamic rates (%s): 25 frames of the two sizes: GPU allocated %+.1f MB; the rectangle's last row and column at %.3f of the scene's brightness; %d interpolated pictures, %d pixels at most over %d codes, largest difference %d\n", name, grew, edge, pics, worst_over, limit, worst_pic);
     CHECK(grown, "the larger rectangle grows the sizes");
+    CHECK(g_mm.moves - moves0 >= 31, "the statistics count the rate's moves");
     CHECK(same, "the rectangles' move makes nothing again: the scaler, the interpolator, the motion textures and the scene copies stay");
     CHECK(grew < 4, "the rectangles' move takes no memory");
     if (interp) { CHECK(pics >= 10, "interpolated pictures go on across the sizes"); CHECK(worst_over <= 256, "a static scene's picture is the window texture but for MetalFX's specks: no row or column off, the UI where the window pass stretches it"); CHECK(worst_pic <= (hdr ? 64 : 32), "and those specks are small"); }
