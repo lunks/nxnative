@@ -13585,7 +13585,8 @@ static int up_mfx_same(const mfx_io *io) {
 }
 // The dispatch of upscaler cs as MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal, nvn_mfx.inc) or spatial scaler from its texture slot's rectangle to its image slot's (see above):
 // 1 when drawn, 0 to run the shader. The temporal one falls back to the spatial one for a frame it lacks the depth or the camera of, and a 1:1 dispatch to a copy (up_mfx_same); it takes
-// only a shader with linear input and output (up_mfx_color: it reads the scene as linear HDR), and a shader with sRGB input gets the spatial one in perceptual mode (a 1:1 one its own shader)
+// a shader with linear input and output (up_mfx_color: the scene as linear HDR) and one with encoded input, its result stored as the network stores it (mfx_temporal's MFX_COL_ENC / DEC);
+// without the camera a shader with sRGB input gets the spatial one in perceptual mode (a 1:1 one its own shader)
 // The upscaler's dispatch as MetalFX's temporal scaler with the frame's DLSS evaluation (see dlss_eval's g_dlss_fwd): its input at the evaluation's size, its colour linear in and out,
 // encoded in and out (stored raw through an 8-bit image's linear view, as up_mfx_encode stores it), or encoded in and decoded out (UP_COLOR_SRGB: Star Fox's HDR variants, which write
 // linear colour into an R11G11B10F image; the scaler takes the encoded colour as for the encoded variants, and the copy into the image undoes the curve as the network's end does,
@@ -13657,7 +13658,8 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
 static int up_mfx_encode(NvShader *cs) {
     mfx_io io; if (!up_mfx_resolve(cs, &io)) { if (up_mfx_dlss_kept()) up_mfx_dlss_refuse(cs, "its textures were not found"); g_up_mfx_kept++; return 0; }
     if (up_mfx_on() == 2 && up_mfx_dlss(cs, &io)) { mfx_after(&io); return 1; }
-    if (up_mfx_on() == 2 && cs->up_color == UP_COLOR_LINEAR && mfx_temporal(&io)) { mfx_after(&io); return 1; }
+    if (up_mfx_on() == 2 && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB_ENC || cs->up_color == UP_COLOR_SRGB) &&
+        mfx_temporal(&io, cs->up_color == UP_COLOR_SRGB_ENC ? MFX_COL_ENC : cs->up_color == UP_COLOR_SRGB ? MFX_COL_DEC : MFX_COL_LINEAR)) { mfx_after(&io); return 1; }
     if (io.ir.width == io.orr.width && io.ir.height == io.orr.height) { if (cs->up_color != UP_COLOR_LINEAR) { g_up_mfx_kept++; return 0; } return up_mfx_same(&io); }
     id<MTLTexture> in = io.in, out = io.out; NVNcopyRegion ir = io.ir, orr = io.orr; uint64_t dout_ser = io.out_ser;
     int srgb = cs->up_color == UP_COLOR_SRGB || cs->up_color == UP_COLOR_SRGB_ENC, enc = cs->up_color == UP_COLOR_SRGB_ENC;
