@@ -381,6 +381,27 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, in
         if (interp) CHECK(moved >= 10 && along <= 2, "the interpolated pictures keep the edge where the window texture has it");
     }
     CHECK(drawn_all, "the temporal scaler draws every frame of the moving edge");
+    // What the scaler is given past a smaller rate's input: its edge repeated, not what the larger rate left there. The rates' scenes differ, so a stale texel shows
+    int colour = 1, dep_edge = 1, mv_edge = 1;
+    for (int f = 0; f < 8; f++) @autoreleasepool {
+        const uint32_t *r = f & 1 ? less : full; unsigned iw = r[2] + 1, ih = r[3] + 1, vw = full[2] + 1, vh = full[3] + 1;
+        float dv = f & 1 ? 0.98f : 0.99f;
+        fill(tex_mtl(in), f & 1 ? MTLClearColorMake(1, 1, 1, 1) : MTLClearColorMake(0, 0, 0, 1), 0); fill(depth, MTLClearColorMake(0, 0, 0, 0), dv);
+        dyn_frame(named, r, depth, cam, frame);
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
+        if (!(f & 1)) continue;
+        uint8_t *c = read_all(g_mts.col), *d = read_all(g_mm.dep[g_mm.cur]), *m = read_all(g_mm.mv[g_mm.cur]); size_t w = g_mm.w;
+        const size_t at[3] = {100 * w + vw - 1, (vh - 1) * w + 100, (vh - 1) * w + vw - 1}, in_at[3] = {100 * w + iw - 1, (ih - 1) * w + 100, (ih - 1) * w + iw - 1};
+        for (int i = 0; i < 3; i++) {
+            float dd; memcpy(&dd, d + at[i] * 4, 4); __fp16 m0[2], m1[2]; memcpy(m0, m + at[i] * 4, 4); memcpy(m1, m + in_at[i] * 4, 4);
+            colour &= r11_lum(c, at[i]) > 0.9; dep_edge &= fabsf(dd - dv) < 1e-4f; mv_edge &= fabsf((float)m0[0] - (float)m1[0]) < 0.01f && fabsf((float)m0[1] - (float)m1[1]) < 0.01f;
+        }
+        free(c); free(d); free(m);
+    }
+    CHECK(colour, "past the smaller input the scaler's colour is the input's edge, in its last column, row and corner");
+    CHECK(dep_edge, "past the smaller input the scaler's depth is this frame's");
+    CHECK(mv_edge, "past the smaller input the scaler's motion is the input's edge's");
+    fill(depth, MTLClearColorMake(0, 0, 0, 0), 0.99);
     fill(tex_mtl(in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0);
 }
 int main(void) { @autoreleasepool {
