@@ -13,7 +13,7 @@ import dmsh_geometry, dmsh_atomic, dmsh_wide, dmsh_meshstage, dmsh_abi as abi   
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import dmsh_chain, dmsh_fetch, dmsh_facts, dmsh_mtlcache, dmsh_pch, dmsh_vin, dmsh_pull, dmsh_side, dmsh_mesh, dmsh_ampere, tool_lock   # translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import dmsh_chain, dmsh_fetch, dmsh_facts, dmsh_mtlcache, dmsh_pch, dmsh_workers, dmsh_vin, dmsh_pull, dmsh_side, dmsh_mesh, dmsh_ampere, tool_lock   # translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
 _bad = tool_lock.check_tools()
 if _bad: sys.exit('\n'.join('[RED] translation chain tools do not match the lock file: ' + b for b in _bad) + '\n(if the tools changed, run tool_lock.py --update-lock and commit the lock file; if the translator just was not rebuilt, rebuild it)')
 CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
@@ -1719,8 +1719,12 @@ def fin(key):
     result = (key,) + finish(key, w, jobs[key], c1s[key])
     if result[1] == 'ok': publish_cache(key, digests[key], rule_fps[key], CODE_FP)
     return result
-with cf.ThreadPoolExecutor(NJ) as ex:   # two phases: paired vertex shaders read their pixel shaders' MSL (vs_pad), so they go last
-    res = list(ex.map(fin, [k for k in keys if k not in PAIRS])) + list(ex.map(fin, [k for k in keys if k in PAIRS]))
+# In processes (dmsh_workers.py): fin is mostly Python on text, which threads run one at a time. Ocarina of Time's 42,851 shaders took 42 minutes on one core with 8 Metal compiles to do.
+# The precompiled headers are made here, once: a worker's own would stay behind (dmsh_pch.make cleans up at exit, which a worker skips)
+for _metal in [MAC_METAL + METAL_DEPTH, MAC_TENSOR_METAL + METAL_DEPTH] + ([ios_metal.METAL + ios_metal.DEPTH] if IOSOUT else []): dmsh_pch.header(_metal)
+STATS = BF_STATS, VIN_STATS, PULL_STATS, SIDE_STATS, BORDER_STATS, BI_STATS, TENSOR_STATS, MTL.stats
+# two phases: paired vertex shaders read their pixel shaders' MSL (vs_pad), so they go last
+res = dmsh_workers.run(fin, [k for k in keys if k not in PAIRS], NJ, STATS) + dmsh_workers.run(fin, [k for k in keys if k in PAIRS], NJ, STATS)
 # Passthrough geometry as mesh shaders (dmsh_mesh.py): <vertex key>_<geometry key>_m3 for each pair in the profile's geo_mesh.tsv whose two libraries exist; the host
 # draws a lean triangle-list geometry draw with it when its pair has one, and through the compute path otherwise (nvn_geometry.inc geo_mesh_draw)
 MESH_STATS = collections.Counter()

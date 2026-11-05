@@ -68,7 +68,7 @@ class CodeForm(unittest.TestCase):
         self.assertNotEqual(form(src.replace("'--msl-version', '20300'", "'--msl-version', '20400'")), form(src))
 
 
-NO_OUTPUT = {'dmsh_mtlcache', 'dmsh_pch'}   # they only make a compile cheaper, and never change an output
+NO_OUTPUT = {'dmsh_mtlcache', 'dmsh_pch', 'dmsh_workers'}   # they only make a compile cheaper or say where it runs, and never change an output
 
 
 class Coverage(unittest.TestCase):

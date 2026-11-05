@@ -3,7 +3,6 @@ Exercise the builder's real key/restore functions without game files or Xcode.
 """
 import ast
 import collections
-import concurrent.futures as cf
 import hashlib
 import importlib.util
 import json
@@ -241,9 +240,9 @@ class ShaderCache(unittest.TestCase):
             self.ns['publish_cache'](key, key + '-digest', 'rule', 'source')
             return key, 'ok', '', refl
 
-        phase = next(n for n in self.tree.body if isinstance(n, ast.With) and any(
-            isinstance(s, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'res' for t in s.targets) for s in n.body))
-        self.ns.update(cf=cf, NJ=1, keys=keys, fin=finish_key)
+        # the statement that runs the two phases, with its workers in this process: what built records would stay in a forked one
+        phase = next(n for n in self.tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'res' for t in n.targets))
+        self.ns.update(dmsh_workers=types.SimpleNamespace(run=lambda task, items, jobs, counters=(): [task(x) for x in items]), STATS=(), NJ=1, keys=keys, fin=finish_key)
         exec(compile(ast.Module(body=[phase], type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
         self.assertEqual(built, [pixel, vertex])
         self.assertIn('dm_pad7 [[user(locn7)]]', (out / (vertex + '_b.metal')).read_text())
