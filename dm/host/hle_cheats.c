@@ -1908,13 +1908,14 @@ static const char *sp_applied_value(const char *var) { const char *v = NULL; ret
 // One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written. dflt: the variable is unset
 // and val is its value game, so no row's condition holding needs no line (the game's own code, as for any unset variable)
 static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val, int dflt) {
-    const setting_patch_t *g[SP_HELD_MAX], *first = NULL; int ng = 0, nbuild = 0, conds = 0; char cond[160] = "";
+    const setting_patch_t *g[SP_HELD_MAX], *first = NULL, *word = NULL; int ng = 0, nbuild = 0, nwbuild = 0, conds = 0; char cond[160] = "";
     for (int i = 0; i < n; i++) {
         if (strcmp(t[i].var, var) || strcmp(t[i].value, val)) continue;
         if (!first) first = &t[i];
+        if (!t[i].arg && !word) word = &t[i];
         module_t *m = t[i].arg ? NULL : sp_module(t[i].module);
         if (!t[i].arg && (!m || strcasecmp(m->build_id, t[i].build))) continue;
-        nbuild++;
+        nbuild++; nwbuild += !t[i].arg;
         if (t[i].when && *t[i].when) conds = 1;
         if (sp_when(t[i].when, cond, sizeof cond) && ng < SP_HELD_MAX) g[ng++] = &t[i];   // rows whose condition does not hold now are not this launch's
     }
@@ -1922,7 +1923,8 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         LOG("setting %s=%s: no patch for this value, the game's own code runs", var, val);
         return 0;
     }
-    if (!nbuild) {   // rows for other builds only (another version of the game, or a module without a build ID)
+    if (!nbuild || (word && !nwbuild)) {   // rows for other builds only (another version of the game, or a module without a build ID); a value with words gives
+        first = word ? word : first;          // its arguments only with them (Star Fox's Native (MetalFX AA): its argument alone would be plain Native)
         module_t *m = sp_module(first->module);
         LOG("[RED] setting %s=%s (%s): not applied: its patch is for %s build %s, and this %s is build %s (fixed addresses run only on the build they were found in)",
             var, val, first->label, first->module, first->build, first->module, m && m->build_id[0] ? m->build_id : "unknown");

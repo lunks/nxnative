@@ -27,6 +27,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 |---|---|---|---|---|---|---|---|
 | `build` → `game` | 60 fps intervals and dynamic-resolution constants | frame rate | gap | checked: both releases' mains, where the host's rows for them were found | 2 | [NieR:Automata The End of YoRHa Edition (010056B015FE8000)](../../dm/games/010056B015FE8000/README.md); [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](../../dm/games/0100B8E016F76000/README.md) | the game's own constants; the Asian release's function is the global one's 0x13c0 further on, so one function-matched rule could serve both releases |
 | `build` → `game` | NieR's frame interval and dynamic-resolution floor at fixed addresses | frame rate | gap | checked: both releases' mains, where these rows were found | 2 | [NieR:Automata The End of YoRHa Edition (010056B015FE8000)](../../dm/games/010056B015FE8000/README.md); [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](../../dm/games/0100B8E016F76000/README.md) | the game's own display object; the Asian release's function is the global one's 0x13c0 further on, so the rewriter's function match could give the host both releases' addresses |
+| `build` → `game` | setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch | rendering | gap | judgement | 2 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md); [Star Fox](../../dm/games/0400E88025B1A000/README.md) | fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function |
 | `build` → `host` | frame limiter wait: yield → sleep | power | gap | checked: Mac runs with the cut undone, 2026-10-26 (the game note) | 1 | [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md) | without it the host's yield back-off (thr_yield) holds 59.7 to 59.8 fps, at 0.9 to 1.2 W of CPU against 0.14 to 0.42 W (2026-10-26): a back-off that reaches a yield-and-tick loop's deadline sooner would make the cut unnecessary for every game |
 | `game` → `host` | one vertex shader's visibility counter (VertexCounterLowering) | shaders | gap | judgement | — | [Program.cs:266](../../dm/gfx/tools/dmsh_xlate/Program.cs#L266) | a general lowering of subgroup ballots in vertex shaders would cover any shader that counts that way |
 | `build` → `engine` | Unity QualitySettings.vSyncCount held at 1 | frame rate | gap | judgement | 1 | [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md) | an IL2CPP player registers the setter by its icall name, so the place can be found in any Unity game; holding it at 1 stays this profile's choice (its logic steps by the count) |
@@ -38,7 +39,6 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | malloc region 60 GB → 4 GB and its first arena | address space | gap | judgement | 1 | [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md) | Monolith's own allocator; its constants span two functions (a multi-function rule). The cause, an iPhone's address space, is a platform limit |
 | `build` → `game` | PhysX completion task release | race | gap | judgement | 1 | [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md) | a lifetime race in the game's own completion task (its release slot serves this one vtable) |
 | `build` → `game` | render intervals, the forced-interval flag and the render-wait timeout | frame rate | gap | judgement | 1 | [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md) | the game's own tables, flag and timeout |
-| `build` → `game` | setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch | rendering | gap | judgement | 1 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) | fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function |
 | `build` → `game` | task ring push and pop barriers | race | gap | judgement | 1 | [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md) | a data race in the game's own task ring |
 | `build` → `game` | UE3's GMalloc setup skipped, the host allocator in (hle_uemalloc.c) | address space | gap | judgement | 1 | [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md) | UE3 inlines the allocator's constructor into the GMalloc setup and has its own vtable layout (25 slots, 32-bit sizes), so the Unreal 4/5 discovery does not apply |
 | `build` → `game` | unused 272-byte slot pool: 4,194,304 → 65,536 slots | address space | gap | judgement | 1 | [Mario + Rabbids® Sparks of Hope](../../dm/games/0100317013770000/README.md) | Sparks of Hope's own init (Kingdom Battle has none) |
@@ -85,6 +85,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [NieR:Automata The End of YoRHa Edition (0100B8E016F76000)](#nierautomata-the-end-of-yorha-edition-0100b8e016f76000) | 8 | 0 | 0 | 0 | 1 | 0 | `build` → `game` ×2 |
 | [Paper Mario: The Thousand-Year Door](#paper-mario-the-thousand-year-door) | 1 | 0 | 1 | 0 | 0 | 0 | `build` → `game` |
 | [Pokémon Brilliant Diamond](#pokémon-brilliant-diamond) | 0 | 0 | 0 | 0 | 1 | 0 | `build` → `engine` |
+| [Star Fox](#star-fox) | 0 | 0 | 0 | 0 | 0 | 10 | `build` → `game` |
 | [Subnautica](#subnautica) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Subnautica: Below Zero](#subnautica-below-zero) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 | [Super Mario 3D All-Stars: Super Mario Sunshine](#super-mario-3d-all-stars-super-mario-sunshine) | 2 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
@@ -723,6 +724,24 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **1.3.0 `main`** `94ceae32…`
   - host [hle_fpslock.c:28](../../dm/host/hle_fpslock.c#L28): engine frame limit set to fps_target: Unity targetFrameRate
+
+### Star Fox
+
+[Star Fox](../../dm/games/0400E88025B1A000/README.md), `0400E88025B1A000`.
+
+- **`build` → `game`**, rendering, gap, judgement: setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch. Fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function
+
+- **v131072 `main`** `a7730d0f…`
+  - setting patch `main+0xb466d74` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `5400054D` → `1400000F` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46cc88` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1A9FC7E8` → `2A1F03E8` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46cc98` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `52800028` → `2A1F03E8` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46cee8` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1B0A41D1` → `2A0A03F1` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46ceec` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1B0B41CE` → `2A0B03EE` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46cef0` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1ACF0E31` → `D503201F` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb46cef4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1ACF0DCE` → `D503201F` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb47fff4` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1B0D398D` → `D503201F` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb480000` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1ACB0DAD` → `D503201F` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
+  - setting patch `main+0xb480004` (`DM_UPSCALE_RATIO=native-mfx`, Native (MetalFX AA)): `1ACB0D8B` → `2A0F03EB` ([setting_patches.tsv](../../dm/games/0400E88025B1A000/setting_patches.tsv))
 
 ### Subnautica
 

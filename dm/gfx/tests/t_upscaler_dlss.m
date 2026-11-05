@@ -2,7 +2,7 @@
 // and is kept; the game's upscaler dispatch of the same frame, 960x540 → 1920x1080 with encoded colour in and out (Star Fox's ddc729bcdb4c8df9), is drawn by MetalFX's temporal scaler
 // with the evaluation's depth and motion vectors, and the image holds the input's bytes (a uniform colour); without an evaluation in the frame the spatial scaler draws it. Star Fox's
 // HDR variant (encoded in, decoded out into a float image) takes the evaluation too and its image holds the colour decoded; a dispatch that does not take its frame's evaluation makes
-// the next evaluations anti-alias at their own size until another upscaler shader runs. Runs under Star Fox's profile (its upscaler shaders) or any with upscaler keys; expectations
+// the next evaluations anti-alias at their own size until another upscaler shader runs. A 1:1 dispatch (Native (MetalFX AA)) takes the evaluation too. Runs under Star Fox's profile (its upscaler shaders) or any with upscaler keys; expectations
 // written by hand
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
@@ -115,6 +115,19 @@ int main(void) { @autoreleasepool {
     mtl_sub_begin(); dlss_eval(&c);
     CHECK(g_dlss_fwd.ok, "the next evaluation is kept again");
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the last submission completes");
+    // 1:1 (Star Fox's Native (MetalFX AA): the scene, the evaluation and the dispatch at the output's size): the temporal scaler anti-aliases at that size with the evaluation
+    tex_t sout = texture(83, 960, 540, NVN_FORMAT_RGBA8_SRGB); sout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; mtl_reg_image(704, &sout, NULL);
+    S.img[5][1] = 704; named->up_color = UP_COLOR_SRGB_ENC;
+    { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 959, 539}; memcpy(S.push[1], rects, sizeof rects); }
+    for (int frame = 0; frame < 3; frame++) {
+        mtl_sub_begin();
+        dlss_eval(&c);
+        uint64_t n2 = g_umd.n;
+        CHECK(g_dlss_fwd.ok && up_mfx_encode(named) && g_umd.n == n2 + 1 && !g_dlss_fwd.refused[0], "a 1:1 dispatch is drawn by the temporal scaler with the evaluation");
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the 1:1 submission completes");
+    }
+    os_unfair_lock_lock(&g_rmu); id<MTLTexture> swritten = tex_by_id(704); os_unfair_lock_unlock(&g_rmu);
+    CHECK(uniform_bytes(swritten, want), "the 1:1 image holds the input's encoded bytes");
     printf("t_upscaler_dlss: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 }}

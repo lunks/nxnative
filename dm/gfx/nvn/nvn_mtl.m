@@ -13607,7 +13607,7 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
     id<MTLTexture> dep = c.tex[DLSS_DEPTH] ? tex_mtl(c.tex[DLSS_DEPTH]) : nil, mot = c.tex[DLSS_MOTION] ? tex_mtl(c.tex[DLSS_MOTION]) : nil, out = io->out;
     NSUInteger iw = (NSUInteger)io->ir.width, ih = (NSUInteger)io->ir.height, ow = (NSUInteger)io->orr.width, oh = (NSUInteger)io->orr.height;
     if (!dep || !mot) return up_mfx_dlss_refuse(cs, "no depth or motion vectors");
-    if ((c.iw > 0 && (NSUInteger)c.iw != iw) || (c.ih > 0 && (NSUInteger)c.ih != ih) || ow <= iw || oh <= ih) return up_mfx_dlss_refuse(cs, "another input size, or no enlargement");
+    if ((c.iw > 0 && (NSUInteger)c.iw != iw) || (c.ih > 0 && (NSUInteger)c.ih != ih) || ow < iw || oh < ih) return up_mfx_dlss_refuse(cs, "another input size, or a smaller output");   // 1:1: anti-aliasing at the output's size (Native (MetalFX AA))
     int enc = cs->up_color == UP_COLOR_SRGB_ENC, dec = cs->up_color == UP_COLOR_SRGB;
     if (!enc && !dec && cs->up_color != UP_COLOR_LINEAR) return up_mfx_dlss_refuse(cs, "a colour shape MetalFX does not draw");
     if (enc && (pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid || (out.pixelFormat != MTLPixelFormatRGBA8Unorm && out.pixelFormat != MTLPixelFormatBGRA8Unorm)))   // stored raw only

@@ -831,6 +831,8 @@ int main(void) {
             {"DM_T_ARG", "w", "Word and argument", "main", B1, 0x1300, 0x11111111u, 0x22222222u},
             {"DM_T_ARG", "w", "Word and argument", "args", "", 0, 0, 0, "", "-render_scale=1"},
             {"DM_T_ARG", "c", "Conditioned", "args", "", 0, 0, 0, "DM_T_UP=metalfx", "-render_ndsr=0"},
+            {"DM_T_ARG", "o", "Other build", "args", "", 0, 0, 0, "", "-render_scale=1"},
+            {"DM_T_ARG", "o", "Other build", "main", "00000000000000000000000000000000", 0x1300, 0x11111111u, 0x22222222u},
         };
         const int na = (int)(sizeof ap / sizeof ap[0]); int nargs; const char *const *args;
         EP_RESET(); g_sp_nargs = 0; setenv("DM_T_ARG", "q", 1);
@@ -844,6 +846,9 @@ int main(void) {
         CHECK(sp_apply(ap, na) == 0 && (dm_setting_args(&nargs), nargs == 0), "setting patches: an argument row whose condition does not hold: no argument");
         setenv("DM_T_UP", "metalfx", 1);
         CHECK(sp_apply(ap, na) == 1 && (args = dm_setting_args(&nargs)) && nargs == 1 && !strcmp(args[0], "-render_ndsr=0"), "setting patches: its condition holds: the argument");
+        EP_RESET(); g_sp_nargs = 0; setenv("DM_T_ARG", "o", 1);
+        CHECK(sp_apply(ap, na) == 0 && (dm_setting_args(&nargs), nargs == 0) && rd32(0x1300) == 0x11111111u,
+              "setting patches: a value whose words are for another build gives no argument either");
         unsetenv("DM_T_ARG"); unsetenv("DM_T_UP"); g_sp_nargs = 0; EP_RESET();
         #undef EP_RESET
         #undef B1

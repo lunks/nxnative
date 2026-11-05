@@ -9,6 +9,23 @@
 # resolution is off while NDSR upscales, and there is no dynamic row
 DM_UPSCALE_RATIO	game	Game default (2.0)	-
 DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	args	-	-	-	-render_resolution_scale_console=1.0
+# DM_UPSCALE_RATIO native-mfx (README.md, Native (MetalFX AA)): the scene at the output's size (the argument, as Native) with DLSS and NDSR kept on at 1:1, so the host's temporal
+# scaler draws NDSR's dispatch with DLSS's evaluation (docs/reference/rendering.md, One temporal upscale with a game's DLSS); only with DM_UPSCALER=metalfx-temporal. No cvar does it:
+# the frame setup main+0xb469860 takes a scene of the output's size as native and turns DLSS and NDSR off. Words of main a7730d0f…: 0xb466d74 (the AA mode function main+0xb466c50
+# answers 3, NDSR, at equal sizes too: b.le → b to its 3 path), 0xb46cc88 / 0xb46cc98 (the native flag [sp+0xc4] 0: the DLSS gate w27 holds), 0xb46cee8-0xb46cef4 (NDSR's entry
+# match takes entry 0 when the scene is NDSR's output size: ceil(out x num / den) → out), 0xb47fff4 / 0xb480000 / 0xb480004 (NDSR's execute main+0xb47fea0 gives the network an
+# input rectangle of the output's size, not ceil(out x num / den) of the entry: 3200x1800 for entry 0, 5/6)
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	args	-	-	-	-render_resolution_scale_console=1.0	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb466d74	5400054D	1400000F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46cc88	1A9FC7E8	2A1F03E8	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46cc98	52800028	2A1F03E8	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46cee8	1B0A41D1	2A0A03F1	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46ceec	1B0B41CE	2A0B03EE	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46cef0	1ACF0E31	D503201F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb46cef4	1ACF0DCE	D503201F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb47fff4	1B0D398D	D503201F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb480000	1ACB0DAD	D503201F	DM_UPSCALER=metalfx-temporal
+DM_UPSCALE_RATIO	native-mfx	Native (MetalFX AA)	main	a7730d0f74d168d90422354c8317f76f	0xb480004	1ACB0D8B	2A0F03EB	DM_UPSCALER=metalfx-temporal
 DM_UPSCALE_RATIO	1.5	Quality (1.5)	args	-	-	-	-render_resolution_scale_console=0.6666667
 DM_UPSCALE_RATIO	2.0	Performance (2.0)	args	-	-	-	-render_resolution_scale_console=0.5
 DM_UPSCALE_RATIO	3.0	Ultra performance (3.0)	args	-	-	-	-render_resolution_scale_console=0.3333333

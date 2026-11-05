@@ -85,6 +85,12 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0','the conflicts on Native (MetalFX AA), which Star Fox does not offer, go')
         self.assertNotIn('rates',q)
         self.assertNotIn('DM_UPSCALE_DYNAMIC',r,'no softest rate, no dynamic resolution row')
+    def test_star_fox_native_mfx(self):   # Native (MetalFX AA): an argument with code words of main a7730d0f…, offered only on that build (its argument alone would be plain Native)
+        r=self.rows('0400E88025B1A000','# BUILD_ID\ta7730d0f74d168d90422354c8317f76f\n')
+        q=r['DM_UPSCALE_RATIO']
+        self.assertEqual([o[0] for o in q['options']],['game','1.0','native-mfx','1.5','2.0','3.0'])
+        self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0|native-mfx,DM_UPSCALER=metalfx:native-mfx','Native (MetalFX AA) only with MetalFX temporal')
+        self.assertEqual(q['rates'],'native-mfx:1')
     def test_bananza_resolution_model_rows(self):   # the Mac window's sections: Resolution in the picture's order, then Effects, Frame rate and HDR
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':'mac','GFXAPI':'nvn'}):
             (Path(tmp)/'main.fixups.tsv').write_text(f'# BUILD_ID\t{self.DKB_MAIN}\n# SINGLE_UPSCALE\t1\n')

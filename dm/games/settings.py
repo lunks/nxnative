@@ -99,9 +99,12 @@ def patch_options(g, patched):
     """{variable: [[value, label], ...]}: the values the profile's setting patches (game.setting_patches) offer for the build being packed, in table
     order: its label rows (the game's own value, no write) and the values with writes for that build of their module (each module's rewriter table names
     its build). A variable with no write for this build is absent: its setting is not shown (the host would refuse every value)"""
-    builds, out, writes = {}, {}, set()
-    for r in game.setting_patches(g):
-        if 'arg' in r: writes.add(r['var'])   # a program argument holds on any build
+    builds, out, writes, rows = {}, {}, set(), game.setting_patches(g)
+    worded = {(r['var'], r['value']) for r in rows if 'module' in r and 'arg' not in r}   # values with code words: their argument rows hold only with them
+    for r in rows:
+        if 'arg' in r:   # a program argument holds on any build, unless its value also writes code (the host gives it only with those words)
+            if (r['var'], r['value']) in worded: continue
+            writes.add(r['var'])
         elif 'module' in r:
             if r['module'] not in builds: builds[r['module']] = fixups_build(Path(patched) / f'{r["module"]}.fixups.tsv')
             if builds[r['module']] != r['build']: continue
