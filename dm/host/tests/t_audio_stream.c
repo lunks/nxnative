@@ -46,6 +46,14 @@ int main(void) {
     CHECK(h_vd_PropIn(&p, "VoiceChatIn") == 0x299, "no input device properties");
     stream_format in = {FMT_INT16, 1, 48000}; os_type it = {0};
     CHECK(h_is_Open(&it, work[3], sizeof work[3], "VoiceChatIn", &in, 240) == 0x299 && !it.impl, "an input stream does not open");
+    // What Ocarina of Time asks of its two never-opened input streams: state, purge, statistics; and the other calls that would read the null Impl pointer
+    memset(&it, 0x55, sizeof it);   // the game's object is not read
+    h_is_Purge(&it); stream_stats ist = h_is_Stats(&it, 1);
+    CHECK(h_is_State(&it) == 0 && !ist.written && !ist.refused && !ist.underrun, "a never-opened input stream: closed, zero statistics");
+    CHECK(h_is_Free(&it) == 0 && h_is_Capacity(&it) == 0 && h_is_GetGain(&it) == 1.f, "and no frames, gain 1");
+    h_is_SetGain(&it, 0.5f, 1000000); CHECK(h_is_GetGain(&it) == 1.f, "a gain set on it is not kept");
+    char din[256]; memset(din, 0x55, sizeof din); h_vd_DefIn(din);
+    CHECK(!din[0] && !h_vd_FmtIn("VoiceChatIn", &in), "no default input device, no input format");
 
     // Open's Results
     os_type t = {0}, t2 = {0}, never = {0};

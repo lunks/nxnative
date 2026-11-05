@@ -327,6 +327,25 @@ HLE_FORCE("_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", "never opened
 HLE_FORCE("_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", "never opened on the host: nothing to close (the SDK's own skips a null Impl pointer)", void, h_is_Close, void *g) { (void)g; }
 HLE_FORCE("_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi", "never opened on the host: no frames", int, h_is_Read, void *g, void *buf, int n) { (void)g; (void)buf; (void)n; is_unopened("ReadInputStream"); return 0; }
 HLE_FORCE("_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE", "never opened on the host: none buffered", int, h_is_Filled, const void *g) { (void)g; is_unopened("GetInputStreamFilledFrameCount"); return 0; }
+// The rest of the input stream calls, which the SDK passes to the Impl pointer: null for a type never opened, except in GetInputStreamState (sdk+0x1f6020 answers 0 for it). The
+// Legend of Zelda: Ocarina of Time asks the state of its two streams when it starts or stops its microphone input and when it ends it (main+0x336ee10, +0x336eec0, +0x336d220),
+// purges them when they are not started (main+0x336ee7c) and reads their statistics each update (main+0x336d5d4); it opens them only when a virtual input device is listed
+// (main+0xf48124), so here never. The state is closed, a purge does nothing, the statistics are zero, the free and capacity counts 0 and the gain 1
+HLE_FORCE("_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE", "never opened on the host: closed (0)", int, h_is_State, const void *g) { (void)g; return ST_CLOSED; }
+HLE_FORCE("_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", "never opened on the host: nothing buffered", void, h_is_Purge, void *g) { (void)g; is_unopened("PurgeInputStream"); }
+HLE_FORCE("_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb", "never opened on the host: zero (InputStreamImpl::GetStatistics zeroes its result first, sdk+0x1f6ff4)",
+          stream_stats, h_is_Stats, void *g, unsigned reset) { (void)g; (void)reset; is_unopened("GetInputStreamStatistics"); return (stream_stats){0}; }
+HLE_FORCE("_ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE", "never opened on the host: none", int, h_is_Free, const void *g) { (void)g; is_unopened("GetInputStreamFreeFrameCount"); return 0; }
+HLE_FORCE("_ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE", "never opened on the host: none", int, h_is_Capacity, const void *g) {
+    (void)g; is_unopened("GetInputStreamCapacityFrameCount"); return 0;
+}
+HLE_FORCE("_ZN2nn5audio18GetInputStreamGainEPKNS0_15InputStreamTypeE", "never opened on the host: 1", float, h_is_GetGain, const void *g) { (void)g; is_unopened("GetInputStreamGain"); return 1.0f; }
+HLE_FORCE("_ZN2nn5audio18SetInputStreamGainEPNS0_15InputStreamTypeEfNS_8TimeSpanE", "never opened on the host: nothing to ramp", void, h_is_SetGain, void *g, float gain, int64_t ramp_ns) {
+    (void)g; (void)gain; (void)ramp_ns; is_unopened("SetInputStreamGain");
+}
+HLE_FORCE("_ZN2nn5audio28GetDefaultVirtualInputDeviceEPNS0_15AudioDeviceNameE", "default virtual input device (auddmg:u); the host has none: an empty name", void, h_vd_DefIn, char *name) { name[0] = 0; }
+HLE_FORCE("_ZN2nn5audio41IsVirtualInputDeviceStreamFormatSupportedERKNS0_15AudioDeviceNameERKNS0_12StreamFormatE", "no input device on the host: no format", unsigned, h_vd_FmtIn,
+          const char *name, const void *f) { (void)name; (void)f; return 0; }
 HLE_FORCE("_ZN2nn5audio20GetInputStreamFormatEPKNS0_15InputStreamTypeE", "never opened on the host: an empty format", const stream_format *, h_is_Format, const void *g) {
     static const stream_format none; (void)g; is_unopened("GetInputStreamFormat"); return &none;
 }

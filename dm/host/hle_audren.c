@@ -595,6 +595,12 @@ HLE_FORCE("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11System
 // start (main+0xe7b9c): unserved, its user session with aud:u aborted (Result 0xe15). That sdk's version (sdk+0x1f1e00) keeps no per-process flag and attaches the event AutoClear;
 // the two differ only on a second acquire (0x499 here), which no game has been seen to make
 HLE_FORCE("_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE", "output device change notification (SDK 21 name): bound, never signaled", Result, h_ad_Notify21, void *ev) { return h_ad_Notify(ev); }
+// Its release (SDK 22.2.8 sdk+0x1f2ac0: the device session's release over aud:u, aborting on a failure, then nn::os::DestroySystemEvent). The Legend of Zelda: Ocarina of Time
+// imports it (main+0x36d4c2c, behind its own acquired flag); unserved, it would abort as the acquire did. Here the event is destroyed and a later acquire binds again
+HLE_FORCE("_ZN2nn5audio36ReleaseAudioOutputDeviceNotificationEPNS_2os11SystemEventE", "output device change notification released: its event destroyed", void, h_ad_Release21, void *ev) {
+    static void (*destroy)(void *); if (!destroy) destroy = gsym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
+    destroy(ev); atomic_store(&g_ad_notify, 0);
+}
 // The input twin (Portal 2's main+0x19f37c, on its audio thread at start): the same shape with a flag of its own (SDK 13.3.0 sdk+0x56300: +0x851, the output's +0x852)
 static atomic_int g_ad_notify_in;
 HLE_FORCE("_ZN2nn5audio38AcquireAudioDeviceNotificationForInputEPNS_2os11SystemEventE", "input device change notification: bound, never signaled (the host has no microphone)", Result, h_ad_NotifyIn, void *ev) {

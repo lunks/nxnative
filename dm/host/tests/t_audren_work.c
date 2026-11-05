@@ -53,7 +53,8 @@ static Result sdk_open_ev(void **handle, void *ev, const uint8_t *param, void *w
     if (!r && event_in_handle) handle[1] = ev;   // SDK 3 to 12 keep the event in the handle (SDK 3 sdk+0x17dffc, SDK 12 sdk+0x4d274); SDK 18 keeps it at *handle[1]
     return r;
 }
-static void sdk_destroy_event(void *ev) { assert(ev == sdk_event); event_destroys++; }
+static int notify_mode, notify_binds, notify_destroys;   // the device notification checks at the end: its event, not the renderer's
+static void sdk_destroy_event(void *ev) { if (notify_mode) { notify_destroys++; return; } assert(ev == sdk_event); event_destroys++; }
 static uint32_t sdk_readable(const void *ev) { assert(ev == sdk_event && event_binds); return 0x1002; }
 static void sdk_attach(void *ev, uint32_t h, int managed, int clear) {   // the game's object gets the copied read end, managed by the game, auto-clear: what the DSP open attaches
     assert(ev == game_event && h == 0x1003 && managed == 1 && clear == 1);
@@ -97,6 +98,7 @@ int dm_pcmout_append(void *k, void *b) { (void)k; (void)b; return 0; }
 void *dm_pcmout_released(void *k) { (void)k; return NULL; }
 void dm_pcmout_wait(void *k, int ms) { (void)k; (void)ms; }
 void hle_bind_system_event(void *ev, int ac) {
+    if (notify_mode) { assert(ac == 0); notify_binds++; return; }
     assert(ev == sdk_event && ac == 1 && event_destroys == 2 * event_binds + 1);   // after the open destroys the SDK's local event (each earlier Close destroyed one more)
     event_binds++;
 }
@@ -184,6 +186,14 @@ int main(void) {
         h_ar_Close(handle[0], handle[1]);
     }
     free(work);
-    puts("audren work buffer: Horizon sizing fixtures, both opens, nested open, failures and close lifetime passed");
+    // The output device notification under its SDK 21 / 22 names: bound once, refused while held, destroyed by its release (Ocarina of Time imports it), then bound again
+    uint8_t notify_ev[0x30]; notify_mode = 1;
+    assert(h_ad_Notify21(notify_ev) == 0 && notify_binds == 1);
+    assert(h_ad_Notify21(notify_ev) == 0x499 && notify_binds == 1);
+    h_ad_Release21(notify_ev);
+    assert(notify_destroys == 1);
+    assert(h_ad_Notify21(notify_ev) == 0 && notify_binds == 2);
+    notify_mode = 0;
+    puts("audren work buffer: Horizon sizing fixtures, both opens, nested open, failures and close lifetime passed; the device notification's acquire and release");
     return 0;
 }
