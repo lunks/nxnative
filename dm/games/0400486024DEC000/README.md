@@ -66,6 +66,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- A [shader rebuild after a chain change](../../../docs/reference/shaders.md#a-shader-rebuild-after-a-chain-change-runs-on-one-core) took 38 to 42 minutes on one core with about 5% of its libraries to compile.
 - A [reboot packed the 24.4 GB RomFS image again](../../../docs/reference/packing.md#a-reboot-packs-a-romfs-image-again): 12 minutes from a NUP on a network share.
 - The online library's [eventfd for its poller](../../../docs/reference/services.md#eventfds-served-offline) and the [virtual audio input list](../../../docs/reference/audio.md#output-streams-and-virtual-audio-devices-sdk-20-auddmgu) blocked startup.
 - The SDK's [NDVE pack](../../../docs/reference/shaders.md#the-movie-librarys-ndve-shader-pack) contains 22 compute programs. The title route uses 11.

@@ -5,7 +5,7 @@ an early return or a uniform coefficient; a sample at gl_FragCoord.xy [/ render 
 position, scale or uniform; the variants compile for the Mac and the iPhone. With --fixture <dir>, writes t_feedback.m's tile-read shaders: fb_vs.metal, fb_fs.metal, the variant
 library fedcba9876543210_bf.metallib and facts.json (the vertex shader's screen varyings and the fragment shader's calls), and the pixel-position shader fb_pos.metal with its
 variant fedcba9876543211_bf.metallib and pos.json"""
-import json, pathlib, subprocess, sys, tempfile, unittest
+import json, pathlib, random, re, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'tools'))
 import dmsh_abi, dmsh_fetch
 
@@ -250,6 +250,22 @@ def fixture(out):
     (out / 'fb_pos.metal').write_text(FS_POS)
     compile_lib(v, out, 'vp').rename(out / f'{POS_KEY}_bf.metallib')
     (out / 'pos.json').write_text(json.dumps({'calls': meta['calls'], 'outputs': meta['outputs']}))
+
+
+
+class Once(unittest.TestCase):
+    def test_a_name_counts_as_a_scan_of_the_source_for_it_counts(self):
+        def scan(msl, name): return len(re.findall(r'(?<![\w.])%s = ' % re.escape(name), msl)) == 1   # what _once did for every name
+        rng = random.Random(1)
+        words = ['_1', '_12', 'in.m_1', 'a._1', 'x_1', '_1x', ' = ', ' = ', ';', ' ', '\n', '(', '.', '==', 'float ']
+        for _ in range(3000):
+            src = ''.join(rng.choice(words) for _ in range(rng.randrange(0, 30)))
+            for name in ('_1', '_12', 'x_1', 'in.m_1', 'a._1', 'gl_FragCoord.x', 'absent'): self.assertEqual(dmsh_fetch._once(src, name), scan(src, name), (src, name))
+
+    def test_the_counts_follow_the_source_they_are_asked_of(self):
+        self.assertTrue(dmsh_fetch._once('float _1 = 2.0;', '_1'))
+        self.assertFalse(dmsh_fetch._once('float _1 = 2.0; _1 = 3.0;', '_1'))
+        self.assertTrue(dmsh_fetch._once('float _1 = 2.0;', '_1'))
 
 
 if __name__ == '__main__':

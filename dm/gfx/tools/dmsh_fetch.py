@@ -10,12 +10,20 @@
 # whether the texel is really fetched at this pixel is proven at runtime (correspondence between vertex uv and position, a screen varying with the viewport over the whole target,
 # or U and V = 1 / the target's size; texture size = target size); if it cannot be proven, the original version is used
 import collections
+import functools
 import re
 import dmsh_abi as abi
 
 NFB = 8
 
+_ASSIGNED = re.compile(r'(?<![\w.])(\w+) = ')
+
+@functools.lru_cache(maxsize=1)
+def _assigned(msl):   # how often each plain name is assigned in the source, from one pass: a scan per name was 14,000 scans of 200 KB for 500 of Ocarina of Time's shaders, a fifth of what they cost in Python
+    return collections.Counter(_ASSIGNED.findall(msl))
+
 def _once(msl, name):   # name is assigned exactly once in the source (its declaration): spirv-cross also declares variables first and assigns them in branches
+    if re.fullmatch(r'\w+', name): return _assigned(msl)[name] == 1
     return len(re.findall(r'(?<![\w.])%s = ' % re.escape(name), msl)) == 1
 
 def _proj(msl, var, comp, locn):

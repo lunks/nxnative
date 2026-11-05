@@ -1,6 +1,6 @@
 """One compile for a pixel shader's alpha test and logic operation entry points (dmsh_side.py): the compile unit keeps each body once, and cutting its library gives a base with only the
 plain entry points, which pso_offline.py keeps in the pipeline archive, and a side library, byte for byte what the compiler's own tool cuts for one function"""
-import pathlib, shutil, subprocess, sys, tempfile, unittest
+import pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'tools'))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))   # its sibling test modules, also when the file runs alone (python -m unittest <file>, as CI does)
 import dmsh_side, pso_offline
@@ -18,6 +18,17 @@ class Unit(unittest.TestCase):
 
     def test_a_parameter_it_cannot_pass(self):
         self.assertIsNone(dmsh_side.unit(ONE.replace('[[buffer(0)]])', '[[buffer(0), function_constant(c)]])'))[0])
+
+    def test_a_closing_bracket_is_where_a_scan_of_every_character_finds_it(self):
+        def every_character(src, i, o, c):   # the loop _close replaced
+            depth = 1
+            while depth and i < len(src): depth += (src[i] == o) - (src[i] == c); i += 1
+            return i if not depth else -1
+        rng = random.Random(1)
+        for o, c in (('(', ')'), ('{', '}')):
+            for _ in range(2000):
+                src = ''.join(rng.choice(f'{o}{c}{o}{c}ab \n[]') for _ in range(rng.randrange(0, 40)))
+                for i in range(len(src) + 2): self.assertEqual(dmsh_side._close(src, i, o, c), every_character(src, i, o, c), (src, i))
 
     def test_no_pixel_shader(self):
         self.assertEqual(dmsh_side.unit('vertex float4 main0() { return float4(0); }'), (None, {'why': 'no fragment entry point main0'}))
