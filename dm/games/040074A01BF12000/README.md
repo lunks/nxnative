@@ -259,6 +259,7 @@ Each step below stopped the boot before its fix:
 
 ## Found on this game
 
+- [Compile pools smaller than Metal's compiler](../../../docs/reference/shaders.md#compile-pools-smaller-than-metals-compiler): the pipeline prebuild of its 21,225 shader pairs, M5 Pro, 393-452 s on 4 workers against 187-272 s on Metal's 14 (resolved).
 - [A depth clear over the whole target with a partial stencil mask](../../../docs/reference/rendering.md#a-depth-clear-over-the-whole-target-with-a-partial-stencil-mask): 22.8 MB of depth and stencil loaded a frame for a stencil mask of 1 (resolved).
 - [No Game language row in an app packed from a NUP or a dump](../../../docs/reference/packing.md#no-game-language-row-in-an-app-packed-from-a-nup-or-a-dump): reported by testers; this folder's dump has no control data.
 - [A replay without the live run's Switch 2 state](../../../docs/reference/nvn-objects.md#a-replay-without-the-live-runs-switch-2-state) and [A texture the GPU's copies filled that the capture did not read](../../../docs/reference/nvn-objects.md#a-texture-the-gpus-copies-filled-that-the-capture-did-not-read): the frame capture's replay (lattice and tint on every texture from the files, magenta rock).
