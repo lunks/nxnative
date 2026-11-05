@@ -45,16 +45,21 @@ static uint8_t *read_all(id<MTLTexture> t) {   // a 4-byte-per-pixel texture (pr
     [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
     uint8_t *p = malloc(n); memcpy(p, b.contents, n); return p;
 }
-// The largest difference, in codes, between two textures of one format (RGBA8: bytes; RGB10A2: 10-bit channels), alpha left out
-static int max_code_diff(id<MTLTexture> a, id<MTLTexture> b, int *at_x, int *at_y) {
-    uint8_t *pa = read_all(a), *pb = read_all(b); int m = 0; size_t n = a.width * a.height;
-    for (size_t i = 0; i < n; i++) for (int c = 0; c < 3; c++) {
-        int x, y; if (a.pixelFormat == MTLPixelFormatRGB10A2Unorm) { uint32_t u, v; memcpy(&u, pa + i * 4, 4); memcpy(&v, pb + i * 4, 4); x = u >> (10 * c) & 1023; y = v >> (10 * c) & 1023; }
-        else { x = pa[i * 4 + c]; y = pb[i * 4 + c]; }
-        if (abs(x - y) > m) { m = abs(x - y); *at_x = (int)(i % a.width); *at_y = (int)(i / a.width); }
+// The largest difference, in codes, between two textures of one format (RGBA8: bytes; RGB10A2: 10-bit channels), alpha left out, and in *over how many pixels are more than limit apart
+static int code_diff(id<MTLTexture> a, id<MTLTexture> b, int *at_x, int *at_y, int limit, int *over) {
+    uint8_t *pa = read_all(a), *pb = read_all(b); int m = 0; size_t n = a.width * a.height; *over = 0;
+    for (size_t i = 0; i < n; i++) { int past = 0;
+        for (int c = 0; c < 3; c++) {
+            int x, y; if (a.pixelFormat == MTLPixelFormatRGB10A2Unorm) { uint32_t u, v; memcpy(&u, pa + i * 4, 4); memcpy(&v, pb + i * 4, 4); x = u >> (10 * c) & 1023; y = v >> (10 * c) & 1023; }
+            else { x = pa[i * 4 + c]; y = pb[i * 4 + c]; }
+            if (abs(x - y) > m) { m = abs(x - y); *at_x = (int)(i % a.width); *at_y = (int)(i / a.width); }
+            past |= abs(x - y) > limit;
+        }
+        *over += past;
     }
     free(pa); free(pb); return m;
 }
+static int max_code_diff(id<MTLTexture> a, id<MTLTexture> b, int *at_x, int *at_y) { int over; return code_diff(a, b, at_x, at_y, 1 << 20, &over); }
 // The game's window pass: its upscaler output sampled bilinearly over the window texture, encoded as Bananza's passes encode it (SDR: sRGB, the sRGB view's encode; HDR: BT.2020,
 // paper white 203 nits, ST 2084 PQ)
 static const char *k_game_window =
@@ -62,12 +67,12 @@ static const char *k_game_window =
     "struct V { float4 p [[position]]; float2 uv; };\n"
     "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
     "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], constant uint &hdr [[buffer(0)]], constant float2 &rect [[buffer(1)]]) {\n"
-    "  constexpr sampler s(filter::linear, address::clamp_to_edge); float3 c = t.sample(s, in.uv * rect).rgb;\n"
+    "  constexpr sampler s(filter::linear, address::clamp_to_edge); float3 c = t.sample(s, min(in.uv * rect, rect - 0.5 / float2(t.get_width(), t.get_height()))).rgb;\n"
     "  if (hdr) { float3x3 m = float3x3(float3(0.6274, 0.0691, 0.0164), float3(0.3293, 0.9195, 0.0880), float3(0.0433, 0.0114, 0.8956));\n"
     "    float3 p = pow(saturate(m * c * (203.0 / 10000.0)), 0.1593017578125); c = pow((0.8359375 + 18.8515625 * p) / (1.0 + 18.6875 * p), 78.84375); }\n"
     "  else { c = saturate(c); c = select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308); }\n"
     "  return float4(c, 1); }\n";
-static float g_win_rect[2] = {1, 1};   // the part of the output the window pass stretches over the window: its rectangle over the texture's size
+static float g_win_rect[2] = {1, 1};   // the part of the output the window pass stretches over the window: its rectangle over the texture's size; it does not sample past the rectangle
 static void game_window_pass(id<MTLTexture> out, id<MTLTexture> win, uint32_t hdr) {
     static id<MTLRenderPipelineState> ps[2]; int k = win.pixelFormat == MTLPixelFormatRGB10A2Unorm;
     if (!ps[k]) {
@@ -281,34 +286,62 @@ static int dyn_frame(NvShader *named, const uint32_t rects[8], id<MTLTexture> de
     return drawn;
 }
 static double r11_lum(const uint8_t *p, size_t at) { uint32_t u; memcpy(&u, p + at * 4, 4); float c[3]; unpack_r11g11b10(u, c); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; }
-// Dynamic resolution: the upscaler's rectangles moving every frame as Donkey Kong Bananza's did at its softest rate (3840x2160 from 1280x720 and 3836x2157 from 1279x719, here at half that).
-// Nothing sized from them may be made again: every new frame interpolator kept its memory (87 MB at this size, 343 MB at 3840x2160), and 70 of them ended the game at the host's memory
-// watchdog. A static scene with a UI element far from the origin: the picture to the last row and column of the rectangle, with interpolation its pictures against the window texture,
-// then an edge in the scene, which must stay in its place at both sizes
-static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, id<MTLTexture> depth, const mfx_cam *cam, int temporal, int interp, int *frame) {
-    const uint32_t full[8] = {0, 0, 639, 359, 0, 0, 1919, 1079}, less[8] = {0, 0, 638, 358, 0, 0, 1915, 1076};
+static void wait_slots(void) { for (int k = 0; k < 3; k++) { uint64_t t0 = now_ns(); while (atomic_load(&g_mfi.busy[k]) && now_ns() - t0 < 5000000000ull) usleep(200); } }
+// The frame after its upscale: the window pass opens, the frame completes, the game's window pass stretches the rectangle over the window, the present. The picture's slot, or -1
+static int dyn_present(tex_t *out, tex_t *win, unsigned ow, unsigned oh, uint32_t hdr, int interp) {
+    R.rt = (p_set_rt){.n = 1}; R.rt.color[0] = win; R.has_rt = 1;
+    if (g_mfi_pend) mfx_ui_point();
+    memset(&R, 0, sizeof R);
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
+    g_win_rect[0] = (float)ow / (float)tex_mtl(out).width; g_win_rect[1] = (float)oh / (float)tex_mtl(out).height;
+    game_window_pass(tex_mtl(out), tex_mtl(win), hdr);
+    g_win_rect[0] = g_win_rect[1] = 1;
+    if (!interp) return -1;
+    uint64_t v = 0; int slot = mfx_present_frame(win, 1.0 / 60, 0, &v); wait_slots();
+    return slot;
+}
+// The input as a game draws a vertical edge at 0.9 of the picture, whatever the rate: dark left of it, white right. 576 of 640 and 575 of 639 of the input
+static int input_edge(tex_t *in, id<MTLTexture> dark, unsigned iw) {
+    int col = (int)lround(0.9 * iw);
+    fill(tex_mtl(in), MTLClearColorMake(1, 1, 1, 1), 0);
+    id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    for (int y = 0; y < 540; y += 80) for (int x = 0; x < col; x += 300) [e copyFromTexture:dark sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(MIN(300, col - x), MIN(80, 540 - y), 1) toTexture:tex_mtl(in) destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x, y, 0)];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    return col;
+}
+static int first_over(const uint8_t *p, size_t row, unsigned from, unsigned to, double level) { for (unsigned x = from; x < to; x++) if (r11_lum(p, row + x) > level) return (int)x; return -1; }
+static int win_edge(id<MTLTexture> t, int y) {   // the window's edge, as the first pixel past the half of its green code
+    uint8_t *p = read_all(t); int at = -1, hdr = t.pixelFormat == MTLPixelFormatRGB10A2Unorm; uint32_t lo = 0, hi = 0; const uint8_t *row = p + (size_t)y * t.width * 4;
+    for (unsigned x = 0; x < t.width; x++) { uint32_t u; memcpy(&u, row + x * 4, 4); uint32_t g = hdr ? u >> 10 & 1023 : row[x * 4 + 1]; if (!x) lo = g; if (g > hi) hi = g; }
+    for (unsigned x = 0; x < t.width && at < 0; x++) { uint32_t u; memcpy(&u, row + x * 4, 4); uint32_t g = hdr ? u >> 10 & 1023 : row[x * 4 + 1]; if (g > (lo + hi) / 2) at = (int)x; }
+    free(p); return at;
+}
+// Dynamic resolution: the upscaler's rectangles moving as Donkey Kong Bananza's did at its softest rate (3840x2160 from 1280x720 and 3836x2157 from 1279x719, here at half that). Nothing sized
+// from them may be made again once the larger has been seen: every new frame interpolator kept its memory (87 MB at this size, 343 MB at 3840x2160), and 70 of them ended the game at the
+// host's memory watchdog. A static scene with a UI element far from the origin: the rectangle's last row and column, and with interpolation the pictures against the window texture. MetalFX
+// leaves specks of its own on a flat scene: the temporal scaler one input pixel at the corner of its 3:1 output up to a fifth darker, at a fixed rectangle too, which the interpolator's
+// picture does not repeat (7 pixels), and with the rate moving every frame scattered pixels near the top, about 250 of the 3.2 million from frame 56 on and no more by frame 200. So the
+// pictures may differ in a few hundred pixels: a stretched or stale edge is a row or column of the window's, 1350 or more. Then an edge of the picture, as a game draws it: at 0.9 of the
+// rectangle at both rates, moving between them every frame and every third frame. Without the rate's motion the scaler's history holds it at the larger rate's place, 3 pixels off (2 is the
+// scaler's own, with no history). wide: the output texture's size, so the scaler writes it straight; else its output is copied, the rectangles inside a larger texture
+static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, int hdr, int wide, id<MTLTexture> depth, const mfx_cam *cam, int temporal, int interp, int *frame) {
+    const uint32_t r0[8] = {0, 0, 639, 359, 0, 0, 1919, 1079}, r1[8] = {0, 0, 638, 358, 0, 0, 1915, 1076}, r2[8] = {0, 0, 637, 357, 0, 0, 1911, 1073};
+    const uint32_t *full = wide ? r0 : r1, *less = wide ? r1 : r2;
+    const char *name = hdr ? "HDR" : wide ? "SDR" : "SDR, inside a larger texture";
     id<MTLTexture> bright = small_tex(MTLClearColorMake(1.0, 0.9, 0.1, 1));
-    const double expect = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.75;
+    const double expect = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.75; const int limit = hdr ? 4 : 2;
     fill(tex_mtl(in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); fill(tex_mtl(out), MTLClearColorMake(0, 0, 0, 1), 0);
-    g_test_hdr = -1; g_mm.w = g_mm.h = 0; g_mfi.sw = g_mfi.sh = 0;
-    id sc0 = nil, fi0 = nil; id<MTLTexture> mv0 = nil, scene0 = nil; uint64_t alloc0 = 0; int same = 1, drawn_all = 1, pics = 0, worst_pic = 0; double edge = 1e9;
-    for (int f = 0; f < 32; f++) {
-        const uint32_t *r = f & 1 ? less : full; unsigned ow = r[6] + 1, oh = r[7] + 1;
+    g_test_hdr = hdr ? 1 : -1; g_mm.w = g_mm.h = 0; g_mfi.sw = g_mfi.sh = 0;
+    id sc0 = nil, fi0 = nil; id<MTLTexture> mv0 = nil, scene0 = nil; uint64_t alloc0 = 0; int same = 1, drawn_all = 1, pics = 0, worst_pic = 0, worst_over = 0, grown = 0; double edge = 1e9;
+    for (int f = 0; f < 32; f++) @autoreleasepool {   // the read-backs' buffers go with their frame: the allocated size is the host's
+        const uint32_t *r = f & 1 ? full : less; unsigned ow = r[6] + 1, oh = r[7] + 1;   // the smaller first: the larger makes them all once more, and that is the last time
         drawn_all &= dyn_frame(named, r, depth, cam, frame);
+        if (f == 1) grown = g_mm.w == full[6] + 1 && g_mm.h == full[7] + 1;
         enc_b_copy_texture(blit(), bright, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(300, 80, 1), tex_mtl(out), 0, 0, MTLOriginMake(1500, 900, 0));
-        R.rt = (p_set_rt){.n = 1}; R.rt.color[0] = win; R.has_rt = 1;
-        if (g_mfi_pend) mfx_ui_point();
-        memset(&R, 0, sizeof R);
-        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
-        g_win_rect[0] = (float)ow / 1920; g_win_rect[1] = (float)oh / 1080;
-        game_window_pass(tex_mtl(out), tex_mtl(win), 0);
-        g_win_rect[0] = g_win_rect[1] = 1;
-        if (interp) {
-            uint64_t v = 0; int slot = mfx_present_frame(win, 1.0 / 60, 0, &v);
-            for (int k = 0; k < 3; k++) { uint64_t t0 = now_ns(); while (atomic_load(&g_mfi.busy[k]) && now_ns() - t0 < 5000000000ull) usleep(200); }
-            if (slot >= 0 && f >= 8) { int x = -1, y = -1, d = max_code_diff(mfx_slot_tex(slot), tex_mtl(win), &x, &y); pics++;
-                if (d > worst_pic) { worst_pic = d; if (d > 2) fprintf(stderr, "dynamic rates, frame %d: the picture is %d codes from the window texture at %d,%d\n", f, d, x, y); } }
-        }
+        int slot = dyn_present(out, win, ow, oh, (uint32_t)hdr, interp);
+        if (slot >= 0 && f >= 8) { int x = -1, y = -1, over, d = code_diff(mfx_slot_tex(slot), tex_mtl(win), &x, &y, limit, &over); pics++;
+            if (over > worst_over) worst_over = over;
+            if (d > worst_pic) { worst_pic = d; fprintf(stderr, "dynamic rates (%s), frame %d: largest difference from the window texture %d codes at %d,%d; %d pixels over %d\n", name, f, d, x, y, over, limit); } }
         if (f == 6) { sc0 = g_mts.sc; fi0 = g_mfi.fi; mv0 = g_mm.mv[0]; scene0 = g_mfi.scene[0]; alloc0 = g_dev.currentAllocatedSize; }
         if (f > 6) same &= sc0 == g_mts.sc && fi0 == g_mfi.fi && mv0 == g_mm.mv[0] && scene0 == g_mfi.scene[0];
         if (temporal && f >= 12 && f < 16) {
@@ -319,33 +352,36 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, id
         }
     }
     double grew = ((double)g_dev.currentAllocatedSize - (double)alloc0) / 1048576;
-    fprintf(stderr, "dynamic rates: 25 frames of the two sizes: GPU allocated %+.1f MB; the rectangle's last row and column at %.3f of the scene's brightness; %d interpolated pictures, largest difference %d code(s)\n", grew, edge, pics, worst_pic);
+    fprintf(stderr, "dynamic rates (%s): 25 frames of the two sizes: GPU allocated %+.1f MB; the rectangle's last row and column at %.3f of the scene's brightness; %d interpolated pictures, %d pixels at most over %d codes, largest difference %d\n", name, grew, edge, pics, worst_over, limit, worst_pic);
+    CHECK(grown, "the larger rectangle grows the sizes");
     CHECK(same, "the rectangles' move makes nothing again: the scaler, the interpolator, the motion textures and the scene copies stay");
     CHECK(grew < 4, "the rectangles' move takes no memory");
-    if (interp) { CHECK(pics >= 10, "interpolated pictures go on across the sizes"); CHECK(worst_pic <= 2, "a static scene's picture is the window texture within two codes, its UI where the window pass stretches it"); }
+    if (interp) { CHECK(pics >= 10, "interpolated pictures go on across the sizes"); CHECK(worst_over <= 256, "a static scene's picture is the window texture but for MetalFX's specks: no row or column off, the UI where the window pass stretches it"); CHECK(worst_pic <= (hdr ? 64 : 32), "and those specks are small"); }
     if (!temporal) return;
     CHECK(drawn_all, "the temporal scaler draws both sizes, at the device's largest scale too");
     CHECK(edge > 0.9, "the output rectangle holds the scene to its last row and column: past the input is the input's edge, not what was there");
-    // An edge at x = 320 of the input is at 960 of the output at both sizes (the smaller input stretched over the whole output would put it 3 pixels further)
     id<MTLTexture> dark = small_tex(MTLClearColorMake(0, 0, 0, 1));
-    fill(tex_mtl(in), MTLClearColorMake(1, 1, 1, 1), 0);
-    id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
-    for (int y = 0; y < 540; y += 80) for (int x = 0; x < 320; x += 300) [e copyFromTexture:dark sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(MIN(300, 320 - x), MIN(80, 540 - y), 1) toTexture:tex_mtl(in) destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x, y, 0)];
-    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
-    int keep = g_mfi_on; g_mfi_on = 0;
-    for (int f = 0; f < 12; f++) {
-        const uint32_t *r = f & 1 ? less : full; unsigned ow = r[6] + 1;
-        fill(tex_mtl(out), MTLClearColorMake(0, 0, 0, 1), 0);
-        int drawn = dyn_frame(named, r, depth, cam, frame);
-        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error() && drawn, "the frame's submission completes");
-        if (f < 8) continue;
-        uint8_t *p = read_all(tex_mtl(out)); int at = -1;
-        for (unsigned x = 800; x < ow && at < 0; x++) if (r11_lum(p, (size_t)540 * 1920 + x) > 0.5) at = (int)x;
-        free(p);
-        fprintf(stderr, "dynamic rates: the input's edge at x = 320 lands at x = %d of a rectangle %u wide\n", at, ow);
-        CHECK(abs(at - 960) <= 2, "the picture keeps its place at both sizes");
+    for (int period = 1; period <= 3; period += 2) {
+        int place = 0, sharp = 1, moved = 0, along = 0;
+        for (int f = 0; f < 24; f++) @autoreleasepool {
+            const uint32_t *r = (f / period) & 1 ? less : full; unsigned ow = r[6] + 1, oh = r[7] + 1;
+            int col = input_edge(in, dark, r[2] + 1), want = col * 3;   // the scale of the content: the scaler's output over it, 3 here
+            drawn_all &= dyn_frame(named, r, depth, cam, frame);
+            int slot = dyn_present(out, win, ow, oh, (uint32_t)hdr, interp);
+            if (f < 8) continue;
+            uint8_t *p = read_all(tex_mtl(out)); size_t row = (size_t)300 * 1920; int at = first_over(p, row, 1500, ow, 0.5), soft = 0;
+            for (int x = at - 8; x < at + 8; x++) { double l = r11_lum(p, row + (size_t)x); soft += l > 0.1 && l < 0.75; }
+            free(p);
+            place = MAX(place, abs(at - want)); sharp = MAX(sharp, soft);
+            if (slot >= 0) { int a = win_edge(mfx_slot_tex(slot), 500), b = win_edge(tex_mtl(win), 500); along = MAX(along, abs(a - b)); moved++; }
+        }
+        fprintf(stderr, "dynamic rates (%s), the rate moving every %d frame(s): the edge at most %d pixels from its place, %d soft pixels; %d interpolated pictures, their edge at most %d pixels from the window texture's\n", name, period, place, sharp, moved, along);
+        CHECK(place <= 2, "the scaler's history follows the rate: the picture keeps its place in the rectangle at both rates");
+        CHECK(sharp <= 3, "the edge stays sharp across the rates");
+        if (interp) CHECK(moved >= 10 && along <= 2, "the interpolated pictures keep the edge where the window texture has it");
     }
-    g_mfi_on = keep;
+    CHECK(drawn_all, "the temporal scaler draws every frame of the moving edge");
+    fill(tex_mtl(in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0);
 }
 int main(void) { @autoreleasepool {
     mtl_init();
@@ -549,7 +585,9 @@ int main(void) { @autoreleasepool {
         free(o);
         g_mfx_jit_sign = 1; g_jit.on = 0; g_mfi_on = keep;
     }
-    dynamic_rates(named, &in, &out, &win8, depth, &cam, temporal, interp, &frame);
+    dynamic_rates(named, &in, &out, &win8, 0, 1, depth, &cam, temporal, interp, &frame);
+    dynamic_rates(named, &in, &out, &win8, 0, 0, depth, &cam, temporal, interp, &frame);
+    if (interp) dynamic_rates(named, &in, &out, &win10, 1, 1, depth, &cam, temporal, interp, &frame);
     printf("t_mfx (%s%s): %d checks, %d failed\n", temporal ? "temporal" : "spatial / game", interp ? ", interpolation in SDR and HDR" : "", checks, failed);
     return failed != 0;
 }}

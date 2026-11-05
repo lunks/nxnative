@@ -332,7 +332,9 @@ static struct {
 // MetalFX takes its content (vw x vh at the origin of its inputs) over its whole output, and the game wants its input over its output rectangle, so the content is what fills the scaler's
 // output at the game's own scale: the rectangle is then the output's top left part, cropped as it is, with no second resample. full: the scaler's output; out: the game's output
 // rectangle; in: its input rectangle, all in one dimension. The content past the input repeats the input's edge. 1279 of 3836 at an output of 3840 is 1280: the device's largest
-// scale, 3.0, where stretching the 1279 over the 3840 would be past it
+// scale, 3.0, where stretching the 1279 over the 3840 would be past it. The scene's scale in the content moves with the rate, so a rate's move is motion to the scaler (mfx_mv's rate): without
+// it the scaler's history keeps the old picture, 3.6 output pixels off at 0.9 of 1916. The same motion texture goes to the interpolator, whose pictures are stretched over the window, where
+// the move is none: the one picture after a move is off by the half of that
 static NSUInteger mfx_content(NSUInteger full, NSUInteger out, NSUInteger in) { NSUInteger v = (full * in + out / 2) / out; return v < in ? in : v > full ? full : v; }
 static int mfx_mv_dyn(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_MFX_MV_DYN"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("[mfx] DM_MFX_MV_DYN=0: every pixel gets the camera's motion"); } return v; }
 // The depth pass of the upscaler's input: a candidate whose depth has the input texture's size and a camera, the one with the most passes (the scene's), the latest on a tie
@@ -379,7 +381,7 @@ static int mfx_motion(const mfx_io *io) {
     }
     if (!g_mm.ps && !g_mm.failed) { g_mm.ps = mfx_kernel(@"mfx_mv"); g_mm.at = mfx_table(); g_mm.failed = !g_mm.ps || !g_mm.at; }
     if (g_mm.failed) return 0;
-    NSUInteger w = MAX(g_mm.w, (NSUInteger)io->orr.width), h = MAX(g_mm.h, (NSUInteger)io->orr.height);   // the most the input can have: the output's size, the largest so far
+    NSUInteger w = MAX(g_mm.w, (NSUInteger)MAX(io->orr.width, io->ir.width)), h = MAX(g_mm.h, (NSUInteger)MAX(io->orr.height, io->ir.height));   // the most the input can have: the output's size, the largest so far
     if (g_mm.w != w || g_mm.h != h || !g_mm.mv[0]) {
         for (int k = 0; k < MFX_RING; k++) { mfx_drop(&g_mm.mv[k]); mfx_drop(&g_mm.dep[k]); }
         for (int k = 0; k < MFX_RING; k++) {
@@ -406,10 +408,10 @@ static int mfx_motion(const mfx_io *io) {
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) pf[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     pf[16] = (float)g_mm.prev.p[10]; pf[17] = (float)g_mm.prev.p[11]; pf[18] = (float)g_mm.prev.p[14]; pf[19] = reset ? 0.0f : 1.0f;
     NSUInteger cw = io->ir.width, ch = io->ir.height, vw = mfx_content(w, io->orr.width, cw), vh = mfx_content(h, io->orr.height, ch);
-    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112 (the frame before's content: g_mm.cw and ch are still its)
+    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112 (the frame before's content: g_mm.cw and ch are still its; a reset has none)
     uint32_t *po = (uint32_t *)(pb + 80); po[0] = (uint32_t)io->ir.xoffset; po[1] = (uint32_t)io->ir.yoffset; po[2] = (uint32_t)io->ir.width; po[3] = (uint32_t)io->ir.height;
     pu[0] = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll; pu[1] = !atomic_load(&g_depth_zero); pu[2] = (uint32_t)mfx_mv_dyn(); pu[3] = 0;
-    pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)g_mm.cw; pu[7] = (uint32_t)g_mm.ch;
+    pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)(reset ? cw : g_mm.cw); pu[7] = (uint32_t)(reset ? ch : g_mm.ch);
     id<MTLComputePipelineState> ps = g_mm.ps; id<MTL4ArgumentTable> at = g_mm.at; id<MTLTexture> mv = g_mm.mv[k], dout = g_mm.dep[k], pdep = g_mm.dep[pk];
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
@@ -526,7 +528,8 @@ static int mfx_temporal(const mfx_io *io, int cm) {
              g_mts.refused ? ": MetalFX made none; the spatial scaler draws this size" : "");
     }
     if (g_mts.refused) { g_mts.fallback++; return 0; }
-    if ((float)ow / vw > g_mts.sc.inputContentMaxScale + 1e-3f || (float)oh / vh > g_mts.sc.inputContentMaxScale + 1e-3f) { g_mts.fallback++; return 0; }
+    if (io->orr.width < io->ir.width || io->orr.height < io->ir.height ||   // a dispatch that scales down: MetalFX only scales up
+        (float)ow / vw > g_mts.sc.inputContentMaxScale + 1e-3f || (float)oh / vh > g_mts.sc.inputContentMaxScale + 1e-3f) { g_mts.fallback++; return 0; }
     id<MTL4FXTemporalScaler> sc = g_mts.sc;
     id<MTLTexture> out = io->out, col = g_mts.col, res = g_mts.res;
     // Straight out into the game's texture when its size is the scaler's output (a rectangle of that size has covered it, so what the rectangle leaves out now is free) and it has the
@@ -540,12 +543,12 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     if (io->in.pixelFormat == cf && cm != MFX_COL_SQRT) enc_b_copy_texture(blit(), io->in, 0, 0, MTLOriginMake(io->ir.xoffset, io->ir.yoffset, 0), MTLSizeMake(io->ir.width, io->ir.height, 1), col, 0, 0, MTLOriginMake(0, 0, 0));
     else if (!copy_t2t_draw(io->in, col, 0, 0, 0, 0, &io->ir, &at0, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) { g_mts.fallback++; return 0; }
     NSUInteger cw = io->ir.width, ch = io->ir.height;
-    if (vw > cw || vh > ch) {   // the content past the input: its last column and row repeated, as mfx_mv does for the motion and depth
-        NVNcopyRegion lc = {io->ir.xoffset + io->ir.width - 1, io->ir.yoffset, 0, 1, io->ir.height, 1}, rs = {io->ir.width, 0, 0, (int)vw - io->ir.width, io->ir.height, 1};
-        NVNcopyRegion lr = {io->ir.xoffset, io->ir.yoffset + io->ir.height - 1, 0, io->ir.width, 1, 1}, bs = {0, io->ir.height, 0, (int)vw, (int)vh - io->ir.height, 1};
-        if ((vw > cw && !copy_t2t_draw(io->in, col, 0, 0, 0, 0, &lc, &rs, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) ||
-            (vh > ch && !copy_t2t_draw(io->in, col, 0, 0, 0, 0, &lr, &bs, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0))) { g_mts.fallback++; return 0; }
-    }
+    // The content past the input: its last column, last row and corner repeated, as mfx_mv does for the motion and depth
+    int ex = (int)(vw - cw), ey = (int)(vh - ch), lx = io->ir.xoffset + io->ir.width - 1, ly = io->ir.yoffset + io->ir.height - 1;
+    const NVNcopyRegion edge[3][2] = {{{lx, io->ir.yoffset, 0, 1, io->ir.height, 1}, {io->ir.width, 0, 0, ex, io->ir.height, 1}},
+                                      {{io->ir.xoffset, ly, 0, io->ir.width, 1, 1}, {0, io->ir.height, 0, io->ir.width, ey, 1}},
+                                      {{lx, ly, 0, 1, 1, 1}, {io->ir.width, io->ir.height, 0, ex, ey, 1}}};
+    for (int i = 0; i < 3; i++) if (edge[i][1].width > 0 && edge[i][1].height > 0 && !copy_t2t_draw(io->in, col, 0, 0, 0, 0, &edge[i][0], &edge[i][1], cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) { g_mts.fallback++; return 0; }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     id<MTLTexture> dst = direct ? out : res, mv = g_mm.mv[g_mm.cur], dep = g_mm.dep[g_mm.cur];
