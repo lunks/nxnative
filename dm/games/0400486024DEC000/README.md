@@ -73,6 +73,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- The title movie played at the game's frame rate, about 0.77x with the game's upscaler on an M5 Pro: [pictures now follow the movie's clock](../../../docs/reference/movies.md#av1-pictures-by-the-movies-clock). On Macs before M3 [dav1d decodes frames in parallel](../../../docs/reference/movies.md#dav1d-decodes-frames-in-parallel-outside-the-decoder-lock).
 - [The height tiles read as zeros](../../../docs/reference/nvn-objects.md#uncompressed-storage-the-cpu-wrote-where-the-gpu-has-not-written): ten 260x260 R32F tiles in a pool the GPU also writes, so the ground of Kokiri Forest lay far below the player and the sky showed through (aCidcOde, #1326).
 - [Retired pool buffers piled up while the game submitted nothing](../../../docs/reference/memory.md#a-game-that-stops-submitting-piles-up-retired-pool-buffers): out of focus the main thread waits in `oe::PopNotificationMessage` (notification loop at main+0x3bc0230), and the streaming threads remade a virtual pool run 70 times a second. A session stayed frozen after a window switch; with the fix a 43 s switch came back at once (`DM_FOCUS_KEEP=1` no longer needed for this).
 - [Sharing entries outlived their storage](../../../docs/reference/nvn-objects.md#sharing-entries-outlive-their-storage): render targets the game's allocator places at moving offsets of one 305 MB pool, 2.9 GB of them unreferenced after a 10 s walk.

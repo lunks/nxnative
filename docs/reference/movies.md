@@ -301,6 +301,14 @@ A decoder hands out as many outputs as it has slots, and while every slot is tak
 - **Check:** `t_codec_video`: 20 packets through dav1d give 20 pictures in order, each with its packet's timestamp.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), by MetaIX (upstream PR #1377): at most 26.6 ms a packet on the M1 Max. The M5 decodes on VideoToolbox, so there only the lock changes.
 
+### AV1 pictures by the movie's clock
+
+- **Symptom:** a game slower than its movie plays the movie slowly and out of step with its sound; the log has `nn::codec AV1: a packet refused with 12 pictures waiting for a released buffer`. Ocarina of Time's 60 fps movies ran at 0.44x at 28 frames a second, and at about 0.77x on an M5 Pro with the game's upscaler (a 21.6 ms title frame).
+- **Cause:** the game's player shows one picture a frame and sends packets until the decoder refuses them, so the movie's speed is the game's frame rate. The refusals are that player's backpressure, not lost packets: it sends the packet again. (Mario Tennis Fever's player does not, which is why `CV_HOLD` is 12 and the line is red.)
+- **Fix:** the decoder hands out pictures by the movie's clock (`cv_skip_late`): timestamps from the first picture against the host clock, and of the waiting pictures the newest that is due. A picture is late once the next is 50 ms overdue. A stall over a second, a timestamp going back or `Reset` restarts the clock, and a picture that ends the stream stays. A game that keeps up drops nothing. AV1 only; `DM_CV_LATE=0` turns it off.
+- **Check:** `t_codec_video` sets the clock: the first picture starts it, late pictures go, the slack holds, the last picture stays, a stall and a timestamp going back restart it.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), by MetaIX (upstream PR #1379): 0.44x became 1.00x (87.47 s of movie in 87.53 s) on an M1 Max; at 60 fps 59.7 of 60 pictures a second shown.
+
 ### SDK 19's decoder forms
 
 - **Symptom:** an abort in `nn::codec` (the SDK's own decoder client, which opens a service the host does not have) when a movie starts in a game built with SDK 19 for the Switch 2.
