@@ -47,7 +47,8 @@ MAP = ('# kind: evidence  Test shaders\n# column 5 records where each key first 
        'cs_other.bin\t3\tcompute\t7629d857a0a93833\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x124a00\n'   # a key twice: once
        'ps_other.bin\t4\tpixel\t0e423e497f1e3355\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x1247d8\n'   # the pack's draw shaders: not the upscaler
        'cs_other.bin\t5\tcompute\t0123456789abcdef\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_common.sharcb#BAHS@0x40\n'
-       'cs_romfs.bin\t6\tcompute\tddc729bcdb4c8df9\t/data.zip/66e36a907a6b7251#VIPR@0x12da#NDSR@0xec640\n')   # an NDSR pack in another file (Star Fox's data.zip member)
+       'cs_romfs.bin\t6\tcompute\tddc729bcdb4c8df9\t/data.zip/66e36a907a6b7251#VIPR@0x12da#NDSR@0xec640\n'   # an NDSR pack in another file (Star Fox's data.zip member)
+       'cs_movie.bin\t7\tcompute\tc2fc2ddd604c25e7\t/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE#NDSR@0x104f28\n')   # the movie library's: not the upscaler (Ocarina of Time)
 
 
 def macros(shader_map):

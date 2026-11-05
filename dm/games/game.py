@@ -102,8 +102,10 @@ def by_build(main_id):   # the profile whose build rows register this main build
 
 
 # The upscaler network (NDSR), by where the shader map found each key: the compute shaders of an NDSR pack, which shader_split.py marks #NDSR@<offset> whatever the file holding it
-# (agl_ndsr.pck: Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one; Star Fox's 20, the same pack as Splatoon Raiders', in a data.zip member)
-UPSCALER_SOURCE = re.compile(r'#NDSR@')
+# (agl_ndsr.pck: Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one; Star Fox's 20, the same pack as Splatoon Raiders', in a data.zip member).
+# Not the movie library's: its NDVE pack names two of its programs by a record table of the NDSR form (#NDVE#NDSR@, ndve_shaders), compute shaders of the video decoder that
+# Ocarina of Time's title movie dispatches (c2fc2ddd604c25e7), which DM_UPSCALER=metalfx would otherwise take for the game's upscaler
+UPSCALER_SOURCE = re.compile(r'(?<!#NDVE)#NDSR@')
 
 
 def upscaler_keys(g):
