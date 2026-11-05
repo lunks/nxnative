@@ -73,6 +73,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- [The height tiles read as zeros](../../../docs/reference/nvn-objects.md#uncompressed-storage-the-cpu-wrote-where-the-gpu-has-not-written): ten 260x260 R32F tiles in a pool the GPU also writes, so the ground of Kokiri Forest lay far below the player and the sky showed through (aCidcOde, #1326).
 - [Retired pool buffers piled up while the game submitted nothing](../../../docs/reference/memory.md#a-game-that-stops-submitting-piles-up-retired-pool-buffers): out of focus the main thread waits in `oe::PopNotificationMessage` (notification loop at main+0x3bc0230), and the streaming threads remade a virtual pool run 70 times a second. A session stayed frozen after a window switch; with the fix a 43 s switch came back at once (`DM_FOCUS_KEEP=1` no longer needed for this).
 - [Sharing entries outlived their storage](../../../docs/reference/nvn-objects.md#sharing-entries-outlive-their-storage): render targets the game's allocator places at moving offsets of one 305 MB pool, 2.9 GB of them unreferenced after a 10 s walk.
 - [GPU memory past Metal's working set](../../../docs/reference/memory.md#gpu-memory-past-metals-working-set-freezes-the-mac): a session ended in a GPU out-of-memory and a stuck game, and #1326 in a Mac frozen until the power button. A guard before each residency commit now stops the game first.
