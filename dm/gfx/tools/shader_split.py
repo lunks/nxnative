@@ -785,12 +785,13 @@ def zip_lz4_member(f, info, label):
     return b''.join(parts)
 
 def bare_shader(d, label):
-    """One shader as Star Fox's engine stores it, a zip member of its own (2,828 in data.zip): the GLSLC magic 0x19866891, u32 code length, u32 control length, u32 0, a 64-bit hash, then the
+    """One shader as Star Fox's engine stores it, a zip member of its own (2,828 in data.zip): the GLSLC magic 0x19866891, u32 code length, u32 control length, a u32 (0 but in Corneria's two water
+    shaders, 0x48000: perhaps the scratch memory they need; the record is read the same either way), a 64-bit hash, then the
     code (Ampere SASS: a graphics stage's program header first) and right after it the NVN2 control section (0xe0-0xf8 bytes, CTL_MAGIC), which ends the member. No GLSLC output header
     and no section table, so glslc_shaders does not read it. → [(label, stage, control, code)], or [] when d is not one"""
     if len(d) < 0x1c or d[:4] != b'\x91\x68\x86\x19': return []
-    nc, nl, zero = struct.unpack_from('<3I', d, 4)
-    if zero or 0x18 + nc + nl != len(d) or d[0x18 + nc:0x1c + nc] != CTL_MAGIC: return []
+    nc, nl = struct.unpack_from('<2I', d, 4)
+    if 0x18 + nc + nl != len(d) or d[0x18 + nc:0x1c + nc] != CTL_MAGIC: return []
     code, ctl = d[0x18:0x18 + nc], d[0x18 + nc:]
     st = glslc_stage(ctl, code)
     why = check(label, st, ctl, code) if st else 'no stage in its control section'
