@@ -197,7 +197,7 @@ The game may also write into an NVN object directly, without an NVN call, throug
   - Under memory pressure ([the guard's eviction level](memory.md#gpu-memory-past-metals-working-set-freezes-the-mac)) age alone decides, after 8 frames: a stop is worse than a retired ID that reads 0.
   - Takeover and this pass leave notes, not bare bumps, so tables are patched: finalized serials and sRGB / linear views that resolved to the entry at once (`alias_let_go`), retired IDs' views in `alias_sweep`, at the end of the submission, until when the texture stays alive and resident. Before, each bump built every table whole.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): 5.9 GB of targets over a 305 MB pool, 2.9 GB of unreferenced entries in 600 frames of a walk on a porch.
-- **Check:** `t_alias_age`, and the `memory up to frame` line: `idle` counts the entries this let go.
+- **Check:** `t_alias_age`, and the `memory up to frame` line: `idle` counts the entries this let go. Measured headless on a walk on the porch at frame 4,200, against the same host without this and the notes: GPU allocated 12,224 to 11,316 MB (10,762 at frame 4,500), unreferenced 485 to 107 (42), table builds over 8,000 to under 1,000, `a change without a note` over 7,000 to 1, frame time p95 346 to 213 ms.
 
 ### A replay's own objects take serials above a capture's
 
