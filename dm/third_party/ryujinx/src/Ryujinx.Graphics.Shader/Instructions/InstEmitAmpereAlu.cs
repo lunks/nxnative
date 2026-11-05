@@ -54,7 +54,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x012, InstName.Lop3, ALop3);
             alu(0x092, InstName.Lop3, ALop3, uniform: true);
             alu(0x019, InstName.Shf, AShf);
-            alu(0x01b, InstName.Shf, ABmsk);
             alu(0x099, InstName.Shf, AShf, uniform: true);
             alu(0x011, InstName.Lea, ALea);
             alu(0x091, InstName.Lea, ALea, uniform: true);
@@ -71,6 +70,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x0be, InstName.Flo, ABrev, uniform: true);
             alu(0x01a, InstName.Bfe, ASgxt);
             alu(0x09a, InstName.Bfe, ASgxt, uniform: true);
+            alu(0x01b, InstName.Bfe, ABmsk);
 
             x(0x882, InstName.Mov, AUMov, N, uniform: true);
             x(0x883, InstName.P2r, AUp2ur, N, uniform: true);
@@ -654,25 +654,23 @@ namespace Ryujinx.Graphics.Shader.Instructions
         }
 
         // S2R Rd, SR / S2UR URd, SR (72..80)
-        // PIXLD Rd (0x925): a value of the pixel the fragment runs for, its kind at 78..80 (Maxwell's PixMode), a predicate result at 81..83. COVMASK is the coverage mask
-        // (word 0 of the sample mask input, Metal's [[sample_mask]]), MYINDEX the sample index as Maxwell's PIXLD; Star Fox's pixel shaders (2 of its 2,826) start with
-        // PIXLD.COVMASK R0 / R1. The other kinds, a predicate result or another stage are refused
+        // PIXLD Rd (0x925): a value of the pixel the fragment runs for, its kind at 78..80 (Maxwell's PixMode), a predicate result at 81..83. COVMASK (1): 1 for a covered pixel,
+        // 0 for a helper invocation. What it reads comes from the two shaders that use it, Star Fox's quad efficiency views 46040940ce0fd49b and 826168691af2e211, which add it up
+        // over the quad through SHFL and FSWZADD: one takes sum - 1 as the index of a 4-entry palette, so a shaded pixel's sum is at least 1; the other draws 0.03125 + 0.15625 sum
+        // in red. MYINDEX (5): the sample index, as Maxwell's PIXLD. Any other form stays refused
         public static void APixld(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
             PixMode mode = (PixMode)x.Bits(78, 81);
 
-            if (x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex || context.TranslatorContext.Definitions.Stage != ShaderStage.Fragment)
+            if (mode is not (PixMode.Covmask or PixMode.MyIndex) || x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex || context.TranslatorContext.Definitions.Stage != ShaderStage.Fragment)
             {
-                throw AFail(context, $"PIXLD {mode} with a predicate result or outside a pixel shader");
+                throw AFail(context, $"0x925 form {x.Bits(78, 81)} with a predicate result or outside a pixel shader");
             }
 
-            Operand value = mode switch
-            {
-                PixMode.Covmask => context.Load(StorageKind.Input, IoVariable.SampleMask, null, Const(0)),
-                PixMode.MyIndex => context.Load(StorageKind.Input, IoVariable.SampleId),
-                _ => throw AFail(context, $"PIXLD {mode}"),
-            };
+            Operand value = mode == PixMode.Covmask
+                ? context.ConditionalSelect(context.Load(StorageKind.Input, IoVariable.HelperInvocation), Const(0), Const(1))
+                : context.Load(StorageKind.Input, IoVariable.SampleId);
 
             ASet(context, x, value);
         }
@@ -1103,29 +1101,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         // SHF Rd, lo, shift, hi: a funnel shift of {hi:lo}. Type (73..75: I64, U64, I32, U32), .W (75) wraps the shift instead of clamping it, .R (76),
         // .HI (80) the high word of the result.
-        // BMSK Rd, Ra, Rb (0x01b): a mask of Rb ones starting at bit Ra, ((1 << width) - 1) << position. .W (75) wraps both to 5 bits; without it they are clamped to 32, so a width
-        // of 32 or more gives ones up to bit 31 and a position of 32 or more gives 0 (NAK's OpBMsk; PTX bmsk). Star Fox's pixel shader builds one from two registers (R5 = bmsk(R4, R5))
-        public static void ABmsk(EmitterContext context)
-        {
-            AmpereOp x = new(context.CurrOp);
-            bool u = AUniform(context);
-            (ASrc a, ASrc b, _) = AAluSrcs(context, x, u, neg: false, abs: false);
-
-            Operand pos = AGet(context, a);
-            Operand width = AGet(context, b);
-
-            if (x.Bit(75))
-            {
-                pos = context.BitwiseAnd(pos, Const(31));
-                width = context.BitwiseAnd(width, Const(31));
-            }
-
-            Operand ones = context.ConditionalSelect(context.ICompareLessUnsigned(width, Const(32)), context.ISubtract(context.ShiftLeft(Const(1), width), Const(1)), Const(-1));
-            Operand res = context.ConditionalSelect(context.ICompareLessUnsigned(pos, Const(32)), context.ShiftLeft(ones, pos), Const(0));
-
-            ASet(context, x, res, u);
-        }
-
         public static void AShf(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -1403,6 +1378,35 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res, u);
         }
 
+        // BMSK Rd, a, b: a mask of b bits from bit a (Star Fox's 58046f286de779e1: BMSK R5, R4, R5, then R9 << R4, the two ANDed and handed to an atomic, a bit field written into a word).
+        // The semantics are PTX's bmsk: .W (75, as SGXT's; only the clamping form has been seen) takes both operands modulo 32; else a >= 32 gives 0 and b >= 32 reaches bit 31
+        public static void ABmsk(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            bool u = AUniform(context);
+            (ASrc sa, ASrc sb) = ASecond(context, x, u, neg: false, abs: false);
+
+            Operand a = AGet(context, sa), b = AGet(context, sb);
+            Operand a1 = context.BitwiseAnd(a, Const(31)), b1 = context.BitwiseAnd(b, Const(31)), sum = context.IAdd(a1, b1);
+            Operand mask0 = context.ShiftLeft(Const(-1), a1);
+            Operand reachesTop = context.ICompareGreaterOrEqualUnsigned(sum, Const(32));
+
+            if (!x.Bit(75))
+            {
+                Operand aOver = context.ICompareGreaterOrEqualUnsigned(a, Const(32));
+
+                mask0 = context.ConditionalSelect(aOver, Const(0), mask0);
+                reachesTop = context.BitwiseOr(reachesTop, context.BitwiseOr(aOver, context.ICompareGreaterOrEqualUnsigned(b, Const(32))));
+            }
+
+            // the bits above the field: none when it reaches the top, all when it is empty (a1 + b1 < 32 in the shift, so it is defined)
+            Operand above = context.ConditionalSelect(context.ICompareEqual(b1, Const(0)), Const(-1), context.ShiftLeft(Const(-1), context.BitwiseAnd(sum, Const(31))));
+
+            above = context.ConditionalSelect(reachesTop, Const(0), above);
+
+            ASet(context, x, context.BitwiseAnd(mask0, context.BitwiseNot(above)), u);
+        }
+
         // ---- predicates ----
 
         // R2P PR, Ra, mask: predicates from one byte of Ra (76..78), the mask an immediate (0x804) or a register (0x204)
@@ -1498,9 +1502,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return res;
         }
 
-        // VOTE / VOTEU Rd, Pd, P: Pd = the vote (72..74: all, any, equal) of P (87..90); Rd the ballot. VOTEU's are a uniform register and a uniform predicate, as its
-        // result is the warp's: Star Fox's pixel shader 0396b3632ac7ea61 votes VOTEU.ALL UP0, P0 (+0x5710), computes a handle only for a warp where some thread has !P0
-        // (@!UP0 ULOP3 UR10 = UR10 | UR11, +0x5730) and samples it @!P0 (+0x5760); the vote written to P0 took the place of each thread's own P0 there and at its @P0 BRA
+        // VOTE Rd, Pd, P / VOTEU URd, UPd, P: Pd (81..84) = the vote (72..74: all, any, equal) of P (87..90), Rd the ballot; VOTEU writes the uniform register and the
+        // uniform predicate. P and the guard are lane predicates in both. Star Fox's pixel shader 0396b3632ac7ea61 votes VOTEU.ALL UP0, P0 (+0x5710), computes a handle only
+        // for a warp where some thread has !P0 (@!UP0 ULOP3 UR10 = UR10 | UR11, +0x5730) and samples it @!P0 (+0x5760); the vote written to P0 took the place of each
+        // thread's own P0 there and at its @P0 BRA
         public static void AVote(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);

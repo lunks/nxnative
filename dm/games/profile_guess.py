@@ -201,23 +201,44 @@ def nro_modules(exefs, nros, modules, hooks=None):
     imports, and the NROs are in the RomFS, which the survey does not extract. Portal (Source engine, 28 NROs) plays its movies in video_nx.nro through NintendoSDK_movie (subsdk2)
     and initializes GLSLC (subsdk0) from materialsystem.nro and video_nx.nro; left out, movie::Extractor's constructor was a stub and the first movie crashed.
     A symbol a loaded module or another NRO defines, or the host supplies, needs nothing; NVIDIA's GPU drivers stay out as in guess()"""
-    exefs, hooks = Path(exefs), host_hooks() if hooks is None else hooks
     want, have = set(), set()
     for p in nros.values():
         for s, defined, bind in nso_syms.dynsyms(Path(p).read_bytes()):
             if not defined: want.add(s)
             elif bind in (1, 2): have.add(s)
-    exp = {}
-    for p in sorted(exefs.iterdir()):
+    return modules_supplying(exefs, want - have, modules, hooks)
+
+
+def main_modules(exefs, modules, hooks=None):
+    """The subsdks a hand-written list leaves out that main imports from, {module: kind}: a module's slot is not fixed across a game's versions. Absolum's movie module is subsdk2 in 1.1.2, where
+    subsdk0 is NVIDIA's Vulkan driver, and subsdk0 in 1.2.1: a profile derived from 1.1.2's list left it out, and movie::Extractor's constructor was a stub (issue #1211). Reads nothing with no other module there"""
+    exefs = Path(exefs)
+    if not nso_files(exefs, skip=modules): return {}
+    want = {s for s, defined, _ in nso_syms.dynsyms(nso(exefs / 'main')[0]) if not defined}
+    return modules_supplying(exefs, want, modules, hooks)
+
+
+def nso_files(exefs, skip=()):   # the code modules in a folder, in name order
+    out = []
+    for p in sorted(Path(exefs).iterdir()):
+        if p.name in skip or p.name == 'rtld' or not p.is_file(): continue
         with open(p, 'rb') as f:
-            if f.read(4) != b'NSO0': continue
+            if f.read(4) == b'NSO0': out.append(p)
+    return out
+
+
+def modules_supplying(exefs, want, modules, hooks=None):   # the modules left out of the list that export a symbol of want which no listed module and no host hook supplies, {module: kind}, in load order; never a GPU driver
+    hooks = host_hooks() if hooks is None else hooks
+    exp = {}
+    for p in nso_files(exefs):
         img = nso(p)[0]
         exp[p.name] = {'exports': {s for s, defined, bind in nso_syms.dynsyms(img) if defined and bind in (1, 2)},
                        'comps': {c.decode().rsplit('-', 1)[0] for c in re.findall(rb'NintendoSDK_(?!nnSdk)\w+-[0-9_]+', img)}}
+    have = set(hooks)
     for m in modules: have |= exp.get(m, {}).get('exports', set())
-    want -= have | hooks
+    want = want - have
     return {m: kind(e) for m, e in sorted(exp.items(), key=lambda x: load_order(x[0]))
-            if m not in modules and m != 'rtld' and want & e['exports'] and kind(e) not in GPU_DRIVERS}
+            if m not in modules and want & e['exports'] and kind(e) not in GPU_DRIVERS}
 
 
 # ---- Shader sources: decided from the game files at every build, not kept in the profile (scripts/build_ipa_from_nsp.py; shader_split.py reads what those steps write) ----

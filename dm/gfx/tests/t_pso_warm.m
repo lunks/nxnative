@@ -302,6 +302,8 @@ int main(void) { @autoreleasepool {
     unsetenv("DM_PSO_PREPARE_THREADS");
     EXPECT("prepare workers: Metal's concurrent compiles", g_dev.maximumConcurrentCompilationTaskCount, prepare_workers());
     setenv("DM_PSO_PREPARE_THREADS", "3", 1); EXPECT("prepare workers: DM_PSO_PREPARE_THREADS", 3, prepare_workers()); unsetenv("DM_PSO_PREPARE_THREADS");
+    // The prebuild tool's default workers: as many compiles as Metal runs at once, however few cores level 0 has
+    EXPECT("prebuild tool workers: Metal's concurrent compiles", g_dev.maximumConcurrentCompilationTaskCount, compile_tasks());
     singleflight(@(dir));
     scenario(@(dir), 0); scenario(@(dir), 1);
     native_mesh(@(dir));

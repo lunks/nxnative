@@ -10,6 +10,7 @@ program_id	0400E88025B1A000
 name	Star Fox
 ipa	StarFox.ipa
 app_category	public.app-category.action-games
+pad_layout	full
 
 # ---- Versions ----
 # the NUP's update carries no display version: v131072 is a placeholder

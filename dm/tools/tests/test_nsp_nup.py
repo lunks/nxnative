@@ -218,7 +218,7 @@ class Survey(Base):
         self.assertFalse((out / 'ExeFS/.listing').exists())
         rows = (out / 'romfs_manifest.tsv').read_text().splitlines()
         self.assertEqual(rows[0], nsp.MANIFEST_HEAD.rstrip('\n'))
-        self.assertEqual(sorted(rows[1:]), sorted([f'/a/big\t500\t{(b"z" * 32).hex()}', f'/empty\t0\t', f'/nro/m.nro\t{len(nro)}\t{nro[:32].hex()}']))
+        self.assertEqual(sorted(rows[1:]), sorted([f'/a/big\t500\t{(b"z" * 32).hex()}', '/empty\t0\t', f'/nro/m.nro\t{len(nro)}\t{nro[:32].hex()}']))
         self.assertEqual((out / 'romfs_nro/nro/m.nro').read_bytes(), nro)
         self.assertEqual(nacp.name(out / 'control.nacp'), 'Test Game')   # the update has none: the base game's
 
@@ -234,6 +234,17 @@ class Survey(Base):
             with self.assertRaises(Stop): nsp.main(nsp.parse_args([str(self.path), '--survey-only']))
         self.assertEqual(seen['app'], NEW)
         self.assertIsNone(seen['base'])
+
+    def test_same_build_reads_main_from_the_container(self):   # a known build under another title ID: the newest update's main, then the base game's, read from the packages
+        def nso(bid): return b'NSO0' + bytes(0x3c) + bytes.fromhex(bid) + bytes(0x50)
+        write_nup(self.path, [(0, NEW, 0, version(main=nso('ab' * 16), tid=NEW), META), (1, NEW, VER, version(main=nso('cd' * 16), tid=NEW), b'')])
+        app, fam = nsp.scan_nup(self.path); self.addCleanup(fam['nup'].close)
+        seen, prof = [], mock.Mock(id='P', builds=lambda: {'v0': {'main': 'ab' * 16}})
+        games = mock.Mock(by_build=lambda bid: seen.append(bid) or (prof if bid == 'ab' * 16 else None))
+        with mock.patch.dict(sys.modules, {'game': games}), mock.patch.object(nsp, 'PROG', mock.Mock()), \
+             mock.patch.object(nsp, 'build_nx_extract', side_effect=AssertionError('built nx_extract')):
+            self.assertEqual(nsp.same_build(self.dir, app, fam, None, REPO, {}), (prof, 'v0', 'ab' * 16))
+        self.assertEqual(seen, ['cd' * 16, 'ab' * 16])
 
 
 def code_module(bid, imports=('nvnBootstrapLoader',), exports=('nnMain',)):   # an uncompressed NSO whose text holds MOD0 and a dynamic symbol table (what profile_guess.facts_of reads)

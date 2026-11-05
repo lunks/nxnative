@@ -43,7 +43,7 @@ int main(void) {
     CHECK(request(dup, m, 29) == RES_OK && m[6] == 0x7c4u, "the duplicate answers as the camera");
     CHECK(request(cam, m, 4) == RES_OK && m[6] == RES_OK, "Finalize succeeds");
     memset(m, 0xcc, 0x100); m[0] = 2; m[1] = 0;
-    CHECK(h_sf_Send(cam, m, 0x100) == RES_OK, "a Close message (the proxy's last release) is accepted");
+    CHECK(h_sf_Send(cam, m, 0x100) == 0xf601u, "a Close message (the proxy's last release) gets the closed-session result");
     h_sf_Close(dup); h_sf_Close(cam); h_sf_Close(h);
     CHECK(h_sf_Send(cam, m, 0x100) == 0xe401u, "a closed session is no longer a host session");
     printf("t_sf: %d checks, %d failed\n", checks, fails);

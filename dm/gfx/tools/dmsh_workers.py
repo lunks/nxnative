@@ -3,7 +3,7 @@
 # at one interpreter, so a build whose libraries come from the Metal cache ran on one core, whatever J says, and only the Metal compilers ever ran beside it.
 # A worker is a fork, so it starts with everything the build holds; what a task changes stays in that worker, so a task gives back its result and each counter it added to (run's counters).
 # Forked at a moment with no other thread, and before the pool starts its own. A worker leaves through os._exit: the parent's atexit handlers do not run there, so what a worker makes for itself
-# and cleans up at exit stays behind: dmsh_pch's headers are made before the fork.
+# and cleans up at exit stays behind: dmsh_pch's headers are made before the fork. The compile cache (shader_cache.py) opens a connection of its own in each worker, at the fork.
 # Not part of the chain version (dmsh_chain.py), like dmsh_mtlcache.py and dmsh_pch.py: it decides where the work runs, not what it makes.
 import concurrent.futures as cf, multiprocessing, sys
 

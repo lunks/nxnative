@@ -96,6 +96,12 @@ void dm_focus_set(int st) {
 static int opmode(void) { return dm_opmode(); }
 
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
+// Star Fox (SDK 21): the game marks the sections where it shows the player's own photographs (GameChat's camera pictures on screen); the system keeps those out of captures. No captures here
+HLE_FORCE("_ZN2nn2oe32BeginPresentPhotographedContentsEv", "photographed contents on screen: noted nowhere (no capture service)", void, h_oe_PhotoBegin, void) {}
+HLE_FORCE("_ZN2nn2oe30EndPresentPhotographedContentsEv", "photographed contents off screen", void, h_oe_PhotoEnd, void) {}
+HLE_FORCE("_ZN2nn2oe41ExitApplicationAndGoBackToInStoreDemoMenuEv", "the in-store demo's exit: the host runs no demo menu, the call is logged and ignored", void, h_oe_DemoExit, void) {
+    static int once; if (!once++) LOG("[RED] oe: ExitApplicationAndGoBackToInStoreDemoMenu called: ignored (no in-store demo menu)");
+}
 HLE_FORCE("_ZN2nn2oe17FinishStartupLogoEv", "dismiss the system boot screen (through the am application proxy); the host has no boot screen", void, h_oe_FinishLogo, void) {}   // Metroid Dread calls it at main+0xadfed0
 // am retains the requested inactivity extension even when auto-sleep is disabled.
 // SDK 12.3.9 maps the normal setter to mode 1, Unsafe to mode 2, and false to 0.
@@ -108,11 +114,6 @@ HLE_FORCE("_ZN2nn2oe15EnableRecordingEv", "video recording switch; the host has 
 // Applet resource user ID (ARUID, the number am assigns to this process): the host has no am, and the SDK's own getter returns 0. SDK 20's OpenAudioRenderer (the CPU rendering + manual execution path, sdk+0x221730)
 //   aborts when it gets 0 (The Legend of Zelda: Breath of the Wild 1.9.0); SDK 16 did not check. Report a fixed non-zero ID, used only as an identifier
 HLE_FORCE("_ZN2nn6applet23GetAppletResourceUserIdEv", "applet resource user ID; the host returns a fixed non-zero value", uint64_t, h_applet_Aruid, void) { return 0x80; }
-// The camera as a resource the application holds (nn::camera::Activate / Deactivate and Finalize call these; SDK 21.4.4 sdk+0x1dfea0 / sdk+0x1dfee0 send them to am's common state
-// getter, vtable +0x1d0 / +0x1d8, and abort on any error). The host has no am (the getter is null) and no other applet that could want the camera: nothing to hand over.
-// Star Fox's webcam thread activates the camera as soon as its camera session is up ([The camera through the graphics system], hle_sf.c)
-HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "the application starts using the camera (am); the host has no other applet to take it from", void, h_applet_CamBegin, void) {}
-HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "the application stops using the camera (am)", void, h_applet_CamEnd, void) {}
 // The program's arguments (nn::os::GetHostArgc / GetHostArgv): a development kit's host passes them, a retail console none. A game may read settings from them: Star Fox reads
 // each of its cvars from "-<name, '.' as '_'>=<value>" when it registers it (main+0xb6b0740; the arguments copied at main+0xb66ccc0, 32 at most). The host gives, after a first one naming
 // the program, DM_GAME_ARGS's (space-separated, a diagnostic; first, so they win where the game takes the first match) and the profile's setting patches' argument rows
@@ -239,12 +240,14 @@ void dm_oe_execute(int index, const void *param, size_t n) {
     const char *pf = getenv("DM_PROGRAMS");
     if (pf && *pf) {
         FILE *fp = fopen(pf, "rb"); char *rows2 = NULL;
-        if (fp) {
-            fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+        long sz = fp && !fseek(fp, 0, SEEK_END) ? ftell(fp) : -1;   // -1: no file, or one that cannot seek
+        if (sz >= 0) {
+            fseek(fp, 0, SEEK_SET);
             tsv = calloc(1, (size_t)sz + 1); rows2 = calloc(1, (size_t)sz + 1);
             if (fread(tsv, 1, (size_t)sz, fp) != (size_t)sz) tsv[0] = 0;
-            memcpy(rows2, tsv, (size_t)sz); fclose(fp);
+            memcpy(rows2, tsv, (size_t)sz);
         } else LOG("[RED] oe::ExecuteProgram: cannot read DM_PROGRAMS %s", pf);
+        if (fp) fclose(fp);
         if (tsv && (have = prog_plan_make(tsv, index, &P, param, n))) LOG("oe::ExecuteProgram(%d, %zu bytes of parameters:%s): this program ends, %s starts", index, n, hex, P.exe);
         else if (rows2) {
             LOG("[RED] oe::ExecuteProgram(%d, %zu bytes of parameters:%s): this application has no such program here; its first program starts instead", index, n, hex);

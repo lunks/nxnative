@@ -18,7 +18,7 @@ def _close(src, i, o, c):
     """the index after the bracket closing the one opened just before i, -1 when there is none. Only the brackets are looked at: a loop over every character was 85% of what a pixel shader's
     side libraries cost in Python (Star Fox's sources average 215 KB), and each shader goes through here on every build, a cache hit too"""
     depth = 1
-    for m in re.compile(f'[{re.escape(o + c)}]').finditer(src, i):
+    for m in re.compile(re.escape(o) + '|' + re.escape(c)).finditer(src, i):   # from bracket to bracket: a loop over the characters of a whole function body took 10 ms a shader
         depth += 1 if m.group() == o else -1
         if not depth: return m.end()
     return -1

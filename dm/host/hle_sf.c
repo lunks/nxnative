@@ -61,6 +61,12 @@ static Result camera_answer(unsigned cmd, const uint8_t *in, size_t nin, uint8_t
     if (cmd < 256 && !(atomic_fetch_or(&seen[cmd / 64], 1ull << (cmd % 64)) & 1ull << (cmd % 64))) LOG("[RED] sf: camera command %u with no camera open → 0x5c4", cmd);
     return 0x5c4u;
 }
+// The camera module takes the applet's camera resource before it opens a device (nn::applet::BeginUsingCameraResource read a null service object at sdk+0x1dfeb4): the host runs the only
+// application, so the resource is always this game's. The context's end: the SDK's DestroyCameraContext asks the gsv session the host never opened and fails, which aborts Finalize
+// (subsdk3+0x2010); the module closes the context's handle itself, so there is nothing left to do here
+HLE_FORCE("_ZN2nn6camera3sdk20DestroyCameraContextEv", "camera context destroyed: nothing to release on the host", Result, h_cam_ContextEnd, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "applet camera resource: always available to this game", Result, h_applet_CamBegin, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "applet camera resource released", Result, h_applet_CamEnd, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", "camera context (a camera service session through gsv) → a host session with no camera", Result, h_cam_Context,
           uint32_t *out) {
     *out = sf_new("camera", 0, camera_answer); LOG("sf: camera context → host session %#x (no camera)", *out);
@@ -123,8 +129,8 @@ HLE_FORCE("_ZN2nn2sf4hipc15SendSyncRequestENS_3svc6HandleEPvm", "send a request 
     static int trace = -1; if (trace < 0) trace = getenv("DM_SF_TRACE") && atoi(getenv("DM_SF_TRACE"));
     if (trace) { char hx[3 * 0x80 + 1] = ""; for (unsigned k = 0; k < 0x80 && k < size; k++) snprintf(hx + 3 * k, 4, "%02x ", base[k]); LOG("sf: %s request: %s", g_sf[i].name, hx); }
     // A Close message (type 2) ends the session: the client's proxy sends it as its last reference goes (the camera's, on nn::camera::Finalize, subsdk3+0x20bc), ignores the result
-    // and closes its handle next (CloseClientSessionHandle above). The server sends no reply
-    if (type == 2) return RES_OK;
+    // and closes its handle next (CloseClientSessionHandle above). The server sends no reply: the kernel answers the closed-session result
+    if (type == 2) return 0xf601u;
     if (type != 4 && type != 6) { LOG("[RED] sf: %s: HIPC message type %u not served", g_sf[i].name, type); return 0xe401u; }
     if (dtype == 2) { memset(base, 0, 16); return RES_OK; }   // a domain object closed: nothing to answer
     if (magic != 0x49434653) { LOG("[RED] sf: %s: request without SFCI (%#x)", g_sf[i].name, magic); return 0xe401u; }

@@ -41,7 +41,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             x(0xb60, InstName.Tex, ATex, InstProps.Tex);
             x(0x361, InstName.Tex, ATex, InstProps.Tex);
+            x(0x364, InstName.Tld4, ATex, InstProps.Tex);
+            x(0x367, InstName.Tld, ATex, InstProps.Tex);
             x(0xf60, InstName.Tex, ATex, InstProps.Tex);
+            x(0xf63, InstName.Tld4, ATex, InstProps.Tex);
+            x(0xf6c, InstName.Txd, ATex, InstProps.Tex);
             x(0xb66, InstName.Tld, ATex, InstProps.Tex);
             x(0xb63, InstName.Tld4, ATex, InstProps.Tex);
             x(0xb69, InstName.Tmml, ATex, InstProps.Tex);
@@ -284,6 +288,16 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 }
             }
 
+            // The address is read once, before any result is written, the zeros of a false predicate too: the destination may be the address register (LDG.128 R0, [R0.64]; Unreal Engine 5.4's bounds-checked
+            // reads of its scene data, LDG.P R5, [R5 + UR4], which read at the table's start when R5 was zeroed first: every instance at the first one's transform, and a black scene)
+            (Operand[] los, Operand[] his) = (new Operand[count], new Operand[count]);
+
+            for (int index = 0; index < count; index++)
+            {
+                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 32, index * 4);
+                (los[index], his[index]) = (context.Copy(lo), context.Copy(hi));
+            }
+
             Operand lblSkip = null;
 
             if (pred != null)
@@ -295,14 +309,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                 lblSkip = Label();
                 context.BranchIfFalse(lblSkip, pred);
-            }
-
-            // The address is read once, before any result is written (the destination may be the address register: LDG.128 R0, [R0.64])
-            (Operand[] los, Operand[] his) = (new Operand[count], new Operand[count]);
-
-            for (int index = 0; index < count; index++)
-            {
-                (los[index], his[index]) = AGlobalAddress(context, x, 90, 32, index * 4);
             }
 
             for (int index = 0; index < count; index++)
@@ -497,7 +503,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
         }
 
         // SURED [Ra], Rb (0x59f) updates an image atomically without returning its old value.
-        // Unlike SUATOM, its operation occupies three bits (87..90) and it has no destination.
+        // Unlike SUATOM, its operation occupies three bits (87..90) and it has no destination. The handle may be in the game's own uniform buffer, as a texture's:
+        // Yoshi and the Mysterious Book's compute shaders keep it in c[3]
         public static void ASured(EmitterContext context)
         {
             AmpereOp instruction = new(context.CurrOp);
@@ -507,11 +514,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
             RedOp operation = (RedOp)instruction.Bits(87, 90);
             SuatomSize size = (SuatomSize)instruction.Bits(73, 76);
             bool byteAddress = instruction.Bit(72);
-
-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
-            {
-                throw AFail(context, $"SURED handle in bank {cbufSlot}");
-            }
 
             if (dimensions > SuDim._3d)
             {
@@ -540,28 +542,24 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 instruction.Rb,
                 srcC: 0,
                 byteAddress: byteAddress,
-                isBindless: false);
+                isBindless: false,
+                cbufSlot: cbufSlot);
         }
 
         // SUATOM Rd, [Ra], Rb (0x593): an atomic on an image through a handle, laid out as SUST's (handle 40..59, dimension 61..64) and as ATOMG's (operation
         // 87..91, size 73..76, Pu 81..83). Donkey Kong Bananza's append compute shaders take a counter with it (SUATOM.ADD.U32 on a 1D image, the old value
-        // shuffled to the warp) before their SUST. Another handle bank or a predicate result is not met in a game: refused.
+        // shuffled to the warp) before their SUST. The handle may be in the game's own uniform buffer, as a texture's. A predicate result is not met in a game: refused.
         public static void ASuatom(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
             (int handle, int cbufSlot) = ATexHandle(context, x);
-
-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
-            {
-                throw AFail(context, $"SUATOM handle in bank {cbufSlot}");
-            }
 
             if (x.Bits(81, 84) != 7)
             {
                 throw AFail(context, "SUATOM with a predicate result");
             }
 
-            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
+            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false, cbufSlot: cbufSlot);
         }
 
         // BAR.SYNC: the workgroup barrier
@@ -730,15 +728,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int opcode = x.Opcode;
 
             // TEX through a handle in a register, not named by its offset: the compiler's form for a handle it read itself, usually from a table at a computed offset. BindlessElimination takes the
-            // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60: a uniform register at 40..46. 0x361 (bit 59 set): a register, the first of the second source block,
-            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both.
-            // 0xf6c is TXD the same way, its handle in a uniform register at 40..46 and the other fields 0xb6c's: Star Fox's material shaders (292 of its 2,826, e.g.
-            // a000041014127f6c: UR4, coordinates from R20, derivatives from R16). 0xf63 is TLD4 the same way (Star Fox: 3000061a021a7f63, a 2D gather through UR6)
+            // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60, 0xf63 and 0xf6c (TEX, TLD4 and TXD, whose other fields are 0xb60's, 0xb63's and 0xb6c's): a uniform register at
+            // 40..46. 0x361, 0x364 and 0x367 (TEX, TLD4 and TLD, bit 59 set): a register, the first of the second source block,
+            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both
+            // 0xf6c: Star Fox's material shaders (292 of its 2,826, e.g. a000041014127f6c: UR4, coordinates from R20, derivatives from R16). 0xf63: 3000061a021a7f63, a 2D gather through UR6
             Operand boundHandle = null;
-            bool handleInB = opcode == 0x361;
-            bool bindless = handleInB || opcode is 0xf60 or 0xf6c or 0xf63;
+            bool handleInB = opcode is 0x361 or 0x364 or 0x367;
+            bool bindless = handleInB || opcode is 0xf60 or 0xf63 or 0xf6c;
 
-            if (opcode is 0xf60 or 0xf6c or 0xf63)
+            if (opcode is 0xf60 or 0xf63 or 0xf6c)
             {
                 int ur = x.Bits(40, 46);
 
@@ -747,7 +745,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (bindless)
             {
-                opcode = opcode switch { 0xf6c => 0xb6c, 0xf63 => 0xb63, _ => 0xb60 };
+                opcode = opcode is 0xf63 or 0xf6c ? opcode - 0x400 : opcode is 0x364 or 0x367 ? opcode + 0x7ff : 0xb60;
             }
 
             TexDim dim = ATexDim(context, x.Bits(61, 64));

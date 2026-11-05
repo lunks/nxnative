@@ -156,6 +156,10 @@ def build(gid, patched, control):
         if kind == 'choice' and values not in ('languages', 'patches'): return {v.split('?', 1)[0].split('=', 1)[0] for v in values.split(',')}
         return None
 
+    def offered(v, n):   # value=label?cond&cond: an option only some games or platforms have
+        parts = v.split('?', 1)
+        return len(parts) == 1 or all(shown(c, n) for c in parts[1].split('&'))
+
     out, table, base, rbase = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g), rate_base(g)
     kinds = {r[1][0]: (r[1][1], r[1][2]) for r in rows()}
     for n, (var, kind, values, default, cond, sect, label, note, extra) in rows():
@@ -181,11 +185,8 @@ def build(gid, patched, control):
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if var in RATE_ROWS and rbase: s['rate_base'] = rbase     # each rate's render size in pixels, for the console mode and output resolution chosen
         if kind == 'choice':
-            def offered(v):   # value=label?cond&cond: an option only some games or platforms have
-                parts = v.split('?', 1)
-                return len(parts) == 1 or all(shown(c, n) for c in parts[1].split('&'))
             if values == 'patches' and var not in popts: sys.exit(f'settings.tsv:{n}: values patches needs the condition patches:{var} (the profile\'s setting patches for this build)')
-            opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
+            opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v, n)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
             if values == 'patches' and 'conflicts' in m:   # a patches row's values are known only now, for the game packed: a conflict on a value it does not offer goes (Star Fox has no
                 # Native (MetalFX AA)), and a clause left without values with it
