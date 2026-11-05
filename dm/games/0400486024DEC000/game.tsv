@@ -25,7 +25,7 @@ zip_store	.bwav:.webm:.zs:.metallib
 # ---- Memory ----
 # The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap.
 mem_reserve	0x300000000
-mem_alias	0x98000000
+mem_alias	0x118000000
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
