@@ -419,6 +419,13 @@ check_t_image_alias: t_image_alias
 # A game's upscaler drawn by MetalFX (any profile; the profile's upscaler shaders, from its shader map, when it has some); with and without the switch, and on the encoding thread
 t_upscaler_mfx: t_upscaler_mfx.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upscaler_mfx.m $(MTL_T_SRC) $(FW)
+# One temporal upscale with the game's DLSS (DM_UPSCALER=metalfx-temporal: dlss_eval keeps an anti-aliasing-only evaluation, up_mfx_dlss draws the upscaler with it), on a profile with upscaler keys
+t_upscaler_dlss: t_upscaler_dlss.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_upscaler_dlss.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_upscaler_dlss
+check_t_upscaler_dlss: t_upscaler_dlss
+	DM_NVN_ENC_THREAD=0 DM_UPSCALER=metalfx-temporal ./t_upscaler_dlss
+	DM_NVN_ENC_THREAD=1 DM_UPSCALER=metalfx-temporal ./t_upscaler_dlss
 .PHONY: check_t_upscaler_mfx
 # (MetalFX's Metal 4 scaler stops under Metal validation on a barrier-stage setting of its own that has no public API, "_outputTextureBarrierStages not set": its run is without it)
 check_t_upscaler_mfx: t_upscaler_mfx
