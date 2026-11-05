@@ -29,8 +29,14 @@ class Base(unittest.TestCase):
             cm.__enter__(); self.addCleanup(cm.__exit__, None, None, None)
 
 
+class Temporaries(unittest.TestCase):
+    def test_spotlight_leaves_the_build_folders_temporaries_out(self):   # by the folder's name: a .metadata_never_index file in it did not stop the indexing
+        self.assertTrue(nsp.TMP.endswith('.noindex'))
+        self.assertNotIn("WORK=str(work / 'tmp')", SCRIPT.read_text())
+
+
 class CacheNote(unittest.TestCase):
-    def test_the_metal_cache_is_counted_beside_the_per_shader_cache(self):   # a chain change read "0 from the cache" while 8 of about 98,000 libraries were compiled
+    def test_the_metal_cache_is_counted_beside_the_per_shader_cache(self):   # a chain change read "0 from the cache" while the Metal cache gave back 95% of the libraries
         log = 'shader cache: hit 0, rebuilt 42851\nMetal cache: mac 98356 reused, 8 compiled; mac_tensor 3 reused, 0 compiled, 2 filled from earlier builds\n'
         self.assertEqual(nsp.shader_cache_note(log), ' (0 from the cache; Metal libraries: 98,359 reused, 8 compiled)')
 
