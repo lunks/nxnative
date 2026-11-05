@@ -133,8 +133,8 @@ def _before_fork():
 
 def _after_fork():
     for s in list(_open_stores):
-        s._open()
-        s.lock.release()
+        try: s._open()
+        finally: s.lock.release()
 
 
 os.register_at_fork(before=_before_fork, after_in_parent=_after_fork, after_in_child=_after_fork)

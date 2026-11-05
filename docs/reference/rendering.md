@@ -1021,7 +1021,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 - **Symptom:** `[RED] NVN unimplemented function called: nvnDlssNetworkResize (x0=… x1=0x300 x2=0x1b0)` at the title.
 - **Cause:** NVN2 lets a game resize a DLSS network instead of making a new one. The replay takes each evaluation's sizes from its parameters and textures, so the network keeps nothing of it.
-- **Fix:** `nvnDlssNetworkResize` succeeds, logging the first size (`hle_nvn.c`).
+- **Fix:** `nvnDlssNetworkResize` succeeds, records the new size and logs it (`hle_nvn.c`).
 - **Found on:** [Star Fox](../../dm/games/0400E88025B1A000/README.md): 768x432, once; its evaluations run 768x432 to 768x432.
 
 ### A game's own upscaler drawn by MetalFX
