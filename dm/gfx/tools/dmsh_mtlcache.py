@@ -98,8 +98,11 @@ class Cache:
         stamp_file = os.path.join(self.root, 'filled.json')
         try: stamps = json.load(open(stamp_file))
         except (OSError, ValueError): stamps = {}
-        names = set(os.listdir(mac_dir))   # a library with a side library was cut from another source than its .metal (compile_split, dmsh_side.py), and a compile of that source is never asked for
-        stems = sorted(n[:-6] for n in names if OUTPUT.fullmatch(n) and n[:-6] + 'x.metallib' not in names)   # not an AppleDouble ._<name> (exFAT / FAT drives)
+        # A library beside a <key>_bx was cut from another source than its .metal (compile_split, dmsh_side.py), and one beside a <key>_bb came from that source without its border corrections
+        # (dmsh_build.py ps_libraries): a compile of neither .metal gives that library. A sample of such a shader refused the whole folder ("a fresh compile of ... differs from its library"),
+        # and one that was not sampled would have filed the plain library under the correcting source
+        names = set(os.listdir(mac_dir))
+        stems = sorted(n[:-6] for n in names if OUTPUT.fullmatch(n) and n[:-6] + 'x.metallib' not in names and n[:-6] + 'b.metallib' not in names)   # not an AppleDouble ._<name> (exFAT / FAT drives)
         todo, notes = {}, []
         for target, d in (('mac', mac_dir), ('ios', ios_dir)):
             if targets is not None and target not in targets: continue   # checking an earlier build compiles samples too

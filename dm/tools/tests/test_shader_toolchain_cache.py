@@ -41,7 +41,7 @@ class ShaderCache(unittest.TestCase):
                        ios_metal=types.SimpleNamespace(RECORD='ios flags'), METAL_FP='tested Metal and SDK',
                        FACTS={}, MAP_ROWS={}, MAP_CONFLICT_ROWS={}, CODE_FP='source', PROFILE_ROWS=b'', PAIRS={},
                        DUAL_WANT=set(), BF_WANT=set(), BF_STATS=collections.Counter(), CAS=str(root / 'cas'), out=str(root / 'out'),
-                       CHAIN='test-chain', clone=shutil.copyfile, shader_rule_source=lambda name: b'')
+                       CHAIN='test-chain', clone=shutil.copyfile, shader_rule_source=lambda name: b'', abi=types.SimpleNamespace(KIND_BORDER='border'))
         (root / 'out').mkdir()
         names = {'tool_fingerprint', 'shader_key', 'cache_path', 'cache_outputs', 'restore_cache', 'publish_cache', 'atomic_json', 'cache_meta_path',
                  'bf_digest', 'bf_cache_root', 'bf_cache_restore', 'vs_pad'}
@@ -381,6 +381,15 @@ class MetalPrefill(unittest.TestCase):
         (self.old / f'{2:016x}_b.metallib').write_bytes(b'CUT FROM ANOTHER SOURCE'); (self.old / f'{2:016x}_bx.metallib').write_bytes(b'SIDE')
         notes = self.cache.fill(str(self.old))
         self.assertEqual(self.cache.stats['mac', 'filled'], 2, notes)
+
+    def test_a_library_without_its_border_corrections_does_not_prefill(self):   # its .metal is the correcting source, and its library the plain one (ps_libraries): the folder is still taken
+        self.earlier_libraries(self.cache.ident['mac'].hex())
+        (self.old / f'{2:016x}_b.metallib').write_bytes(b'PLAIN SOURCE'); (self.old / f'{2:016x}_bb.metallib').write_bytes(b'TESTED MSL 2')
+        notes = self.cache.fill(str(self.old))
+        self.assertEqual(self.cache.stats['mac', 'filled'], 2, notes)
+        self.assertFalse(any('not filled' in n for n in notes), notes)
+        result = self.root / 'result.metallib'; self.cache.compile('mac', str(self.old / f'{2:016x}_b.metal'), str(result))
+        self.assertEqual(result.read_bytes(), b'TESTED MSL 2')   # the correcting source compiles to its own library, not the plain one
 
     def test_compile_split_keeps_both_pieces(self):
         msl = self.root / 'unit.metal'; msl.write_bytes(b'UNIT'); a, b = self.root / 'a.metallib', self.root / 'b.metallib'
