@@ -1733,6 +1733,39 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
     }
     pthread_mutex_lock(&g_mu); if (fence > g_done) g_done = fence; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
 }
+// DM_NVN_HANGLOG=1 (diagnostic): each command buffer segment carries the list of the game's shaders it runs, in order (a draw as p<pass> <vertex>/<pixel> key ×draws,
+// a geometry or mesh draw with its stages, a dispatch as c <key> <groups>), and the first segments Metal reports an error for log their list with the error's kind: the one that
+// caused a GPU hang (kIOGPUCommandBufferCallbackErrorHang) holds the shader that ran too long. Metal 4 reports no encoder's execution status (Metal 3's
+// MTLCommandBufferErrorOptionEncoderExecutionStatus has no MTL4 counterpart); with DM_NVN_CUT=1 a segment holds one render pass and the work before it
+static int hanglog_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_HANGLOG"); v = e && atoi(e); if (v) MLOG("DM_NVN_HANGLOG: segments that fail log the shaders they ran"); } return v; }
+#define HL_CAP 8192
+static char g_hl[HL_CAP]; static int g_hl_n, g_hl_drop; static const void *g_hl_prog; static uint64_t g_hl_pass; static unsigned g_hl_rep;
+static void hl_put(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void hl_put(const char *fmt, ...) {
+    if (g_hl_n >= HL_CAP - 96) { g_hl_drop++; return; }
+    va_list ap; va_start(ap, fmt); int n = vsnprintf(g_hl + g_hl_n, (size_t)(HL_CAP - g_hl_n), fmt, ap); va_end(ap);
+    if (n > 0) g_hl_n = MIN(g_hl_n + n, HL_CAP - 1);
+}
+static void hl_rep(void) { if (g_hl_rep > 1) hl_put(" x%u", g_hl_rep); g_hl_rep = 0; }
+static void hl_draw(uint64_t pass, const void *prog, const char *tag, const char *a, const char *b, const char *c) {
+    if (!hanglog_on()) return;
+    if (prog == g_hl_prog && pass == g_hl_pass) { g_hl_rep++; return; }
+    hl_rep(); g_hl_prog = prog; g_hl_pass = pass; g_hl_rep = 1;
+    hl_put("; p%llu %s%.16s/%.16s%s%.16s", (unsigned long long)pass, tag, a ? a : "-", b ? b : "-", c ? "/" : "", c ? c : "");
+}
+static void hl_dispatch(const char *key, const char *how) { if (!hanglog_on()) return; hl_rep(); g_hl_prog = NULL; hl_put("; c %.16s %s", key, how); }
+static NSString *hl_take(void) {
+    if (!hanglog_on()) return nil;
+    hl_rep(); NSString *s = [NSString stringWithFormat:@"%s%s", g_hl_n ? g_hl + 2 : "(no game shaders)", g_hl_drop ? " …" : ""];
+    g_hl_n = 0; g_hl[0] = 0; g_hl_drop = 0; g_hl_prog = NULL;
+    return s;
+}
+static void hl_report(NSString *hl, NSError *err, uint64_t frame, const char *what, double g0, double g1) {
+    if (!hl) return;
+    static _Atomic int n; if (atomic_fetch_add(&n, 1) >= 24) return;
+    NSString *d = err.description; const char *kind = [d containsString:@"ErrorHang"] ? "caused a GPU hang" : [d containsString:@"InnocentVictim"] ? "victim" : [d containsString:@"SubmissionsIgnored"] ? "ignored" : "other error";
+    MLOG("[RED] hang log: %s of frame %llu %s (GPU %.3f→%.3f): %s", what, (unsigned long long)frame, kind, g0, g1, hl.UTF8String);
+}
 uint64_t mtl_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
@@ -1753,6 +1786,7 @@ uint64_t mtl_sub_commit(void) {
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); }];
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
+    NSString *hl = hl_take();
     seg_clk *sc = g_sclk; uint32_t seg_last = g_seg; g_sclk = NULL;
     pthread_mutex_lock(&g_post_mu);
     if (!atomic_load(&pr->claimed) && pr->fence) MDIE("post ring: the writes of fence %llu never ran", (unsigned long long)pr->fence);
@@ -1762,6 +1796,7 @@ uint64_t mtl_sub_commit(void) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
         if (ws_on()) ws_fb(fence, cb.GPUEndTime);
         uint64_t c0 = 0, c1 = 0; if (seg_ts()) { c0 = gpu_s_guest_ns(cb.GPUStartTime); c1 = gpu_s_guest_ns(cb.GPUEndTime); }
+        if (cb.error) hl_report(hl, cb.error, gpu_f, "last segment", cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); res_top_once(cb.error); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("[RED] command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("[RED] state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("[RED] command buffer execution error: %s", cb.error.localizedDescription.UTF8String); }
         post_complete(fence, c0, c1);
         defer_drain();
@@ -11105,6 +11140,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di);
 static void draw(const p_draw *dw, const p_draw_idx *di) { cp_stamp start = cp_begin(); if (dw && dw->prim == DM_PRIM_MESH_TASKS) mesh_tasks_draw(dw); else draw_(dw, di); cp_end(5, start); }
 static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_draw_binst = (uint32_t)(dw ? dw->base_instance : di ? di->base_instance : 0);   // c0 + 0x644 of the stages that read the driver segment (encode_args)
+    if (hanglog_on() && !g_mtk.on) { NvProg *p = g_geo_program ? g_geo_program : S.prog ? prog_get(S.prog) : nil;
+        if (p) hl_draw(g_stat_pass + !g_enc, (__bridge const void *)p, p->sh[2] ? "geometry " : "", p->sh[0] ? p->sh[0]->key : NULL, p->sh[1] ? p->sh[1]->key : NULL, p->sh[2] ? p->sh[2]->key : NULL); }
     if (passdump()) { NvProg *p = g_geo_program ? g_geo_program : S.prog ? prog_get(S.prog) : nil;
         PD("j %llu draw-entry vs=%s fs=%s gs=%s prim=%d count=%d instances=%d indexed=%d indirect=%#llx discard=%d feedback=%d", g_stat_pass + !g_enc,
            p && p->sh[0] ? p->sh[0]->key : "-", p && p->sh[1] ? p->sh[1]->key : "-", p && p->sh[2] ? p->sh[2]->key : "-",
@@ -11597,6 +11634,7 @@ static void dispatch(const p_dispatch *dp) {
         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
     } else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (own) enc_c_end(ce);
+    if (hanglog_on()) { char how[48]; if (dp->ind) snprintf(how, sizeof how, "indirect"); else snprintf(how, sizeof how, "%ux%ux%u", (unsigned)dp->x, (unsigned)dp->y, (unsigned)dp->z); hl_dispatch(cs->key, how); }
     if (!dp->ind && mfx_interp_on() && up_mfx_named(cs)) mfx_after_game(cs);   // the game's own upscaler ran: its picture is the interpolation's scene (nvn_mfx.inc)
 }
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, layer stride from SetCopyImageStride, 0 = tightly packed)
@@ -12279,9 +12317,11 @@ static void sub_cut(void) {
     uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
     uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
     if (seg_ts()) { if (!g_sclk) { g_sclk = calloc(1, sizeof *g_sclk); atomic_store(&g_sclk->refs, 1); } sc = g_sclk; atomic_fetch_add(&sc->refs, 1); }
+    NSString *hl = hl_take();
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(f, cb.GPUStartTime, cb.GPUEndTime);
+        if (cb.error) hl_report(hl, cb.error, f, [NSString stringWithFormat:@"segment %u", k].UTF8String, cb.GPUStartTime, cb.GPUEndTime);
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int k; if (k++ < 8) MLOG("[RED] segment command buffer execution error: %s", cb.error.description.UTF8String); res_top_once(cb.error); }
     }];
