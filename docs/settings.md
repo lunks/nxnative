@@ -62,7 +62,7 @@ How large the game draws its picture, and how it gets to the screen. On the iPho
 ```mermaid
 flowchart LR
     R["Render resolution<br/>the 3D picture<br/>e.g. 1920x1080"] --> U{"Game's upscaler"}
-    U --> O["Output resolution<br/>2304x1296, or the<br/>window's 2880x1620"]
+    U --> O["Output resolution<br/>the window's 2880x1620,<br/>or the screen's"]
     O --> H["the game draws<br/>its HUD"] --> S{Upscaling} --> W["Window or screen"]
 ```
 
@@ -121,10 +121,8 @@ Experimental, shown under **Game's upscaler** while it is **MetalFX temporal**, 
 
 ### Output resolution
 
-Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub), in Advanced settings, under **Resolution**; it was called **Single upscale**. As shipped (**Game default**), the game upscales its 3D picture to 2304x1296 (docked), draws its HUD on it, and then stretches the whole picture again to its 2880x1620 window. **Window** makes the game upscale once, straight to 2880x1620, and draw its HUD at that size, so nothing is stretched a second time.
+Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that has its stub), in Advanced settings, under **Resolution**; it was called **Single upscale**. Docked, the game upscales its 3D picture straight to its 2880x1620 window and draws its HUD at that size (**Game default** and **Window** alike: it upscaled to 2304x1296 first, and stretched that again, only while the app reported the smaller GPU share of a console running GameChat's video, [The graphics scale is the GPU share](reference/services.md#the-graphics-scale-is-the-gpu-share-not-the-operation-mode)). In handheld mode its picture is 1920x1080, stretched to the window.
 
-- **Cost:** the game's own resolution steps all grow by a quarter in each direction (up to about 1.56 times the pixels of its 3D picture), so it needs more GPU time and its dynamic resolution and frame rate drop sooner in busy areas. It works with every **Game's upscaler** and **Render resolution** choice: their sizes grow with the output.
-- **Docked only:** in handheld mode the game's picture is 1920x1080 either way.
 - **Not played yet:** the HUD's layout at the larger size is unchecked. If the game crashes, misses parts of the picture or the HUD looks wrong, turn it off. The game's render-target memory grows with the output ([Graphics memory](#graphics-memory)).
 - In `env.txt`: `DM_SINGLE_UPSCALE=1`. The game log then says `single upscale on` at start and `upscaler: output 2880x1620 … the window's size: one resample` once it upscales.
 
@@ -139,14 +137,14 @@ Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that h
 
 Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic resolution, as on a Switch: it starts each level at its output's size without its upscaler, and renders smaller, down to half the output's width, once frames run late. The others set a rate:
 
-| Option | Rate | With Output resolution: Window (2880×1620) | With Game default (2304×1296) |
+| Option | Rate | Docked (2880×1620) | Handheld (1920×1080) |
 |---|---|---|---|
-| Native | 1.0 | 2880×1620 | 2304×1296 |
-| Native (MetalFX AA) | 1.0, upscaler on | 2880×1620 | 2304×1296 |
-| Quality | 1.5 | 1920×1080 | 1536×864 |
-| Balanced | 1.69 | 1707×960 | 1366×768 |
-| Performance | 2.0 | 1440×810 | 1152×648 |
-| Ultra performance | 3.0 | 960×540 | 768×432 |
+| Native | 1.0 | 2880×1620 | 1920×1080 |
+| Native (MetalFX AA) | 1.0, upscaler on | 2880×1620 | 1920×1080 |
+| Quality | 1.5 | 1920×1080 | 1280×720 |
+| Balanced | 1.69 | 1707×960 | 1138×640 |
+| Performance | 2.0 | 1440×810 | 960×540 |
+| Ultra performance | 3.0 | 960×540 | 640×360 |
 
 Handheld, the output is 1920×1080 either way (Quality 1280×720).
 
@@ -201,7 +199,7 @@ The game's shadow cheats, if you have them, are turned off while one of these se
 
 ### Graphics memory
 
-Donkey Kong Bananza keeps all its render targets in one block of memory sized for its own resolution (200 MB), and crashes when a frame needs more. When the output is larger than 2304x1296 (**Output resolution** Window or Match display), **Effects resolution** is Full or **Shadow map size** is larger, the app gives that block more at launch, from 320 MB up to 896 MB (Match display on a 4K screen with Full effects), which takes up to 700 MB more of the Mac's memory once the game uses it. There is no setting for it; the game log names the size (`setting DM_RT_POOL=game, …`), and `DM_RT_POOL=off` in `env.txt` keeps the game's own.
+Donkey Kong Bananza keeps all its render targets in one block of memory sized for its own resolution (200 MB), and crashes when a frame needs more. When the output is larger than 2304x1296 (docked, or **Output resolution** Match display), **Effects resolution** is Full or **Shadow map size** is larger, the app gives that block more at launch, from 320 MB up to 896 MB (Match display on a 4K screen with Full effects), which takes up to 700 MB more of the Mac's memory once the game uses it. There is no setting for it; the game log names the size (`setting DM_RT_POOL=game, …`), and `DM_RT_POOL=off` in `env.txt` keeps the game's own.
 
 ### Anisotropic filtering
 

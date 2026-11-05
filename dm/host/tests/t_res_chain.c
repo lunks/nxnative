@@ -69,10 +69,10 @@ int main(void) {
     if (!*DM_GAME_RES_CHAIN) { printf("no res_chain in this profile: nothing to check\n"); return 0; }
     unsetenv("DM_UPSCALE_DYNAMIC"); unsetenv("DM_UPSCALER");
     const char *l = chain(0);
-    expect(l, "resolution: docked, output 2304x1296; upscale rate the game's own: starts at 1.0 (no upscaler), 1.375 to 2 once a frame is over budget", "the game's own: its output, its start and its rates");
-    expect(l, "scene 2304x1296, then 1676x943 to 1152x648; upscaler game, off at the start (rate 1.0); mip bias the game's own (-0.5 while upscaling); "
+    expect(l, "resolution: docked, output 2880x1620; upscale rate the game's own: starts at 1.0 (no upscaler), 1.375 to 2 once a frame is over budget", "the game's own: its output, its start and its rates");
+    expect(l, "scene 2880x1620, then 2095x1179 to 1440x810; upscaler game, off at the start (rate 1.0); mip bias the game's own (-0.5 while upscaling); "
               "effects the game's (half-res effects at half); shadows the game's",
-           "the game's own: its scene sizes (2304 / 1.375 = 1676), its upscaler off at the start, its mip bias, effects and shadows");
+           "the game's own: its scene sizes (2880 / 1.375 = 2095), its upscaler off at the start, its mip bias, effects and shadows");
     expect(l, "mip bias: game, -0.5 while upscaling (rate above 1.0), 0 at 1.0 (the game's own)", "the game's own mip bias: one launch line");
     expect(l, "shadows the game's (scaled with the scene); render-target pool the game's own\n", "the game's own render-target pool");
     pool_label = "448 MB, GSys heap 754 MB: output up to 2880x1620";
@@ -111,7 +111,7 @@ int main(void) {
     expect(chain(1), "upscale rate 1 fixed, start 1 (Native (MetalFX AA), fixed); scene 2880x1620; upscaler metalfx-temporal at the output's size: native with MetalFX AA, mip bias 0",
            "Native (MetalFX AA): the window's size through the temporal scaler, mip bias 0");
     setenv("DM_NATIVE_MIP_BIAS", "-0.5", 1); mip_label = "Game, and -0.5 at Native (MetalFX AA) (DM_NATIVE_MIP_BIAS=-0.5)";
-    expect(chain(0), "output 2304x1296; upscale rate 1 fixed, start 1 (Native (MetalFX AA), fixed); scene 2304x1296; upscaler metalfx-temporal at the output's size: native with MetalFX AA, mip bias -0.5",
+    expect(chain(0), "output 2880x1620; upscale rate 1 fixed, start 1 (Native (MetalFX AA), fixed); scene 2880x1620; upscaler metalfx-temporal at the output's size: native with MetalFX AA, mip bias -0.5",
            "Native (MetalFX AA) with the game's -0.5 mip bias, at the game's own output");
     // NVIDIA (temporal): -1 - log2(rate) with jitter, -log2(rate) without; the rates a launch reaches, each with the bias the words compute
     unsetenv("DM_NATIVE_MIP_BIAS"); setenv("DM_MFX_JITTER", "1", 1); mip_label = "NVIDIA (temporal), jitter on: -1 - log2(rate)"; mip_value = "nvidia";
@@ -178,9 +178,9 @@ int main(void) {
     {
         g_match_display_stub = 1; memset(page, 0xff, sizeof page);
         struct { const char *v; int op, w, h; const char *how; } oc[] = {
-            {NULL, 1, 2304, 1296, "docked"}, {"1", 1, 2880, 1620, "single upscale: the window's size"},
+            {NULL, 1, 2880, 1620, "docked"}, {"1", 1, 2880, 1620, "single upscale: the window's size"},
             {"display", 1, 2880, 1620, "single upscale: the window's size"},   // no screen without a front end: the game's window
-            {"1", 0, 1920, 1080, "handheld"}, {"bogus", 1, 2304, 1296, "docked"}};
+            {"1", 0, 1920, 1080, "handheld"}, {"bogus", 1, 2880, 1620, "docked"}};
         for (int i = 0; i < (int)(sizeof oc / sizeof *oc); i++) {
             if (oc[i].v) setenv("DM_SINGLE_UPSCALE", oc[i].v, 1); else unsetenv("DM_SINGLE_UPSCALE");
             opmode = oc[i].op; int w = 0, h = 0; char how[64] = ""; uint32_t f;

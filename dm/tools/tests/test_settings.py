@@ -62,7 +62,7 @@ class UpscalerSetting(unittest.TestCase):
                     su=[s for s in settings.build('040074A01BF12000',tmp,'unused')['settings'] if s['env']=='DM_SINGLE_UPSCALE']
                 self.assertEqual(bool(su),shown,(header,platform))
                 if su:self.assertEqual((su[0]['kind'],su[0]['default'],su[0]['section'],su[0].get('level'),su[0]['label'],[o[0] for o in su[0]['options']]),('choice','0','Resolution',None,'Output resolution',['0','1','display']))
-                if su:self.assertEqual(su[0]['options'],[['0','Game default (smaller then stretched)'],['1','Window (2880x1620)'],['display','Match display']])
+                if su:self.assertEqual(su[0]['options'],[['0','Game default (the window docked)'],['1','Window (2880x1620)'],['display','Match display']])
 
 class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches: the profile's setting_patches.tsv, for the build being packed (main's BUILD_ID), on the Mac
     DKB,DKB_MAIN='040074A01BF12000','e25c90c1c136638885659fd55bf8a03b'
@@ -106,7 +106,7 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         nb=r['DM_NATIVE_MIP_BIAS']   # Native (MetalFX AA)'s -0.5 under Game
         self.assertEqual((nb['kind'],nb['default'],nb['needs'],nb['conflicts'],[o[0] for o in nb['options']]),
                          ('choice','0','DM_UPSCALE_RATIO=native-mfx','DM_MIP_BIAS=nvidia',['0','-0.5']))
-        base={'docked':[2304,1296],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]},
+        base={'docked':[2880,1620],'handheld':[1920,1080],'when':[{'is':'DM_SINGLE_UPSCALE=1','docked':[2880,1620],'handheld':[1920,1080]},
                                                                   {'is':'DM_SINGLE_UPSCALE=display','docked':[0,0],'handheld':[1920,1080],'display':True}]}
         self.assertEqual(q['rate_base'],base,'the output sizes a rate divides (res_chain), for each option\'s render size; Match display\'s docked size is the screen\'s, filled in at launch')
         dyn=r['DM_UPSCALE_DYNAMIC']
