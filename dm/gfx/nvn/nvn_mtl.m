@@ -12081,32 +12081,32 @@ static int fmt_int_or_ds(MTLPixelFormat f) {
     }
 }
 // linear: COPY_LINEAR samples bilinearly (else nearest); COPY_SRGB_DECODE undoes the sRGB curve of colour clamped to 0-1 (an upscaler that reads encoded colour and writes it decoded)
-enum { COPY_LINEAR = 1, COPY_SRGB_DECODE = 2 };
+enum { COPY_LINEAR = 1, COPY_SRGB_DECODE = 2, COPY_SQUARE = 4 };   // COPY_SQUARE: each colour channel squared, sign kept (square-root colour to linear)
 static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
-    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fdec, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fdec, fsq, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
     if (failed || sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
     int depth = (s.pixelFormat == MTLPixelFormatDepth32Float || s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) && d.pixelFormat == s.pixelFormat, stencil = depth && d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
     if (!depth && (fmt_int_or_ds(s.pixelFormat) || fmt_int_or_ds(d.pixelFormat))) return 0;
     if (mtl_fmt_block(d.pixelFormat) || !(d.usage & MTLTextureUsageRenderTarget) || s.sampleCount > 1 || d.sampleCount > 1) return 0;
     if (!pso) {
         NSError *e = nil; id<MTLLibrary> lib = host_lib("copy", &e);
-        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fdec = [lib newFunctionWithName:@"fs_dec"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
+        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fdec = [lib newFunctionWithName:@"fs_dec"]; fsq = [lib newFunctionWithName:@"fs_sq"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
         MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = YES; dss = [g_dev newDepthStencilStateWithDescriptor:dd];
         MTLStencilDescriptor *sd_ = [MTLStencilDescriptor new]; sd_.stencilCompareFunction = MTLCompareFunctionAlways; sd_.depthStencilPassOperation = MTLStencilOperationReplace;   // Replace writes the [[stencil]] output
         dd.frontFaceStencil = dd.backFaceStencil = sd_; dss_s = [g_dev newDepthStencilStateWithDescriptor:dd];
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1; at = rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]);
         for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
             sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
-        if (!vf || !ff || !fdec || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
+        if (!vf || !ff || !fdec || !fsq || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
         pso = [NSMutableDictionary dictionary];
     }
     // Stencil: read through a stencil-only view of the source (one per layer below); without one it is cleared to 0
     id<MTLTexture> stv0 = stencil && s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? [s newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8 textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset, 1)] : nil;
-    int scopy = stv0 != nil, dec = !depth && (linear & COPY_SRGB_DECODE);
-    NSNumber *pk = @((d.pixelFormat * 2 + scopy) * 2 + dec);
+    int scopy = stv0 != nil, dec = !depth && (linear & COPY_SRGB_DECODE), sq = !depth && !dec && (linear & COPY_SQUARE);
+    NSNumber *pk = @(((d.pixelFormat * 2 + scopy) * 2 + dec) * 2 + sq);
     id<MTLRenderPipelineState> ps = pso[pk];
     if (!ps) {
-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : dec ? fdec : ff;
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : dec ? fdec : sq ? fsq : ff;
         if (depth) { pd.depthAttachmentPixelFormat = d.pixelFormat; if (stencil) pd.stencilAttachmentPixelFormat = d.pixelFormat; } else pd.colorAttachments[0].pixelFormat = d.pixelFormat;
         NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!ps) { RED_ONCE(83, "format-converting / scaling texture copy: cannot create the pipeline for destination format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
@@ -13444,8 +13444,9 @@ static int up_mfx_on(void) {   // 0: the game's own upscaler; 1: MetalFX's spati
 // other one, no curve at all (encoded in and encoded out; Star Fox's ddc729bcdb4c8df9, the same pack), into an 8-bit image: the network stores the values it read, scaled, and MetalFX's result is stored
 // as they are (Bananza's encode-only variants are not of this shape: they encode linear input, enc32). Any other shape (no pack has shown one) keeps the game's shader. A constant counts from 8 uses,
 // far fewer than a curve per channel of every output tile: two bytes also match by chance
-enum { UP_COLOR_UNREAD, UP_COLOR_LINEAR, UP_COLOR_SRGB, UP_COLOR_KEEP, UP_COLOR_SRGB_ENC };   // linear in and out: HDR mode; sRGB in, linear out: perceptual mode, then decoded; sRGB in and out: perceptual mode,
-// stored as the network stores it (UP_COLOR_SRGB_ENC); UP_COLOR_KEEP, UP_COLOR_UNREAD: the game's shader
+enum { UP_COLOR_UNREAD, UP_COLOR_LINEAR, UP_COLOR_SRGB, UP_COLOR_KEEP, UP_COLOR_SRGB_ENC, UP_COLOR_SQRT };   // linear in and out: HDR mode; sRGB in, linear out: perceptual mode, then decoded; sRGB in and out: perceptual mode,
+// stored as the network stores it (UP_COLOR_SRGB_ENC); square-root colour in, linear out (UP_COLOR_SQRT: agl's variable-ratio networks, DM_GAME_UPSCALER_SQRT_KEYS): its input squared
+// and then as linear; UP_COLOR_KEEP, UP_COLOR_UNREAD: the game's shader
 static int up_mfx_uses(const void *code, size_t n, const void *v, size_t w) {
     const uint8_t *p = code, *end = p + n; int hits = 0;
     while (hits < 8 && (p = memmem(p, end - p, v, w))) { hits++; p += w; }
@@ -13460,6 +13461,19 @@ static int up_mfx_color(const void *code, size_t n) {
 #undef UP_F16
     return enc32 && dec32 && !enc16 && !dec16 ? UP_COLOR_LINEAR : dec16 && !enc16 && !enc32 && !dec32 ? UP_COLOR_SRGB : !enc32 && !dec32 && !enc16 && !dec16 ? UP_COLOR_SRGB_ENC : UP_COLOR_KEEP;
 }
+// The colour a dispatch of cs carries: its code's (up_mfx_color), but a variant with no curve passes its values through, so they are whatever its image holds: encoded colour into an
+// 8-bit image (Star Fox's and Splatoon Raiders' encoded variants), linear HDR into a float one (Ocarina of Time's agl_ndsr_vr_light.pck network fa3033d05c0a41d6: its RGB9E5 scene into
+// R11G11B10F), which MetalFX draws as the linear variants
+static int up_mfx_shape(const NvShader *cs, MTLPixelFormat out) {
+    if (cs->up_color != UP_COLOR_SRGB_ENC) return cs->up_color;
+    MTLPixelFormat l = pf_srgb_linear(out) != MTLPixelFormatInvalid ? pf_srgb_linear(out) : out;
+    return l == MTLPixelFormatRG11B10Float || l == MTLPixelFormatRGB9E5Float || l == MTLPixelFormatRGBA16Float || l == MTLPixelFormatRGBA32Float ? UP_COLOR_LINEAR : UP_COLOR_SRGB_ENC;
+}
+// Whether key is in a comma-separated list of 16-digit keys
+static int up_mfx_in(const char *list, const char *key) {
+    for (const char *k = list; *k; k += k[16] == ',' ? 17 : 16) if (!strncmp(k, key, 16)) return 1;
+    return 0;
+}
 // Whether cs is one of the game's upscaler shaders (DM_GAME_UPSCALER_KEYS: comma-separated 16-digit keys)
 static int up_mfx_named(NvShader *cs) {
     for (const char *k = DM_GAME_UPSCALER_KEYS; *k; k += k[16] == ',' ? 17 : 16) if (!strncmp(k, cs->key, 16)) return 1;
@@ -13469,14 +13483,15 @@ static void up_mfx_read_color(NvShader *cs, const NVNshaderData *sd) {
     if (cs->up_color || !DM_GAME_UPSCALER_N || !up_mfx_on() || !up_mfx_named(cs)) return;
     uint32_t nctl, ncode = 0; if (sd->control) nvn_ctl_lens(sd->control, &nctl, &ncode);
     cs->up_color = sd->data && ncode && ncode < (1u << 24) ? up_mfx_color((const void *)(uintptr_t)sd->data, ncode) : UP_COLOR_KEEP;
-    MLOG("upscaler %s: %s", cs->key, cs->up_color == UP_COLOR_LINEAR ? "linear input and output, MetalFX in HDR mode" : cs->up_color == UP_COLOR_SRGB ? "sRGB-encoded input, linear output, MetalFX in perceptual mode" : cs->up_color == UP_COLOR_SRGB_ENC ? "no sRGB curve: encoded input and output (an 8-bit image), MetalFX in perceptual mode" : "neither of the colour shapes MetalFX draws; the game's shader runs");
+    if (cs->up_color == UP_COLOR_SRGB_ENC && up_mfx_in(DM_GAME_UPSCALER_SQRT_KEYS, cs->key)) cs->up_color = UP_COLOR_SQRT;   // no curve: its pack's square-root colour
+    MLOG("upscaler %s: %s", cs->key, cs->up_color == UP_COLOR_LINEAR ? "linear input and output, MetalFX in HDR mode" : cs->up_color == UP_COLOR_SRGB ? "sRGB-encoded input, linear output, MetalFX in perceptual mode" : cs->up_color == UP_COLOR_SQRT ? "square-root colour in (its pack's), linear out: its input squared, MetalFX in HDR mode" : cs->up_color == UP_COLOR_SRGB_ENC ? "no sRGB curve: its image's colour (encoded into an 8-bit image: MetalFX in perceptual mode; linear into a float one: HDR mode)" : "neither of the colour shapes MetalFX draws; the game's shader runs");
 }
 // Whether cs is one of the game's upscaler shaders, the player chose MetalFX and its colour is one MetalFX draws
 static int up_mfx_wanted(NvShader *cs) {
     if (cs->up_mfx) return cs->up_mfx == 1;
     cs->up_mfx = 2;
     if (!DM_GAME_UPSCALER_N || !up_mfx_on()) return 0;
-    if (up_mfx_named(cs) && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB || cs->up_color == UP_COLOR_SRGB_ENC)) cs->up_mfx = 1;
+    if (up_mfx_named(cs) && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB || cs->up_color == UP_COLOR_SRGB_ENC || cs->up_color == UP_COLOR_SQRT)) cs->up_mfx = 1;
     return cs->up_mfx == 1;
 }
 static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int srgb) {
@@ -13608,8 +13623,8 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
     NSUInteger iw = (NSUInteger)io->ir.width, ih = (NSUInteger)io->ir.height, ow = (NSUInteger)io->orr.width, oh = (NSUInteger)io->orr.height;
     if (!dep || !mot) return up_mfx_dlss_refuse(cs, "no depth or motion vectors");
     if ((c.iw > 0 && (NSUInteger)c.iw != iw) || (c.ih > 0 && (NSUInteger)c.ih != ih) || ow < iw || oh < ih) return up_mfx_dlss_refuse(cs, "another input size, or a smaller output");   // 1:1: anti-aliasing at the output's size (Native (MetalFX AA))
-    int enc = cs->up_color == UP_COLOR_SRGB_ENC, dec = cs->up_color == UP_COLOR_SRGB;
-    if (!enc && !dec && cs->up_color != UP_COLOR_LINEAR) return up_mfx_dlss_refuse(cs, "a colour shape MetalFX does not draw");
+    const int shape = up_mfx_shape(cs, out.pixelFormat), enc = shape == UP_COLOR_SRGB_ENC, dec = shape == UP_COLOR_SRGB;
+    if (!enc && !dec && shape != UP_COLOR_LINEAR) return up_mfx_dlss_refuse(cs, "a colour shape MetalFX does not draw");
     if (enc && (pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid || (out.pixelFormat != MTLPixelFormatRGBA8Unorm && out.pixelFormat != MTLPixelFormatBGRA8Unorm)))   // stored raw only
         return up_mfx_dlss_refuse(cs, "encoded output into an image that is not 8-bit RGBA");
     if (dec && pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid) return up_mfx_dlss_refuse(cs, "decoded output into an sRGB image");   // the network stores linear values raw
@@ -13658,11 +13673,13 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
 static int up_mfx_encode(NvShader *cs) {
     mfx_io io; if (!up_mfx_resolve(cs, &io)) { if (up_mfx_dlss_kept()) up_mfx_dlss_refuse(cs, "its textures were not found"); g_up_mfx_kept++; return 0; }
     if (up_mfx_on() == 2 && up_mfx_dlss(cs, &io)) { mfx_after(&io); return 1; }
-    if (up_mfx_on() == 2 && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB_ENC || cs->up_color == UP_COLOR_SRGB) &&
-        mfx_temporal(&io, cs->up_color == UP_COLOR_SRGB_ENC ? MFX_COL_ENC : cs->up_color == UP_COLOR_SRGB ? MFX_COL_DEC : MFX_COL_LINEAR)) { mfx_after(&io); return 1; }
-    if (io.ir.width == io.orr.width && io.ir.height == io.orr.height) { if (cs->up_color != UP_COLOR_LINEAR) { g_up_mfx_kept++; return 0; } return up_mfx_same(&io); }
+    const int shape = up_mfx_shape(cs, io.out.pixelFormat);
+    if (up_mfx_on() == 2 && (shape == UP_COLOR_LINEAR || shape == UP_COLOR_SRGB_ENC || shape == UP_COLOR_SRGB || shape == UP_COLOR_SQRT) &&
+        mfx_temporal(&io, shape == UP_COLOR_SRGB_ENC ? MFX_COL_ENC : shape == UP_COLOR_SRGB ? MFX_COL_DEC : shape == UP_COLOR_SQRT ? MFX_COL_SQRT : MFX_COL_LINEAR)) { mfx_after(&io); return 1; }
+    if (io.ir.width == io.orr.width && io.ir.height == io.orr.height) { if (shape != UP_COLOR_LINEAR) { g_up_mfx_kept++; return 0; } return up_mfx_same(&io); }
+    const int sq = shape == UP_COLOR_SQRT;   // square-root colour: squared on the way into the scaler's texture, then linear
     id<MTLTexture> in = io.in, out = io.out; NVNcopyRegion ir = io.ir, orr = io.orr; uint64_t dout_ser = io.out_ser;
-    int srgb = cs->up_color == UP_COLOR_SRGB || cs->up_color == UP_COLOR_SRGB_ENC, enc = cs->up_color == UP_COLOR_SRGB_ENC;
+    int srgb = shape == UP_COLOR_SRGB || shape == UP_COLOR_SRGB_ENC, enc = shape == UP_COLOR_SRGB_ENC;
     // Encoded in and out: the values the network reads (as the copy below samples them) are scaled and stored as they are, as the network's image store does: an 8-bit image only (its
     // clamp to 0-1 is the scaler's RGBA8 result's), written raw through its linear view (sRGB images are bound so: [sRGB textures loaded and stored raw through an image]) or, for an sRGB
     // view, decoded and encoded again by the draw. Anything else keeps the shader
@@ -13674,7 +13691,7 @@ static int up_mfx_encode(NvShader *cs) {
     up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, srgb); if (!e) { g_up_mfx_kept++; return 0; }
     id<MTL4FXSpatialScaler> sc = e->sc;
     // Straight in and out when MetalFX can take the game's textures as they are; through the scaler's own textures otherwise
-    int direct = !srgb && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
+    int direct = !srgb && !sq && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
                  in.pixelFormat == MTLPixelFormatRGBA16Float && out.pixelFormat == MTLPixelFormatRGBA16Float && !ir.xoffset && !ir.yoffset && !orr.xoffset && !orr.yoffset && (NSUInteger)orr.width == out.width &&
                  (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage;
     if (!direct && !(out.usage & MTLTextureUsageRenderTarget)) { g_up_mfx_kept++; return 0; }
@@ -13683,7 +13700,7 @@ static int up_mfx_encode(NvShader *cs) {
     ubd_land_compute();
     NVNcopyRegion at0 = {0, 0, 0, ir.width, ir.height, 1}, at0o = {0, 0, 0, orr.width, orr.height, 1};
     id<MTLTexture> color = direct ? in : e->in, result = direct ? out : e->out;
-    if (!direct && !copy_t2t_draw(in, color, 0, 0, 0, 0, &ir, &at0, 0, 0)) { g_up_mfx_kept++; return 0; }   // into RGBA16F at the origin (a nearest draw: same size)
+    if (!direct && !copy_t2t_draw(in, color, 0, 0, 0, 0, &ir, &at0, sq ? COPY_SQUARE : 0, 0)) { g_up_mfx_kept++; return 0; }   // into RGBA16F at the origin (a nearest draw: same size)
     id<MTL4ComputeCommandEncoder> ce = [g_cb computeCommandEncoder];   // as dlss_eval: MetalFX opens encoders of its own, which take no barrier
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
@@ -13700,7 +13717,7 @@ static int up_mfx_encode(NvShader *cs) {
     args_dirty_all();
     if (!g_up_mfx_n++) MLOG("upscaler: first dispatch of %s drawn by MetalFX, %dx%d at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", cs->key, ir.width, ir.height, ir.xoffset, ir.yoffset,
                             (unsigned long)in.width, (unsigned long)in.height, (unsigned long)in.pixelFormat, orr.width, orr.height, orr.xoffset, orr.yoffset, (unsigned long)out.width, (unsigned long)out.height,
-                            (unsigned long)out.pixelFormat, direct ? ", straight" : enc ? (out_lin == out.pixelFormat ? ", through RGBA16F, encoded in and out, stored raw" : ", through RGBA16F, encoded in and out, through the image's sRGB format") : srgb ? ", through RGBA16F, decoded from sRGB" : ", through RGBA16F");
+                            (unsigned long)out.pixelFormat, direct ? ", straight" : enc ? (out_lin == out.pixelFormat ? ", through RGBA16F, encoded in and out, stored raw" : ", through RGBA16F, encoded in and out, through the image's sRGB format") : srgb ? ", through RGBA16F, decoded from sRGB" : sq ? ", through RGBA16F, its square-root colour squared" : ", through RGBA16F");
     mfx_after(&io);
     return 1;
 }

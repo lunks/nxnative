@@ -106,6 +106,21 @@ def by_build(main_id):   # the profile whose build rows register this main build
 # Not the movie library's: its NDVE pack names two of its programs by a record table of the NDSR form (#NDVE#NDSR@, ndve_shaders), compute shaders of the video decoder that
 # Ocarina of Time's title movie dispatches (c2fc2ddd604c25e7), which DM_UPSCALER=metalfx would otherwise take for the game's upscaler
 UPSCALER_SOURCE = re.compile(r'(?<!#NDVE)#NDSR@')
+# agl's variable-ratio NDSR packs (agl_ndsr_vr.pck, agl_ndsr_vr_light.pck: Ocarina of Time, whose dynamic resolution steps through arbitrary scales) feed their networks the scene's colour
+# as square roots, which helper kernels of the pack write (a335c1db6270c355, f8965bffbdf51d78: sqrt per channel), and the networks square their result back (x |x|, then the residual);
+# with no sRGB curve in their code they read like encoded colour (up_mfx_color), so the host is told which they are: it squares their input for MetalFX and draws it as linear
+UPSCALER_SQRT_SOURCE = re.compile(r'/agl_ndsr_vr[^/#]*\.pck#NDSR@')
+
+
+def upscaler_sqrt_keys(g):
+    """the game's upscaler shaders whose input is square-root colour (UPSCALER_SQRT_SOURCE): sorted 16-digit keys, a subset of upscaler_keys"""
+    p = g.table('shader_map.tsv')
+    if not p.exists(): return []
+    keys = set()
+    for line in p.read_text(encoding='utf-8').splitlines():
+        c = line.split('\t')
+        if len(c) >= 5 and c[2] == 'compute' and UPSCALER_SOURCE.search(c[4]) and UPSCALER_SQRT_SOURCE.search(c[4]) and re.fullmatch(r'[0-9a-f]{16}', c[3]): keys.add(c[3])
+    return sorted(keys)
 
 
 def upscaler_keys(g):
@@ -354,6 +369,7 @@ def header_one(g):
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
+         f'#define DM_GAME_UPSCALER_SQRT_KEYS {q(",".join(upscaler_sqrt_keys(g)))}',   # of those, the ones fed square-root colour (agl's variable-ratio packs)
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_CAM_MATS {int(bool(cm))}', f'#define DM_GAME_CAM_MATS_STAGE {int(bool(cm) and cm[0] == "fragment")}',
          f'#define DM_GAME_CAM_MATS_SLOT {int(cm[1]) if cm else 0}', f'#define DM_GAME_CAM_MATS_VIEW {int(cm[2], 0) if cm else 0:#x}', f'#define DM_GAME_CAM_MATS_VP {int(cm[3], 0) if cm else 0:#x}',

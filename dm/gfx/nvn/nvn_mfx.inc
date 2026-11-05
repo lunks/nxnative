@@ -479,7 +479,7 @@ static MTLPixelFormat mfx_fx_format(MTLPixelFormat f) { return f == MTLPixelForm
 // encoded in, the picture with the sRGB curve already applied (display-referred, 0-1: the variants of agl's NDSR pack that Star Fox, Splatoon Raiders and Ocarina of Time ship), and
 // stored as the network stores it: raw into an 8-bit RGBA image (MFX_COL_ENC: no curve in the code) or decoded on the way into the image (MFX_COL_DEC: a half-float decode at its end).
 // MetalFX takes the encoded values as they are, as for those games' DLSS-fed dispatches (up_mfx_dlss), without auto exposure: there is no scene exposure to find in them
-enum { MFX_COL_LINEAR, MFX_COL_ENC, MFX_COL_DEC };
+enum { MFX_COL_LINEAR, MFX_COL_ENC, MFX_COL_DEC, MFX_COL_SQRT };   // MFX_COL_SQRT: square-root colour (agl's variable-ratio networks), squared into the scaler's colour texture, then linear
 // The dispatch drawn by the temporal scaler (see the top): 1 when drawn, 0 to fall back to the spatial scaler
 static int mfx_temporal(const mfx_io *io, int cm) {
     if (!mfx_cam_on() || !mfx_motion(io)) { g_mts.fallback++; return 0; }
@@ -491,8 +491,9 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         static int said; if (!said++) MLOG("upscaler: an encoded-colour dispatch into image format %lu, which the temporal scaler's result cannot be stored into as the network stores it: not drawn by the temporal scaler (logged once)", (unsigned long)opf);
         g_mts.fallback++; return 0;
     }
-    MTLPixelFormat cf = cm ? MTLPixelFormatRGBA16Float : mfx_fx_format(io->in.pixelFormat), of = cm ? MTLPixelFormatRGBA16Float : mfx_fx_format(opf);
-    NSUInteger key[7] = {iw, ih, ow, oh, cf, of, (NSUInteger)(cm != MFX_COL_LINEAR)};
+    const int lin = cm == MFX_COL_LINEAR || cm == MFX_COL_SQRT;   // linear colour once in the scaler's texture
+    MTLPixelFormat cf = cm ? MTLPixelFormatRGBA16Float : mfx_fx_format(io->in.pixelFormat), of = !lin ? MTLPixelFormatRGBA16Float : mfx_fx_format(opf);
+    NSUInteger key[7] = {iw, ih, ow, oh, cf, of, (NSUInteger)!lin};
     if (memcmp(g_mts.key, key, sizeof key)) {
         memcpy(g_mts.key, key, sizeof key); g_mts.sc = nil; g_mts.refused = 1; mfx_drop(&g_mts.col); mfx_drop(&g_mts.res);
         NSError *e = nil; uint64_t t0 = now_ns();
@@ -501,7 +502,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
         d.colorTextureFormat = cf; d.depthTextureFormat = MTLPixelFormatR32Float; d.motionTextureFormat = MTLPixelFormatRG16Float; d.outputTextureFormat = of;
         d.inputWidth = iw; d.inputHeight = ih; d.outputWidth = ow; d.outputHeight = oh;
-        d.autoExposureEnabled = cm == MFX_COL_LINEAR;   // linear HDR scene colour, with no exposure value of the game's to hand over; encoded colour is display-referred already
+        d.autoExposureEnabled = lin;   // linear HDR scene colour, with no exposure value of the game's to hand over; encoded colour is display-referred already
         d.inputContentPropertiesEnabled = YES; d.inputContentMinScale = 1.0f; d.inputContentMaxScale = smax > 1 ? smax : 2.0f;   // dynamic resolution: the input's rectangle changes every few frames
         id<MTL4FXTemporalScaler> sc = g_fx_comp && [MTLFXTemporalScalerDescriptor supportsMetal4FX:g_dev] ? [d newTemporalScalerWithDevice:g_dev compiler:g_fx_comp] : nil;
         if (sc) {
@@ -509,7 +510,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         }
         g_mts.refused = !sc || !g_mts.col; g_mts.sc = g_mts.refused ? nil : sc; g_mts.fresh = 1;
         MLOG("%supscaler: MetalFX temporal scaler %lux%lu (content scale 1 to %.1f) → %lux%lu, colour format %lu (%s), output %lu, depth R32Float, motion RG16Float, %.1f ms%s", g_mts.refused ? "[RED] " : "",
-             (unsigned long)iw, (unsigned long)ih, d.inputContentMaxScale, (unsigned long)ow, (unsigned long)oh, (unsigned long)cf, cm ? "encoded, no auto exposure" : "linear, auto exposure", (unsigned long)of, (now_ns() - t0) / 1e6,
+             (unsigned long)iw, (unsigned long)ih, d.inputContentMaxScale, (unsigned long)ow, (unsigned long)oh, (unsigned long)cf, !lin ? "encoded, no auto exposure" : cm == MFX_COL_SQRT ? "square-root colour squared: linear, auto exposure" : "linear, auto exposure", (unsigned long)of, (now_ns() - t0) / 1e6,
              g_mts.refused ? ": MetalFX made none; the spatial scaler draws this size" : "");
     }
     if (g_mts.refused) { g_mts.fallback++; return 0; }
@@ -518,14 +519,14 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     id<MTL4FXTemporalScaler> sc = g_mts.sc;
     id<MTLTexture> out = io->out, col = g_mts.col, res = g_mts.res;
     // Straight out into the game's texture when it covers it and has the scaler's usage
-    int direct = !cm && out.pixelFormat == of && !io->orr.xoffset && !io->orr.yoffset && (NSUInteger)io->orr.width == out.width && (NSUInteger)io->orr.height == out.height &&
+    int direct = lin && out.pixelFormat == of && !io->orr.xoffset && !io->orr.yoffset && (NSUInteger)io->orr.width == out.width && (NSUInteger)io->orr.height == out.height &&
                  out.storageMode == MTLStorageModePrivate && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage && out.textureType == MTLTextureType2D;
-    if (!direct && !(out.usage & MTLTextureUsageRenderTarget) && (cm || out.pixelFormat != of)) { g_mts.fallback++; return 0; }   // encoded colour is always stored by a draw
+    if (!direct && !(out.usage & MTLTextureUsageRenderTarget) && (!lin || out.pixelFormat != of)) { g_mts.fallback++; return 0; }   // encoded colour is always stored by a draw
     if (!direct && !g_mts.res) { g_mts.res = mfx_tex(of, ow, oh, sc.outputTextureUsage | MTLTextureUsageShaderRead, @"mfx temporal output"); res_commit(); res = g_mts.res; if (!res) { g_mts.fallback++; return 0; } }   // only when it cannot write the game's texture
     NVNcopyRegion at0 = {0, 0, 0, io->ir.width, io->ir.height, 1}, at0o = {0, 0, 0, io->orr.width, io->orr.height, 1};
     zskip_del(io->out_ser);
-    if (io->in.pixelFormat == cf) enc_b_copy_texture(blit(), io->in, 0, 0, MTLOriginMake(io->ir.xoffset, io->ir.yoffset, 0), MTLSizeMake(io->ir.width, io->ir.height, 1), col, 0, 0, MTLOriginMake(0, 0, 0));
-    else if (!copy_t2t_draw(io->in, col, 0, 0, 0, 0, &io->ir, &at0, 0, 0)) { g_mts.fallback++; return 0; }
+    if (io->in.pixelFormat == cf && cm != MFX_COL_SQRT) enc_b_copy_texture(blit(), io->in, 0, 0, MTLOriginMake(io->ir.xoffset, io->ir.yoffset, 0), MTLSizeMake(io->ir.width, io->ir.height, 1), col, 0, 0, MTLOriginMake(0, 0, 0));
+    else if (!copy_t2t_draw(io->in, col, 0, 0, 0, 0, &io->ir, &at0, cm == MFX_COL_SQRT ? COPY_SQUARE : 0, 0)) { g_mts.fallback++; return 0; }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     id<MTLTexture> dst = direct ? out : res, mv = g_mm.mv[g_mm.cur], dep = g_mm.dep[g_mm.cur];
@@ -553,7 +554,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     });
     g_last_end_relaxed = 0;
     if (!direct) {
-        if (!cm && out.pixelFormat == of) enc_b_copy_texture(blit(), res, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(io->orr.width, io->orr.height, 1), out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0));
+        if (lin && out.pixelFormat == of) enc_b_copy_texture(blit(), res, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(io->orr.width, io->orr.height, 1), out, 0, 0, MTLOriginMake(io->orr.xoffset, io->orr.yoffset, 0));
         else if (!copy_t2t_draw(res, out, 0, 0, 0, 0, &at0o, &io->orr, cm == MFX_COL_DEC ? COPY_SRGB_DECODE : 0, 0)) { MLOG("[RED] [mfx] the temporal scaler's result could not be drawn into format %lu", (unsigned long)out.pixelFormat); }
     }
     args_dirty_all();

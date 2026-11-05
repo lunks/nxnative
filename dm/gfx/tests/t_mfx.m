@@ -395,26 +395,26 @@ int main(void) { @autoreleasepool {
         fprintf(stderr, "scaler check: non-finite input frames %llu, dark or non-finite output frames %llu\n", (unsigned long long)g_mck.bad_in, (unsigned long long)(g_mck.bad_out - bad0));
         // An upscaler whose colour is encoded (agl's NDSR variants of Star Fox, Splatoon Raiders and Ocarina of Time, up_mfx_color): with no curve in its code it reads encoded colour
         // and stores it encoded into an 8-bit image, with a half-float decode at its end it stores linear colour. The temporal scaler takes the encoded values as they are and its
-        // result is stored as the network stores it: raw bytes into RGBA8, decoded into RGBA16F; encoded colour into a float image is no shape the network has, and the shader keeps it
+        // result is stored as the network stores it: raw bytes into RGBA8, decoded into RGBA16F. With no curve into a float image the values are linear (up_mfx_shape): HDR mode
         tex_t ein = texture(81, 960, 540, NVN_FORMAT_RGBA8), eout = texture(82, 1920, 1080, NVN_FORMAT_RGBA8), dout = texture(83, 1920, 1080, NVN_FORMAT_RGBA16F), fout = texture(84, 1920, 1080, NVN_FORMAT_RGBA16F);
         eout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; dout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; fout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
         mtl_reg_tex(703, &ein, NULL); mtl_reg_image(704, &eout, NULL); mtl_reg_image(705, &dout, NULL); mtl_reg_image(706, &fout, NULL);
         fill(tex_mtl(&ein), MTLClearColorMake(128 / 255.0, 64 / 255.0, 191 / 255.0, 1), 0);   // encoded bytes 128, 64, 191 (sRGB 0.502 is linear 0.216)
         int keep_interp = g_mfi_on; g_mfi_on = 0;   // the scaler alone (the interpolation's frames are the RGBA8 / R11G11B10F ones above)
-        for (int shape = 0; shape < 3; shape++) {   // 0: encoded in and out into RGBA8, 1: encoded in, decoded out into RGBA16F, 2: encoded in and out into RGBA16F
-            NvShader *sh = upscaler("7629d857a0a93833_b"); sh->up_color = shape == 1 ? UP_COLOR_SRGB : UP_COLOR_SRGB_ENC;
+        for (int shape = 0; shape < 4; shape++) {   // 0: encoded in and out into RGBA8, 1: encoded in, decoded out into RGBA16F, 2: no curve into RGBA16F (linear), 3: square-root colour
+            NvShader *sh = upscaler("7629d857a0a93833_b"); sh->up_color = shape == 1 ? UP_COLOR_SRGB : shape == 3 ? UP_COLOR_SQRT : UP_COLOR_SRGB_ENC;
             tex_t *o = shape == 0 ? &eout : shape == 1 ? &dout : &fout;
             fill(tex_mtl(o), MTLClearColorMake(0, 0, 0, 1), 0);
-            uint64_t n0 = g_mts.n; int drawn_all = 1, kept_all = 1;
+            uint64_t n0 = g_mts.n; int drawn_all = 1;
             for (int f = 0; f < 4; f++) {
                 frame++; mtl_set_frame(1000 + frame);
                 g_mc.n = 1; g_mc.c[0].depth = depth; g_mc.c[0].cam = cam; g_mc.c[0].passes = 10; g_mc.c[0].last = frame;
-                memset(&S, 0, sizeof S); S.tex[5][0] = 703; S.img[5][1] = 704 + shape;
+                memset(&S, 0, sizeof S); S.tex[5][0] = 703; S.img[5][1] = 704 + (shape == 3 ? 2 : shape);
                 { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); }
                 mtl_sub_begin();
                 int drawn = up_mfx_wanted(sh) && up_mfx_encode(sh);
                 CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the encoded frame's submission completes");
-                drawn_all &= drawn && g_mts.n == n0 + (uint64_t)f + 1; kept_all &= !drawn && g_mts.n == n0;
+                drawn_all &= drawn && g_mts.n == n0 + (uint64_t)f + 1;
             }
             if (shape == 0) {
                 uint8_t *p = read_all(tex_mtl(o)); int worst = 0;
@@ -431,7 +431,14 @@ int main(void) { @autoreleasepool {
                 fprintf(stderr, "encoded in, decoded out (RGBA16F): red %.4f expected, largest difference %.4f\n", want, worst);
                 CHECK(drawn_all, "encoded in, decoded out: the temporal scaler draws every frame");
                 CHECK(worst < 0.01, "encoded in, decoded out: the output holds the input decoded from sRGB (0.502 → 0.216)");
-            } else CHECK(kept_all, "encoded in and out into a float image: neither scaler draws it, the shader keeps it");
+            } else {
+                float *r = read_rgba16f(tex_mtl(o)); double worst = 0, want = shape == 3 ? (128 / 255.0) * (128 / 255.0) : 128 / 255.0;
+                for (size_t y = 8; y < 1080 - 8; y += 37) for (size_t x = 8; x < 1920 - 8; x += 37) worst = fmax(worst, fabs(r[y * 1920 + x] - want));
+                free(r);
+                fprintf(stderr, "%s (RGBA16F): red %.4f expected, largest difference %.4f\n", shape == 3 ? "square-root colour" : "no curve into a float image", want, worst);
+                CHECK(drawn_all, shape == 3 ? "square-root colour: the temporal scaler draws every frame, as linear colour" : "no curve into a float image: the temporal scaler draws every frame, as linear colour");
+                CHECK(worst < 0.01, shape == 3 ? "square-root colour comes out squared: linear (0.502 → 0.252)" : "no curve into a float image: the values come through as they are, not decoded");
+            }
         }
         g_mfi_on = keep_interp;
     }

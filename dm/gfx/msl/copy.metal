@@ -10,6 +10,9 @@ fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler
 fragment float4 fs_dec(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
   float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; float4 c = t.sample(s, st / p[1].zw, level(0));
   float3 e = saturate(c.rgb); return float4(select(pow((e + 0.055f) / 1.055f, 2.4f), e / 12.92f, e <= 0.04045f), c.a); }
+// fs with each colour channel squared, sign kept (COPY_SQUARE: the input of agl's variable-ratio NDSR networks, square-root colour, back to linear for MetalFX, nvn_mtl.m up_mfx_encode)
+fragment float4 fs_sq(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
+  float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; float4 c = t.sample(s, st / p[1].zw, level(0)); return float4(c.rgb * abs(c.rgb), c.a); }
 struct D { float d [[depth(any)]]; };
 fragment D fsd(V in [[stage_in]], depth2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
   float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; D o; o.d = t.read(uint2(st)); return o; }

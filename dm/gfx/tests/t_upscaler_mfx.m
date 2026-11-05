@@ -2,7 +2,7 @@
 // 1920x1080 image is replaced by the spatial scaler, which fills the whole image with the texture's colour; equal sizes, another shader, and DM_UPSCALER unset
 // (the last run) leave the dispatch to the shader. Runs under any profile: the named shader is the profile's first upscaler (DM_GAME_UPSCALER_KEYS), and a profile with
 // none swaps no shader; the MetalFX draw itself (up_mfx_encode) does not look at the key. The colour (up_mfx_color) comes from synthetic code holding the curves' constants: a variant with sRGB input
-// comes out decoded to linear, and one with no curve (encoded in and out) stores the bytes its texture holds into its 8-bit image (bound raw, as an sRGB image is), or is left to its shader for a float image
+// comes out decoded to linear, and one with no curve (encoded in and out) stores the bytes its texture holds into its 8-bit image (bound raw, as an sRGB image is), or into a float image its values as they are (linear)
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -144,9 +144,21 @@ int main(void) { @autoreleasepool {
             for (int i = 0; i < 5; i++) { same &= rgba8_at(eo, at[i][0], at[i][1], got); for (int c = 0; c < 4; c++) same &= abs((int)got[c] - (int)want[c]) <= 2; }
             if (!same) fprintf(stderr, "encoded output %u %u %u %u, texture %u %u %u %u\n", got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
             CHECK(same, "the encoded output holds the texture's bytes, neither decoded nor encoded twice");
-            S.img[5][1] = 702; mtl_sub_begin(); uint64_t kept0 = g_up_mfx_kept;
-            CHECK(!up_mfx_encode(named) && g_up_mfx_kept == kept0 + 1, "encoded in and out into a float image keeps the shader");
-            mtl_wait(mtl_sub_commit(), 5000000000ull);
+            // No curve into a float image (Ocarina of Time's agl_ndsr_vr_light.pck network): the values pass through as linear colour, so MetalFX draws them in HDR mode, not decoded
+            S.img[5][1] = 702; fill(written, MTLClearColorMake(0, 0, 0, 1)); mtl_sub_begin(); uint64_t kept0 = g_up_mfx_kept;
+            CHECK(up_mfx_shape(named, MTLPixelFormatRG11B10Float) == UP_COLOR_LINEAR && up_mfx_shape(named, MTLPixelFormatRGBA16Float) == UP_COLOR_LINEAR &&
+                  up_mfx_shape(named, MTLPixelFormatRGBA8Unorm_sRGB) == UP_COLOR_SRGB_ENC, "no curve: linear into a float image, encoded into an 8-bit one");
+            CHECK(up_mfx_encode(named) && g_up_mfx_kept == kept0, "no curve into a float image: MetalFX draws it");
+            CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the float-image submission completes");
+            const float through[4] = {128 / 255.0f, 64 / 255.0f, 191 / 255.0f, 1.0f};
+            CHECK(matches(written, through, MTLRegionMake2D(0, 0, 1920, 1080), black), "no curve into a float image: the values come through as they are, not decoded");
+            // Square-root colour (agl's variable-ratio networks, Ocarina of Time): squared into the scaler's texture, so the image gets linear colour
+            named->up_color = UP_COLOR_SQRT; fill(written, MTLClearColorMake(0, 0, 0, 1)); mtl_sub_begin();
+            CHECK(up_mfx_encode(named), "square-root colour: MetalFX draws it");
+            CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the square-root submission completes");
+            const float squared[4] = {through[0] * through[0], through[1] * through[1], through[2] * through[2], 1.0f};
+            CHECK(matches(written, squared, MTLRegionMake2D(0, 0, 1920, 1080), black), "square-root colour comes out squared: linear (0.502 → 0.252)");
+            named->up_color = UP_COLOR_SRGB_ENC;
             named->up_color = UP_COLOR_SRGB;
         }
         named->up_color = UP_COLOR_LINEAR;
