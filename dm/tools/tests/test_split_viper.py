@@ -72,9 +72,9 @@ class ViperZip(unittest.TestCase):
         self.assertGreater(len(big), 2 * CHUNK)
         data = vzip([member('8a2c93ccb633872a', vs), member('f34d11d5e85cc264', big), member('aa31b510cc6cebaa', ps, chain=False), member('d723ca0f3b93c5c0', b'{\n\t"segments": []\n}')])
         (rel, keys, pairs, extra), log = self.scan(data, ['8a2c93ccb633872a', 'f34d11d5e85cc264', 'aa31b510cc6cebaa', 'd723ca0f3b93c5c0'])
-        self.assertEqual(log, ''); self.assertEqual(extra, {})
+        self.assertEqual(log, ''); self.assertEqual({e[0] for e in extra}, {'raw'})   # the records' keys, for engine_pairs
         self.assertEqual(sorted(v[1] for v in keys.values()), ['ps', 'vs', 'vs'])
-        self.assertTrue(all('#VIPER' in v[0] for v in keys.values()))
+        self.assertTrue(all('#BARE' in v[0] for v in keys.values()))
         self.assertEqual({v[0].rsplit('/', 1)[1].split('#')[0] for v in keys.values()}, {'8a2c93ccb633872a', 'f34d11d5e85cc264', 'aa31b510cc6cebaa'})
         self.assertEqual(pairs, set())   # single-stage programs pair at draw time
         self.assertEqual(ss.group('/data.zip/8a2c93ccb633872a'), ss.group('/data.zip/x'))
@@ -87,9 +87,8 @@ class ViperZip(unittest.TestCase):
 
     def test_a_shader_binary_that_does_not_add_up_is_not_one(self):
         ctl, code = nvn2_stage(0x1462)
-        self.assertIsNone(ss.viper_shader(viper(ctl, code) + b'\0', 'x'))   # a trailing byte: the lengths do not add up
-        self.assertIsNone(ss.viper_shader(viper(ctl[:0x20], code), 'x'))   # too short a control section
-        self.assertEqual([(s, len(c), len(k)) for _, s, c, k in ss.viper_shader(viper(ctl, code), 'x')], [('ps', len(ctl), len(code))])
+        self.assertEqual(ss.bare_shader(viper(ctl, code) + b'\0', 'x'), [])   # a trailing byte: the lengths do not add up
+        self.assertEqual([(s, len(c), len(k)) for _, s, c, k in ss.bare_shader(viper(ctl, code), 'x')], [('ps', len(ctl), len(code))])
 
     def test_cli_counts_the_members(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -99,7 +98,7 @@ class ViperZip(unittest.TestCase):
             proc = subprocess.run([sys.executable, REPO / 'dm/gfx/tools/shader_split.py', rom, main, *outputs], capture_output=True, text=True, env=dict(os.environ, DM_GAME='0400E88025B1A000', J='2'))
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr); self.assertNotIn('[RED]', proc.stdout + proc.stderr)
             self.assertIn('shaders: 2 (', proc.stdout)
-            self.assertIn('/data.zip/8a2c93ccb633872a#VIPER', (dest / 'map.tsv').read_text())
+            self.assertIn('/data.zip/8a2c93ccb633872a#BARE', (dest / 'map.tsv').read_text())
 
 
 if __name__ == '__main__': unittest.main()

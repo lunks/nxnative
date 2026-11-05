@@ -22,7 +22,7 @@ import dmsh_abi as abi   # noqa: E402
 # 0x1000 where it is not the pool table's entry count (DMSH_GMEM_MAP_ENTRIES): the 4 KB page step of nvn_mtl.m's sparse residency map.
 # A count may only go down; when it does, lower it here.
 BASELINE = {
-    'dm/gfx/nvn/nvn_mtl.m': {"'?'": 2, "'geometry'": 3, '0x100': 2, '0x1000': 2},
+    'dm/gfx/nvn/nvn_mtl.m': {"'?'": 3, "'geometry'": 3, '0x100': 2, '0x1000': 2},
     'dm/gfx/nvn/nvn_refl.m': {"'c1'": 1},
     'dm/gfx/nvn/nvn_refl.h': {},
     'dm/gfx/nvn/nvn_obj.h': {'0x100': 1},

@@ -115,16 +115,18 @@ class IntegerOutputs(unittest.TestCase):
     def test_an_output_from_integer_bits(self):
         self.assertIsNotNone(fs_uint(self.source('    out.m_0.x = as_type<float>(1u);'))[0])
 
-    def test_a_computed_float_output_gets_none(self):
-        self.assertIsNone(fs_uint(self.source('    out.m_0 = in.m_1 * 2.0;'))[0])
+    def test_a_computed_float_output_gets_the_unsigned_entry(self):   # every float colour output does: the attachment's format decides how its bits are read
+        out, mask = fs_uint(self.source('    out.m_0 = in.m_1 * 2.0;'))
+        self.assertIn('main0_u', out); self.assertEqual(mask, 0)
 
     def test_a_longer_name_is_not_the_output(self):
-        self.assertIsNone(fs_uint(self.source('    xout.m_0.x = as_type<float>(1u);\n    out.m_0 = in.m_1 * 2.0;'))[0])
+        def two(body): return self.source(body).replace('float4 m_0 [[color(0)]];', 'float4 m_0 [[color(0)]];\n    float4 m_1 [[color(1)]];')
+        self.assertEqual(fs_uint(two('    xout.m_0.x = as_type<float>(1u);\n    out.m_0 = in.m_1 * 2.0;\n    out.m_1 = in.m_1 * 3.0;'))[1], 0)
+        self.assertEqual(fs_uint(two('    out.m_0.x = as_type<float>(1u);\n    out.m_1 = in.m_1 * 3.0;'))[1], 1)
 
     def test_a_flat_input_passed_through(self):
         src = self.source('    out.m_0 = in.m_1;', 'struct main0_in\n{\n    float4 m_1 [[user(locn1), flat]];\n};\n\n')
         self.assertIsNotNone(fs_uint(src)[0])
-        self.assertIsNone(fs_uint(src.replace(', flat]]', ']]'))[0])
 
 
 class ImageAtomics(unittest.TestCase):

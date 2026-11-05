@@ -49,11 +49,13 @@ class NroPack(unittest.TestCase):
         self.assertIn(self.row, (self.out / 'nro.tsv').read_text())
         self.assertEqual((self.collections, self.rewrites), (2, 2))
 
-    def test_parser_changes_recollect(self):
+    def test_only_the_format_recollects(self):   # an edit of the collection tools that finds the same NROs keeps them
         self.build()
-        for i, f in enumerate(('dm/gfx/tools/smash_arc.py', 'dm/tools/nso_syms.py'), 2):
+        for f in ('dm/gfx/tools/smash_arc.py', 'dm/tools/nso_syms.py'):
             (self.repo / f).write_text('v2'); self.build()
-            self.assertEqual(self.collections, i)
+            self.assertEqual(self.collections, 1)
+        with mock.patch.object(nsp.nro_collect, 'FORMAT', nsp.nro_collect.FORMAT + 1): self.build()
+        self.assertEqual(self.collections, 2)
         self.assertEqual(self.rewrites, 1)   # identical collected bytes do not need another rewrite
 
     def test_removed_registration_drops_stale_manifest(self):

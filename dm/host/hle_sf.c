@@ -62,9 +62,7 @@ static Result camera_answer(unsigned cmd, const uint8_t *in, size_t nin, uint8_t
     return 0x5c4u;
 }
 // The camera module takes the applet's camera resource before it opens a device (nn::applet::BeginUsingCameraResource read a null service object at sdk+0x1dfeb4): the host runs the only
-// application, so the resource is always this game's. The context's end: the SDK's DestroyCameraContext asks the gsv session the host never opened and fails, which aborts Finalize
-// (subsdk3+0x2010); the module closes the context's handle itself, so there is nothing left to do here
-HLE_FORCE("_ZN2nn6camera3sdk20DestroyCameraContextEv", "camera context destroyed: nothing to release on the host", Result, h_cam_ContextEnd, void) { return RES_OK; }
+// application, so the resource is always this game's
 HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "applet camera resource: always available to this game", Result, h_applet_CamBegin, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "applet camera resource released", Result, h_applet_CamEnd, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", "camera context (a camera service session through gsv) → a host session with no camera", Result, h_cam_Context,

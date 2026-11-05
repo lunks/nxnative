@@ -810,7 +810,7 @@ def zip_jobs(files, parts=64):
 def zip_lz4_member(f, info, label):
     """A zip member marked stored whose data is shorter than its length (Star Fox's data.zip: 92,069 of its 114,154 members, all named by a 64-bit hash): the engine's own compression,
     chunks of a u32 stored length and an LZ4 block of up to 64 KB, each block linked to the one before (LZ4's dictionary is the previous chunk's output); a chunk whose stored length is its
-    whole length is stored as is. The zip's CRC-32 is not of this data, so zipfile cannot read it. → the inflated member"""
+    whole length is stored as is. The CRC the directory keeps is the decoded data's, so zipfile's own read stops on it. → the inflated member"""
     import lz4.block
     f.seek(info.header_offset)
     h = f.read(30)
@@ -826,7 +826,9 @@ def zip_lz4_member(f, info, label):
         except lz4.block.LZ4BlockError as e: red(f'{label}: chunk at {p - 4 - n:#x}: {e}')
         if not c or len(c) > want: red(f'{label}: a chunk of {len(c):,} bytes where {want:,} are left')
         parts.append(c); left -= len(c)
-    return b''.join(parts)
+    out = b''.join(parts)
+    if zlib.crc32(out) & 0xFFFFFFFF != info.CRC: red(f'{label}: CRC mismatch after the LZ4 chunks')
+    return out
 
 def bare_shader(d, label):
     """One shader as Star Fox's engine stores it, a zip member of its own (2,828 in data.zip): the GLSLC magic 0x19866891, u32 code length, u32 control length, a u32 (0 but in Corneria's two water
