@@ -105,6 +105,14 @@ static class SwshXlate
             }
             return -1;
         }
+        // A c[2] word a texture handle can be made of, as Slot reads one: a combined or separate texture word (an image word for an image), not one of the separate sampler table,
+        // which holds a sampler ID alone (BindlessElimination drops a handle candidate with no such word)
+        public bool QueryTextureHandleWord(int cbufSlot, int wordOffset, bool image)
+        {
+            int b = wordOffset * 4;
+
+            return cbufSlot != 2 || (b % 8 == 0 && (image ? b >= ImgBase && b < ImgBase + 8 * ImgSlots : b >= TexBase && b < SampBase));
+        }
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
             int slot = Slot(handle, cbufSlot, false), islot = Slot(handle, cbufSlot, true);

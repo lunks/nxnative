@@ -824,6 +824,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 int n0 = coords + (isArray || offset ? 1 : 0);
                 (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, 2 * coords);
 
+                // 0xf6c's handle comes first, as for the other forms: without it the x coordinate stood in its place, and BindlessElimination removed every such read (its
+                // result 0: two 2D array reads in each of Star Fox's pixel shaders 0396b3632ac7ea61 and cc2de495b90ddf70, +0x3260 and +0x6900)
+                if (bindless)
+                {
+                    sources.Add(boundHandle);
+                }
+
                 sources.AddRange(a.GetRange(0, coords));
 
                 if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)

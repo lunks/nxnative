@@ -1466,7 +1466,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return res;
         }
 
-        // VOTE / VOTEU Rd, Pd, P: Pd = the vote (72..74: all, any, equal) of P (87..90); Rd (a uniform register for VOTEU) the ballot
+        // VOTE / VOTEU Rd, Pd, P: Pd = the vote (72..74: all, any, equal) of P (87..90); Rd the ballot. VOTEU's are a uniform register and a uniform predicate, as its
+        // result is the warp's: Star Fox's pixel shader 0396b3632ac7ea61 votes VOTEU.ALL UP0, P0 (+0x5710), computes a handle only for a warp where some thread has !P0
+        // (@!UP0 ULOP3 UR10 = UR10 | UR11, +0x5730) and samples it @!P0 (+0x5760); the vote written to P0 took the place of each thread's own P0 there and at its @P0 BRA
         public static void AVote(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -1477,7 +1479,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             if (vote != null)
             {
-                ASetPred(context, x.Bits(81, 84), vote);
+                ASetPred(context, x.Bits(81, 84), vote, toUniform);
             }
 
             int rd = ARd(x, toUniform);

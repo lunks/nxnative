@@ -104,7 +104,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             {
                 if (IsTableWord(leaf))
                 {
-                    AddCandidate(found, leaf, null);
+                    if (NamesTexture(gpuAccessor, texOp, leaf, null))
+                    {
+                        AddCandidate(found, leaf, null);
+                    }
                 }
                 else if (!texOp.Inst.IsImage() && leaf.AsgOp is Operation orOp && orOp.Inst == Instruction.BitwiseOr)
                 {
@@ -112,7 +115,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     {
                         foreach (Operand sampler in PhiLeaves(orOp.GetSource(1)))
                         {
-                            if (IsTableWord(texture) && (IsTableWord(sampler) || (sampler.Type == OperandType.Constant && (sampler.Value & 0xfffff) == 0)))
+                            if (IsTableWord(texture) && (IsTableWord(sampler) || (sampler.Type == OperandType.Constant && (sampler.Value & 0xfffff) == 0)) &&
+                                NamesTexture(gpuAccessor, texOp, texture, sampler))
                             {
                                 AddCandidate(found, texture, sampler);
                             }
@@ -239,6 +243,19 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
         private static bool IsTableWord(Operand operand)
         {
             return operand.Type == OperandType.ConstantBuffer && operand.GetCbufSlot() == NvnTextureBufferIndex;
+        }
+
+        // Whether a candidate can name a texture: one of its words (an OR's two in either order) lies in a table of texture or image handles. A word of NVN's separate
+        // sampler table alone is the value a handle register held before the texture word was ORed in under a guard, on the path where the guard failed. Star Fox's pixel
+        // shader 0396b3632ac7ea61 loads the sampler word (ULDC UR10 = c[2][0x5c0], +0x5690), ORs the texture word into it only for a warp in which some thread samples
+        // (@!UP0 ULOP3 UR10 = UR10 | UR11 after VOTEU.ALL UP0, P0) and samples @!P0: UR10 reached the read as phi(c[2][0x5c0], c[2][0x5c0] | c[2][0x248]), and the
+        // sampler word became a binding of its own, fp_t_cb2_170, which no texture slot holds ("has no resolved slot number": the shader did not load, 62 of Star Fox's)
+        private static bool NamesTexture(IGpuAccessor gpuAccessor, TextureOperation texOp, Operand texture, Operand sampler)
+        {
+            bool image = texOp.Inst.IsImage();
+
+            return gpuAccessor.QueryTextureHandleWord(texture.GetCbufSlot(), texture.GetCbufOffset(), image) ||
+                (sampler != null && sampler.Type == OperandType.ConstantBuffer && gpuAccessor.QueryTextureHandleWord(sampler.GetCbufSlot(), sampler.GetCbufOffset(), image));
         }
 
         private static void AddCandidate(List<(Operand Texture, Operand Sampler)> found, Operand texture, Operand sampler)

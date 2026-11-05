@@ -258,10 +258,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
         }
 
         // NVN2 compute shaders lay out their driver constants in c[0] per shader (the control section counts them, QueryAmpereComputeC0Layout): from 0x10, the push
-        // constants, then a 0x10-byte entry per uniform buffer slot, then one per storage buffer slot, then an 8-byte handle per texture slot, then per image slot (all
-        // 205 compute shaders of Donkey Kong Bananza read their c[0] that way). They are mapped to the places the build's reflection and the host know: the push
+        // constants, then a 0x10-byte entry per uniform buffer slot, then one per storage buffer slot, then an 8-byte handle per texture slot, per separate texture slot,
+        // per separate sampler slot and per image slot (all 207 compute shaders of Donkey Kong Bananza and 233 of Star Fox read their c[0] that way; the separate tables
+        // are empty in all but Star Fox's 1002069a331ceded, 32 textures and 13 samplers). They are mapped to the places the build's reflection and the host know: the push
         // constants to c[24] (where the graphics stages read theirs), uniform slot r to c[0] + 0x210 + 0x10 r and storage slot s to c[0] + 0x310 + 0x10 s (NVN's
-        // compute tables), texture slot t to c[2] + 0x20 + 8 t and image slot i to c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay.
+        // compute tables), texture slot t to c[2] + 0x20 + 8 t, separate texture and sampler slot k to c[2] + 0x168 + 8 k and c[2] + 0x568 + 8 k and image slot i to
+        // c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay. Read as images, the separate ones had put 1002069a331ceded's texture, sampler and image words
+        // in no table (no resolved slot number)
         private static (int Bank, int Offset) AMapC0(EmitterContext context, int bank, int offset)
         {
             int[] layout = bank == 0 ? context.TranslatorContext.GpuAccessor.QueryAmpereComputeC0Layout() : null;
@@ -272,10 +275,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             int ubos = layout[0], ssbos = layout[1], textures = layout[2], size = layout[3], push = (layout[4] + 0xf) & ~0xf;
+            int separateTextures = layout.Length >= 7 ? layout[5] : 0, separateSamplers = layout.Length >= 7 ? layout[6] : 0;
             int ub = 0x10 + push;
             int sb = ub + 0x10 * ubos;
             int hb = sb + 0x10 * ssbos;
-            int ib = hb + 8 * textures;
+            int tb = hb + 8 * textures;
+            int pb = tb + 8 * separateTextures;
+            int ib = pb + 8 * separateSamplers;
 
             if (offset >= 0x10 && offset < ub)
             {
@@ -292,9 +298,19 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return (0, 0x310 + (offset - sb));
             }
 
-            if (offset >= hb && offset < ib)
+            if (offset >= hb && offset < tb)
             {
                 return (2, 0x20 + (offset - hb));
+            }
+
+            if (offset >= tb && offset < pb)
+            {
+                return (2, 0x168 + (offset - tb));
+            }
+
+            if (offset >= pb && offset < ib)
+            {
+                return (2, 0x568 + (offset - pb));
             }
 
             if (offset >= ib && offset < size)

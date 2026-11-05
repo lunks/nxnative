@@ -449,6 +449,18 @@ namespace Ryujinx.Graphics.Shader
         int QuerySamplerArrayLengthFromPool();
 
         /// <summary>
+        /// nxnative: whether the constant buffer word can be a texture (or image) handle's: a word of a table of texture or image handles. NVN's c[2] also holds
+        /// the separate sampler table, whose words carry a sampler ID alone and so name no texture.
+        /// </summary>
+        /// <param name="cbufSlot">Constant buffer slot</param>
+        /// <param name="wordOffset">Offset of the word in 32-bit words</param>
+        /// <param name="image">True for an image handle</param>
+        bool QueryTextureHandleWord(int cbufSlot, int wordOffset, bool image)
+        {
+            return true;
+        }
+
+        /// <summary>
         /// Queries sampler type information.
         /// </summary>
         /// <param name="handle">Texture handle</param>
