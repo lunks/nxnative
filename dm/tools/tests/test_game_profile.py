@@ -46,7 +46,8 @@ MAP = ('# kind: evidence  Test shaders\n# column 5 records where each key first 
        'cs_other.bin\t2\tcompute\t7629d857a0a93833\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.debug.sarc.zs/agl_ndsr.pck#NDSR@0xeb4c0\n'
        'cs_other.bin\t3\tcompute\t7629d857a0a93833\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x124a00\n'   # a key twice: once
        'ps_other.bin\t4\tpixel\t0e423e497f1e3355\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x1247d8\n'   # the pack's draw shaders: not the upscaler
-       'cs_other.bin\t5\tcompute\t0123456789abcdef\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_common.sharcb#BAHS@0x40\n')
+       'cs_other.bin\t5\tcompute\t0123456789abcdef\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_common.sharcb#BAHS@0x40\n'
+       'cs_romfs.bin\t6\tcompute\tddc729bcdb4c8df9\t/data.zip/66e36a907a6b7251#VIPR@0x12da#NDSR@0xec640\n')   # an NDSR pack in another file (Star Fox's data.zip member)
 
 
 def macros(shader_map):
@@ -64,7 +65,7 @@ class UpscalerKeys(unittest.TestCase):
         none = ['#define DM_GAME_UPSCALER_KEYS ""', '#define DM_GAME_UPSCALER_N 0']   # the launcher hides the setting
         self.assertEqual(macros(None), none)
         self.assertEqual(macros(MAP.split('cs_other.bin')[0]), none)
-        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af"', '#define DM_GAME_UPSCALER_N 2'])
+        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af,ddc729bcdb4c8df9"', '#define DM_GAME_UPSCALER_N 3'])
 
 
 

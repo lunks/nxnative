@@ -101,8 +101,9 @@ def by_build(main_id):   # the profile whose build rows register this main build
     return next((g for g in all_games() if any(b.get('main') == main_id for b in g.builds().values())), None)
 
 
-# agl's upscaler network (NDSR), by where the shader map found each key: the compute shaders of agl_ndsr.pck (Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one)
-UPSCALER_SOURCE = re.compile(r'/agl_ndsr\.pck#')
+# The upscaler network (NDSR), by where the shader map found each key: the compute shaders of an NDSR pack, which shader_split.py marks #NDSR@<offset> whatever the file holding it
+# (agl_ndsr.pck: Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one; Star Fox's 20, the same pack as Splatoon Raiders', in a data.zip member)
+UPSCALER_SOURCE = re.compile(r'#NDSR@')
 
 
 def upscaler_keys(g):
