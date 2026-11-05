@@ -50,6 +50,28 @@ class Nvn2SlotTests(unittest.TestCase):
         found = split.bnsh_shaders(bytes(d), 0, 'x')
         self.assertEqual([st for _, st, _, _ in found], ['ps'])
 
+    def test_mesh_variation_gives_a_triple(self):
+        found = split.bnsh_shaders(bnsh({4: (0, 1), 7: (6, 2), 8: (7, 3)}), 0, 'x')
+        key = {st: split.skey(c, code) for _, st, c, code in found}
+        self.assertEqual(split.var_pairs(found), {(key['ts'], key['ms'], key['ps'], 'mesh')})
+        found = split.bnsh_shaders(bnsh({4: (0, 1), 8: (7, 3)}), 0, 'x')   # a mesh shader with no task shader
+        self.assertEqual(split.var_pairs(found), {('-', key['ms'], key['ps'], 'mesh')})
+
+    def test_mesh_program_of_an_agl_file(self):
+        """BAHS records of kind 4 and 5 are a program's task and mesh binaries: its n-th fragment, task and mesh binary are one variation, here two with a task and one without"""
+        kinds = [1, 4, 5, 1, 4, 5, 1, 5]
+        arr = 0x20; d = bytearray(0x400)
+        struct.pack_into('<II', d, arr, 8 + 0x20 * len(kinds), len(kinds))
+        for i, k in enumerate(kinds): struct.pack_into('<II', d, arr + 8 + 0x20 * i, 0x20, k)
+        progs = arr + 8 + 0x20 * len(kinds)
+        struct.pack_into('<II', d, progs, 8 + 16, 1); struct.pack_into('<IIII', d, progs + 8, 16, 0, 0x32, 0)
+        entries = [f'y#BAHS@{arr + 0x18 + 0x20 * i:#x}' for i in range(len(kinds))]
+        split.bahs_variations(bytes(d), 'y', entries)
+        stage = {1: ('ps', 0), 4: ('ts', 2), 5: ('ms', 3)}
+        found = [(e, stage[k][0], ctl(stage[k][1], 1), bytes([i])) for i, (e, k) in enumerate(zip(entries, kinds))]
+        key = [split.skey(c, code) for _, _, c, code in found]
+        self.assertEqual(split.var_pairs(found), {(key[1], key[2], key[0], 'mesh'), (key[4], key[5], key[3], 'mesh'), ('-', key[7], key[6], 'mesh')})
+
     def test_six_stages_as_before(self):
         found = split.bnsh_shaders(bnsh({0: (0, 4), 4: (0, 5)}), 0, 'x')
         self.assertEqual([st for _, st, _, _ in found], ['vs', 'ps'])

@@ -549,14 +549,36 @@ static void geo_mesh_encode(id<MTLRenderCommandEncoder> en_) {
 // A program's task and mesh shaders are Metal object and mesh functions (dmsh_meshstage.py), kept in the tessellation stages' places (sh[3], sh[4]). The draw goes through draw() with its
 // pixel stage alone, a program of its own as a geometry draw's raster stage is, so it takes the render pass and the pixel stage's state like any draw; mtk_pso gives its pipeline and
 // mtk_encode binds the two stages and draws. The mesh stage shares the vertex stage's table, as geo_mesh_encode's does, and a task shader has the object stage's; both read the
-// draw's first workgroup at buffer 29. Native meshes have no equivalent stand-in: build required misses before encoding the draw, and prewarm the recorded state next time.
+// draw's first workgroup at buffer 29. Native meshes have no equivalent stand-in: a miss takes its pipeline from the archive made offline (mtk_bundled), else builds it before encoding the draw, and
+// prewarms the recorded state next time.
 static struct { int on, miss; NvShader *ts, *ms; uint32_t first, count; uint64_t ind; } g_mtk;
 static void draw_(const p_draw *dw, const p_draw_idx *di);
 static uint64_t g_mtk_n;
 static nvn_hmap g_pso_mtk = {.klen = sizeof(pso_key)};   // demand and warm results are installed on the submit thread
+// The pipeline from its base in the archive made offline (pso_offline.py plan_mesh, the same names and sizes), specialized with its colour state as pso_build_ex does: a lookup and a specialization
+// for a pipeline that takes up to seconds to build on a cold Metal cache. nil when the archive does not hold it, as for a fragment of another entry point (integer targets, alpha test) or more samples
+static id<MTLRenderPipelineState> mtk_bundled(MTLRenderPipelineDescriptor *d, NvShader *ts, NvShader *ms) {
+    if (!g_arch_bundle || !g_comp4 || [d.label isEqualToString:PSO_WHOLE]) return nil;   // PSO_WHOLE: through a base every primitive reads 0
+    MTL4FunctionDescriptor *mf = fn4_of(ms->fn), *ff = fn4_of(d.fragmentFunction), *tf = ts ? fn4_of(ts->fn) : nil;
+    if (!mf || !ff || (ts && !tf)) return nil;
+    MTL4MeshRenderPipelineDescriptor *b = [MTL4MeshRenderPipelineDescriptor new];
+    b.meshFunctionDescriptor = mf; b.fragmentFunctionDescriptor = ff; b.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
+    if (ts) { b.objectFunctionDescriptor = tf; b.payloadMemoryLength = (ts->mesh_payload + 15u) & ~15u; b.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }
+    b.rasterSampleCount = d.rasterSampleCount; b.alphaToCoverageState = d.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled;
+    for (int i = 0; i < 8; i++) pso_open4(b.colorAttachments[i]);
+    id<MTLRenderPipelineState> base = [g_arch_bundle newRenderPipelineStateWithDescriptor:b error:nil];
+    if (!base) return nil;
+    MTL4MeshRenderPipelineDescriptor *s = (MTL4MeshRenderPipelineDescriptor *)[base newRenderPipelineDescriptorForSpecialization];
+    for (int i = 0; i < 8; i++) pso_col4(s.colorAttachments[i], d.colorAttachments[i]);
+    id<MTLRenderPipelineState> ps = [g_comp4 newRenderPipelineStateBySpecializationWithDescriptor:s pipeline:base error:nil];
+    if (ps) atomic_fetch_add(&g_mtk_arch, 1);
+    return ps;
+}
 static id<MTLRenderPipelineState> mtk_build(const pso_key *k, NvShader *ts, NvShader *ms, NvShader *fs, NSError **error) {
     MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, nil, 0);
     if (!pso_ds_valid((uint32_t)d.depthAttachmentPixelFormat, (uint32_t)d.stencilAttachmentPixelFormat)) return nil;
+    id<MTLRenderPipelineState> bundled = mtk_bundled(d, ts, ms);
+    if (bundled) return bundled;
     MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
     m.meshFunction = ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
     if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = (ts->mesh_payload + 15u) & ~15u; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }
@@ -596,8 +618,8 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     pso_skey sk; char hex[sizeof sk * 2 + 1];
     pso_skey_from(&k, ms, fs, 0, NULL, &sk); pso_skey_hex(&sk, hex);
     pso_record("M\t%s\t%s\n", task, hex); pso_user_record("M\t%s\t%s\n", task, hex);
-    MLOG("task / mesh pipeline: task %s mesh %s fragment %s, %.1f ms required at frame %llu", task, ms->key, fs ? fs->key : "-",
-         elapsed / 1e6, (unsigned long long)atomic_load(&g_cur_frame));
+    MLOG("task / mesh pipeline: task %s mesh %s fragment %s, %.1f ms required at frame %llu (%llu from the archive so far)", task, ms->key, fs ? fs->key : "-",
+         elapsed / 1e6, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)atomic_load(&g_mtk_arch));
     return ps;
 }
 static void mtk_encode(id<MTLRenderCommandEncoder> en_) {

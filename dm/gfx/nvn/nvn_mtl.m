@@ -4946,6 +4946,7 @@ static uint64_t g_warm_t0;
 static _Atomic int g_warm_running;   // Background warm-up has not finished yet (the loading screen on entering a run waits a little longer based on this, see mtl_warm_wait)
 static _Atomic uint64_t g_warm_shaders, g_warm_rps, g_warm_mps, g_warm_cps, g_warm_skip_fz, g_warm_skip_stale;   // the prewarm's workers count into them
 static id<MTLRenderPipelineState> mtk_build(const pso_key *, NvShader *, NvShader *, NvShader *, NSError **);
+static _Atomic uint64_t g_mtk_arch;   // task / mesh pipelines taken from the archive made offline (mtk_bundled)
 static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps;
 static id<MTLFunction> bf_fn(NvShader *fs, const int *fx, uint8_t fbmask, const uint8_t *lmap);
 static int rt_range_bindings_ro(NSDictionary *j);
@@ -7598,6 +7599,11 @@ static void pso_col4(MTL4RenderPipelineColorAttachmentDescriptor *a, MTLRenderPi
     a.sourceRGBBlendFactor = c.sourceRGBBlendFactor; a.destinationRGBBlendFactor = c.destinationRGBBlendFactor; a.rgbBlendOperation = c.rgbBlendOperation;
     a.sourceAlphaBlendFactor = c.sourceAlphaBlendFactor; a.destinationAlphaBlendFactor = c.destinationAlphaBlendFactor; a.alphaBlendOperation = c.alphaBlendOperation;
 }
+static void pso_open4(MTL4RenderPipelineColorAttachmentDescriptor *a) {   // a base's colour attachment: everything left to the specialization
+    a.pixelFormat = MTLPixelFormatUnspecialized; a.writeMask = MTLColorWriteMaskUnspecialized; a.blendingState = MTL4BlendStateUnspecialized;
+    a.sourceRGBBlendFactor = a.destinationRGBBlendFactor = a.sourceAlphaBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorUnspecialized;
+    a.rgbBlendOperation = a.alphaBlendOperation = MTLBlendOperationUnspecialized;
+}
 // pso_desc's descriptor as a Metal 4 one: unspec leaves every colour attachment unspecialized (the base), else copies them. nil when a function has no Metal 4 descriptor (fn4_of)
 static MTL4RenderPipelineDescriptor *pso_desc4(MTLRenderPipelineDescriptor *d, int unspec) {
     // Metal 4 requires a fragment function when rasterization is enabled. Depth-only draws still need rasterization.
@@ -7611,10 +7617,7 @@ static MTL4RenderPipelineDescriptor *pso_desc4(MTLRenderPipelineDescriptor *d, i
     if (d.maxVertexAmplificationCount > 1) m.maxVertexAmplificationCount = d.maxVertexAmplificationCount;
     for (int i = 0; i < 8; i++) {
         MTL4RenderPipelineColorAttachmentDescriptor *a = m.colorAttachments[i];
-        if (!unspec) { pso_col4(a, d.colorAttachments[i]); continue; }
-        a.pixelFormat = MTLPixelFormatUnspecialized; a.writeMask = MTLColorWriteMaskUnspecialized; a.blendingState = MTL4BlendStateUnspecialized;
-        a.sourceRGBBlendFactor = a.destinationRGBBlendFactor = a.sourceAlphaBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorUnspecialized;
-        a.rgbBlendOperation = a.alphaBlendOperation = MTLBlendOperationUnspecialized;
+        if (unspec) pso_open4(a); else pso_col4(a, d.colorAttachments[i]);
     }
     return m;
 }
@@ -8376,7 +8379,7 @@ static void warm_task(WarmTask *t) {
 static void warm_finish(void) {
     MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu",
          (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_skip_fz, (unsigned long long)g_warm_cps, (bp_now() - g_warm_t0) / 1e6, (unsigned long long)g_warm_skip_stale);
-    if (g_warm_mps) MLOG("pipeline prewarm: %llu native task / mesh pipelines", (unsigned long long)g_warm_mps);
+    if (g_warm_mps) MLOG("pipeline prewarm: %llu native task / mesh pipelines, %llu from the archive so far", (unsigned long long)g_warm_mps, (unsigned long long)atomic_load(&g_mtk_arch));
     if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive, %llu reused (%.1f ms for the bases); %llu specializations, %llu pipelines without a base (MTLDevice)",
                       (unsigned long long)g_pb_built, (unsigned long long)g_pb_archived, (unsigned long long)g_pb_reused, g_pb_base_ns / 1e6, (unsigned long long)g_pb_spec, (unsigned long long)g_pb_legacy);
     if (g_arch_bundle || g_arch_cap) MLOG("compute pipelines so far: %llu from the archive bundled with the app, %llu from this device's archive, %llu built (%.1f ms looking up, %.1f ms building)",

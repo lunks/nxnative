@@ -4,7 +4,9 @@
 // and a draw of a covered pair takes its base from the bundle and captures nothing for the device's own archive;
 // a stamp of another depth mode or other pairs runs the device's prebuild, which still takes the bundled bases it finds; an archive whose bases the probe does not find is not trusted;
 // a folder without this GPU's file and a file that is no archive leave no archive; the compute shaders of the shader map have their pipelines in the archive (cs_pipeline, cps_new:
-// nothing built), but a TensorOps library (<key>_bt in <key>_b's place) is never looked up, and a shader with function constants or not in the map is built as before.
+// nothing built), but a TensorOps library (<key>_bt in <key>_b's place) is never looked up, and a shader with function constants or not in the map is built as before; a task / mesh triple of
+// mesh_pipelines.tsv comes from the archive (mtk_pso, nothing built), specialized for any colour format, and draws as one built on the device, a triple it does not hold is built, and one metal-tt
+// refuses is left out alone.
 // Without metal-tt (no Metal toolchain) it says so and passes
 #include "../nvn/nvn_mtl.m"
 uint64_t g_t0_ns;
@@ -22,6 +24,20 @@ static void put(NSString *path, NSString *text) { [NSFileManager.defaultManager 
 static int lib(NSString *dir, NSString *name, NSString *src) {   // <dir>/<name>.metallib from MSL, with the SDK's compiler
     put([NSString stringWithFormat:@"%@/%@.metal", dir, name], src);
     return sh([NSString stringWithFormat:@"cd %@ && xcrun -sdk macosx metal -c %@.metal -o %@.air && xcrun -sdk macosx metallib %@.air -o %@.metallib && rm %@.metal %@.air", dir, name, name, name, name, name, name]);
+}
+// One mesh threadgroup into a 4 x 4 target; its middle pixel
+static void mesh_pixel(id<MTLRenderPipelineState> pipeline, MTLPixelFormat format, uint8_t out[4]) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:4 height:4 mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget; td.storageMode = MTLStorageModeShared;
+    id<MTLTexture> target = [g_dev newTextureWithDescriptor:td];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor new]; pass.colorAttachments[0].texture = target; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 1, 1); pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLCommandBuffer> cb = [[g_dev newCommandQueue] commandBuffer]; id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+    MTLSize one = MTLSizeMake(1, 1, 1);
+    [enc setRenderPipelineState:pipeline]; [enc drawMeshThreadgroups:one threadsPerObjectThreadgroup:one threadsPerMeshThreadgroup:one]; [enc endEncoding];
+    [cb commit]; [cb waitUntilCompleted];
+    EXPECT("mesh draw completed", MTLCommandBufferStatusCompleted, cb.status);
+    [target getBytes:out bytesPerRow:16 fromRegion:MTLRegionMake2D(1, 1, 1, 1) mipmapLevel:0];
 }
 static void reset_counts(void) { g_pre_done = g_pre_built = g_pre_archived = g_pre_skipped = g_pre_failed = 0; }
 
@@ -46,16 +62,27 @@ int main(void) { @autoreleasepool {
     NSString *k = @"#include <metal_stdlib>\nusing namespace metal;\nkernel void main0(device uint *o [[buffer(0)]], uint i [[thread_position_in_grid]]) { o[i] = i * %d; }\n";
     NSString *kc = @"#include <metal_stdlib>\nusing namespace metal;\nconstant uint m [[function_constant(0)]];\n"
         "kernel void main0(device uint *o [[buffer(0)]], uint i [[thread_position_in_grid]]) { o[i] = is_function_constant_defined(m) ? m : i; }\n";
+    NSString *meshHead = @"#include <metal_stdlib>\nusing namespace metal;\nstruct P { float x; };\nstruct V { float4 p [[position]]; };\nstruct W { float4 p [[position]]; float4 c [[user(locn0)]]; };\n";
+    NSString *meshBody = @"  o.set_primitive_count(1); o.set_vertex(0, V{float4(-1, -1, %@, 1)}); o.set_index(0, 0); o.set_vertex(1, V{float4(3, -1, %@, 1)}); o.set_index(1, 1); o.set_vertex(2, V{float4(-1, 3, %@, 1)}); o.set_index(2, 2);\n";
+    NSString *m1 = [meshHead stringByAppendingFormat:@"using T = mesh<V, void, 3, 1, topology::triangle>;\n[[mesh]] void main0(T o) {\n%@}\n[[mesh]] void main0_z(T o) {\n%@}\n", [meshBody stringByReplacingOccurrencesOfString:@"%@" withString:@"0"], [meshBody stringByReplacingOccurrencesOfString:@"%@" withString:@"0.5"]];
+    NSString *m2 = [meshHead stringByAppendingFormat:@"using T = mesh<V, void, 3, 1, topology::triangle>;\n[[mesh]] void main0(T o, const object_data P &p [[payload]]) {\n%@}\n", [meshBody stringByReplacingOccurrencesOfString:@"%@" withString:@"p.x"]];
+    NSString *t2 = [meshHead stringByAppendingString:@"[[object]] void main0(object_data P &p [[payload]], mesh_grid_properties g) { p.x = 0.25; g.set_threadgroups_per_grid(uint3(1, 1, 1)); }\n"];
+    NSString *fu = [meshHead stringByAppendingString:@"fragment float4 main0(W i [[stage_in]]) { return i.c; }\n"];   // reads an output the mesh shaders do not write: metal-tt and the device refuse the pipeline
     [NSFileManager.defaultManager createDirectoryAtPath:msl withIntermediateDirectories:YES attributes:nil error:nil];
-    if (lib(msl, @"v1_bp", v) || lib(msl, @"f1_b", [NSString stringWithFormat:f, 1, 0]) || lib(msl, @"f2_b", [NSString stringWithFormat:f, 0, 1]) || lib(msl, @"fc_b", fc) ||
+    if (lib(msl, @"m1_b", m1) || lib(msl, @"m2_b", m2) || lib(msl, @"t2_b", t2) || lib(msl, @"fu_b", fu) || lib(msl, @"v1_bp", v) || lib(msl, @"f1_b", [NSString stringWithFormat:f, 1, 0]) || lib(msl, @"f2_b", [NSString stringWithFormat:f, 0, 1]) || lib(msl, @"fc_b", fc) ||
         lib(msl, @"c1_b", [NSString stringWithFormat:k, 2]) || lib(msl, @"c1_bt", [NSString stringWithFormat:k, 3]) || lib(msl, @"c2_b", [NSString stringWithFormat:k, 4]) ||
         lib(msl, @"c3_b", [NSString stringWithFormat:k, 5]) || lib(msl, @"cc_b", kc)) {
         printf("t_pso_bundle: no Metal compiler (xcrun metal), GPU checks not run; %d file checks failed\n", failed); return failed != 0; }
     put([msl stringByAppendingPathComponent:@"v1_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"entry\": \"main0\", \"entry_z\": \"main0_z\", \"pull\": {}, \"vertex_inputs\": []}", DMSH_CHAIN]);
-    for (NSString *k in @[@"f1", @"f2", @"fc"]) put([msl stringByAppendingFormat:@"/%@_b.json", k], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"entry\": \"main0\"}", DMSH_CHAIN]);
+    for (NSString *k in @[@"f1", @"f2", @"fc"]) put([msl stringByAppendingFormat:@"/%@_b.json", k], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"entry\": \"main0\"}", DMSH_CHAIN]);
     for (NSString *c in @[@"c1", @"c2", @"c3", @"cc"]) put([msl stringByAppendingFormat:@"/%@_b.json", c], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"stage\": \"cs\", \"entry\": \"main0\"%@}",
                                                 DMSH_CHAIN, [c isEqualToString:@"c1"] ? @", \"tensor\": {\"entry\": \"main0\", \"imma\": 1}" : @""]);
-    put([tables stringByAppendingPathComponent:@"shader_map.tsv"], @"package\tindex\tstage\tdm_ctl_sha16\tsource\ncs.bin\t0\tcompute\tc1\tx\ncs.bin\t1\tcompute\tc2\tx\ncs.bin\t2\tcompute\tcc\tx\n");
+    put([msl stringByAppendingPathComponent:@"m1_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"entry\": \"main0\", \"entry_z\": \"main0_z\", \"mesh_stage\": {\"kind\": \"ms\", \"threads\": 1, \"payload\": 0, \"task\": false}}", DMSH_CHAIN]);
+    put([msl stringByAppendingPathComponent:@"m2_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"entry\": \"main0\", \"mesh_stage\": {\"kind\": \"ms\", \"threads\": 1, \"payload\": 4, \"task\": true}}", DMSH_CHAIN]);
+    put([msl stringByAppendingPathComponent:@"t2_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"entry\": \"main0\", \"mesh_stage\": {\"kind\": \"ts\", \"threads\": 1, \"payload\": 4, \"task\": true}}", DMSH_CHAIN]);
+    put([msl stringByAppendingPathComponent:@"fu_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"entry\": \"main0\"}", DMSH_CHAIN]);
+    put([tables stringByAppendingPathComponent:@"mesh_pipelines.tsv"], @"# triples\n-\tm1\tf1\nt2\tm2\tf1\n-\tm1\tfu\n");
+    put([tables stringByAppendingPathComponent:@"shader_map.tsv"], @"package\tindex\tstage\tdm_ctl_sha16\tsource\ncs.bin\t0\tcompute\tc1\tx\ncs.bin\t1\tcompute\tc2\tx\ncs.bin\t2\tcompute\tcc\tx\nms.bin\t0\tmesh\tm1\tx\nms.bin\t1\tmesh\tm2\tx\nts.bin\t0\ttask\tt2\tx\n");
     setenv("DM_NVN_HMMA_TENSOR", "1", 1);   // the TensorOps libraries on any GPU, as on an Apple10 Mac by default
     put([tables stringByAppendingPathComponent:@"shader_pairs.tsv"], @"# pairs\nv1\tf1\nv1\tf2\nv1\tfc\n");
     setenv("DM_NVN_SHMAP", [tables stringByAppendingPathComponent:@"shader_map.tsv"].UTF8String, 1);
@@ -65,8 +92,8 @@ int main(void) { @autoreleasepool {
     NSString *gpu = g_dev.architecture.name;
     // the archive as build_ipa.sh makes it (the tool's own folder: this file is dm/gfx/tests/t_pso_bundle.m)
     NSString *tool = [[@(__FILE__) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"../tools/pso_offline.py"];
-    if (sh([NSString stringWithFormat:@"python3 %@ --platform macos --gpu %@ --msl %@ --pairs %@/shader_pairs.tsv --shader-map %@/shader_map.tsv --out %@ --work %@/work > %@/pso_offline.log 2>&1",
-            tool, gpu, msl, tables, tables, bundle, root, root])) {
+    if (sh([NSString stringWithFormat:@"python3 %@ --platform macos --gpu %@ --msl %@ --pairs %@/shader_pairs.tsv --shader-map %@/shader_map.tsv --mesh %@/mesh_pipelines.tsv --out %@ --work %@/work > %@/pso_offline.log 2>&1",
+            tool, gpu, msl, tables, tables, tables, bundle, root, root])) {
         NSString *log = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"pso_offline.log"] encoding:NSUTF8StringEncoding error:nil];
         if ([log containsString:@"metal-tt is not available"]) { printf("t_pso_bundle: no metal-tt (xcodebuild -downloadComponent MetalToolchain), GPU checks not run; %d file checks failed\n", failed); return failed != 0; }
         fprintf(stderr, "pso_offline.py failed:\n%s\n", log.UTF8String); return 1;
@@ -131,6 +158,41 @@ int main(void) { @autoreleasepool {
         EXPECT("compute with constants, not in the map: not from the bundle", a0 + 2, g_cps_arch);
         dispatch_sync(cps_harvest_q(), ^{});
         EXPECT("compute not in the map: captured into this device's archive, the one with constants not", n0 + 1, g_arch_new);
+    }
+    // task / mesh pipelines: the triples of mesh_pipelines.tsv come from the bundle at the first draw, whatever the colour state, and draw as one built on the device; another triple is built
+    @autoreleasepool {
+        NSString *log = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"pso_offline.log"] encoding:NSUTF8StringEncoding error:nil];
+        EXPECT("mesh: metal-tt's refusal left out one pipeline", 1, [log containsString:@"refused the task / mesh pipeline - m1_b fu_b: left out"]);
+        NvShader *m1 = shader_load(@"m1_b", 4, 0), *m2 = shader_load(@"m2_b", 4, 0), *t2 = shader_load(@"t2_b", 3, 0), *f1 = shader_load(@"f1_b", 1, 0), *f2 = shader_load(@"f2_b", 1, 0);
+        EXPECT("mesh: shaders loaded", 1, m1 && m2 && t2 && f1 && f2);
+        state_reset(); S.chmask.mask = 15; memset(g_pass.cfmt, 0, sizeof g_pass.cfmt); g_pass.cfmt[0] = MTLPixelFormatRGBA8Unorm; g_pass.dfmt = MTLPixelFormatDepth32Float; g_pass.sfmt = 0; g_pass.samples = 1;
+        NvProg *raster = [NvProg new]; raster->sh[1] = f1;
+        uint64_t a0 = atomic_load(&g_mtk_arch);
+        g_mtk.ts = nil; g_mtk.ms = m1;
+        id<MTLRenderPipelineState> plain = mtk_pso(raster);
+        EXPECT("mesh: a pipeline", 1, plain != nil);
+        EXPECT("mesh: from the bundle", a0 + 1, atomic_load(&g_mtk_arch));
+        g_mtk.ts = t2; g_mtk.ms = m2;
+        id<MTLRenderPipelineState> tasked = mtk_pso(raster);
+        EXPECT("mesh with a task shader: a pipeline", 1, tasked != nil);
+        EXPECT("mesh with a task shader: from the bundle", a0 + 2, atomic_load(&g_mtk_arch));
+        g_pass.cfmt[0] = MTLPixelFormatBGRA8Unorm;   // another colour format, the same base
+        id<MTLRenderPipelineState> other = mtk_pso(raster);
+        EXPECT("mesh, another colour format: a pipeline", 1, other != nil && other != tasked);
+        EXPECT("mesh, another colour format: from the bundle", a0 + 3, atomic_load(&g_mtk_arch));
+        g_pass.cfmt[0] = MTLPixelFormatRGBA8Unorm; g_pass.dfmt = 0; g_mtk.ts = nil; g_mtk.ms = m1; raster->sh[1] = f2;   // built on the device: its depth format is the target's
+        id<MTLRenderPipelineState> built = mtk_pso(raster);   // not in the table: the lookup misses and it is built, so a failed lookup costs nothing
+        EXPECT("mesh not in the table: a pipeline", 1, built != nil);
+        EXPECT("mesh not in the table: not from the bundle", a0 + 3, atomic_load(&g_mtk_arch));
+        if (plain && tasked && other && built) {
+            uint8_t a[4], b[4], c[4], d[4];
+            mesh_pixel(plain, MTLPixelFormatRGBA8Unorm, a); mesh_pixel(tasked, MTLPixelFormatRGBA8Unorm, b); mesh_pixel(other, MTLPixelFormatBGRA8Unorm, c); mesh_pixel(built, MTLPixelFormatRGBA8Unorm, d);
+            EXPECT("mesh draw: red from the bundle's pipeline", 0xff0000ffu, (uint32_t)a[0] << 24 | (uint32_t)a[1] << 16 | (uint32_t)a[2] << 8 | a[3]);
+            EXPECT("mesh draw with a task shader: its payload reached the mesh stage", 1, !memcmp(a, b, 4));
+            EXPECT("mesh draw, another colour format", 0x0000ffffu, (uint32_t)c[0] << 24 | (uint32_t)c[1] << 16 | (uint32_t)c[2] << 8 | c[3]);
+            EXPECT("mesh draw built on the device", 0x00ff00ffu, (uint32_t)d[0] << 24 | (uint32_t)d[1] << 16 | (uint32_t)d[2] << 8 | d[3]);
+        }
+        g_mtk.ts = g_mtk.ms = nil;
     }
     // A separate output forces one base per compiler invocation, then metal-pack merges both for this GPU.
     NSString *batched = [root stringByAppendingPathComponent:@"batched"];
