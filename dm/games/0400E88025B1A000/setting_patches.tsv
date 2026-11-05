@@ -1,0 +1,14 @@
+# Setting patches (dm/games/README.md, Setting patches). Star Fox's settings are cvars, which it reads from its program arguments as it registers them ("-<name, '.' as '_'>=<value>",
+# main+0xb6b0740; docs/reference/services.md, Program arguments), so its rows are argument rows (module args) and hold on any build.
+# variable	value	label	module	build	offset	original	new	[when]   (a label row: variable value label -)
+#
+# Render resolution: the scene is the output times render.resolution_scale_console, which the game's data sets to 0.5 for a Switch 2 (data/eclipse/cvars/game.cvar): DLSS (MetalFX here)
+# anti-aliases the scene at its size and the NDSR network takes it to the output, at 1.5, 2 or 3 (headless, docked on a 4K screen: 2560x1440, 1920x1080 and 1280x720 of 3840x2160;
+# GPU p50 in the intro 14.7, 10.4 and 9.1 ms). At 1.0 the game uses neither, its own anti-aliasing at the output's size (18.8 ms). NDSR takes only factors that do not stretch the output
+# (render.ndsr_no_stretch): at 1.6875 (Balanced) or 1.333 the game runs neither DLSS nor NDSR, so there is no Balanced row. The data also sets render.ndsr_disables_dynres: its dynamic
+# resolution is off while NDSR upscales, and there is no dynamic row
+DM_UPSCALE_RATIO	game	Game default (2.0)	-
+DM_UPSCALE_RATIO	1.0	Native (1.0, no upscaler)	args	-	-	-	-render_resolution_scale_console=1.0
+DM_UPSCALE_RATIO	1.5	Quality (1.5)	args	-	-	-	-render_resolution_scale_console=0.6666667
+DM_UPSCALE_RATIO	2.0	Performance (2.0)	args	-	-	-	-render_resolution_scale_console=0.5
+DM_UPSCALE_RATIO	3.0	Ultra performance (3.0)	args	-	-	-	-render_resolution_scale_console=0.3333333

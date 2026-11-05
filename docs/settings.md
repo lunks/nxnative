@@ -137,6 +137,8 @@ Mac only, experimental, for Donkey Kong Bananza (an app built with a tree that h
 
 Mac only, for Donkey Kong Bananza. **Game default** keeps the game's own dynamic resolution, as on a Switch: it starts each level at its output's size without its upscaler, and renders smaller, down to half the output's width, once frames run late. The others set a rate:
 
+Star Fox (Mac only): **Game default** renders half the output's width, as on a docked Switch 2, and its own upscaler doubles it; **Quality** renders two thirds of it, **Ultra performance** a third, and **Native** the output itself with the game's own edge smoothing and no upscaler. Docked on a 4K screen that is 1920x1080, 2560x1440, 1280x720 and 3840x2160. The game's upscaler takes no other rate, so there is no **Balanced**, and its dynamic resolution stays off while it upscales, as on the console.
+
 | Option | Rate | Docked (2880×1620) | Handheld (1920×1080) |
 |---|---|---|---|
 | Native | 1.0 | 2880×1620 | 1920×1080 |

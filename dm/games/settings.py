@@ -184,11 +184,23 @@ def build(gid, patched, control):
             if values == 'patches' and var not in popts: sys.exit(f'settings.tsv:{n}: values patches needs the condition patches:{var} (the profile\'s setting patches for this build)')
             opts = [list(l) for l in langs] if values == 'languages' else [list(o) for o in popts[var]] if values == 'patches' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
-            own = [w for c in m.get('conflicts', '').split(',') for w in c.partition(':')[2].split('|') if w]
-            for w in own:   # a patches row's values are known only now, for the build packed
+            if values == 'patches' and 'conflicts' in m:   # a patches row's values are known only now, for the game packed: a conflict on a value it does not offer goes (Star Fox has no
+                # Native (MetalFX AA)), and a clause left without values with it
+                have, keep = [o[0] for o in opts], []
+                for c in m['conflicts'].split(','):
+                    head, _, ws = c.partition(':'); ws = '|'.join(w for w in ws.split('|') if w in have)
+                    if ws: keep.append(f'{head}:{ws}')
+                if keep: s['conflicts'] = ','.join(keep)
+                else: s.pop('conflicts', None)
+            own = [w for c in s.get('conflicts', '').split(',') for w in c.partition(':')[2].split('|') if w]
+            for w in own:
                 if w not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: conflicts names a value this row does not offer: {w}')
             if s['default'] in own: sys.exit(f'settings.tsv:{n}: a conflicting value cannot be the default (the row goes back to it): {s["default"]}')
-            for v, _, r in (p.partition(':') for p in m['rates'].split('|')) if 'rates' in m else ():
+            if values == 'patches' and 'rates' in m:   # the same for the rates of values it does not offer
+                rs = '|'.join(p for p in m['rates'].split('|') if p.partition(':')[0] in [o[0] for o in opts])
+                if rs: s['rates'] = rs
+                else: s.pop('rates', None)
+            for v, _, r in (p.partition(':') for p in s['rates'].split('|')) if 'rates' in s else ():
                 if v not in [o[0] for o in opts]: sys.exit(f'settings.tsv:{n}: rates names a value this row does not offer: {v}')
                 if float(r) < 1: sys.exit(f'settings.tsv:{n}: rates gives {v} a rate below 1: {r}')
             if s['default'] not in [o[0] for o in opts]: s['default'] = opts[0][0]   # a default the game does not offer (a language it lacks): its first

@@ -280,7 +280,7 @@ def page():
     summary, sections = [], []
     for g in gs:
         m = mods.get(g.id)
-        sp = [r for r in game.setting_patches(g) if 'module' in r]   # the write rows of its setting patches
+        sp = [r for r in game.setting_patches(g) if 'module' in r and 'arg' not in r]   # the write rows of its setting patches (argument rows write no code)
         if not m and g.id not in host_games and not sp: continue
         text = files[g.id].read_text() if m else ''
         cuts, obs, fs, mc, caps = (getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP', 'MATCH_CUTS', 'CAPABILITIES'))

@@ -78,6 +78,13 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertEqual((r['DM_SHADOW_MAP_SIZE']['default'],r['DM_SHADOW_MAP_SIZE']['options']),('game',[['game','Game default (2048)'],['3072','3072'],['4096','4096']]))
         self.assertIn('crash',r['DM_SHADOW_MAP_SIZE']['note'])
         self.assertNotIn('level',r['DM_SHADOW_RES'])   # advanced settings
+    def test_star_fox_render_resolution(self):   # argument rows (any build): Render resolution's rates, without the values Star Fox lacks in the row's conflicts and rates, no Dynamic resolution
+        r=self.rows('0400E88025B1A000','# BUILD_ID\t'+'0'*32+'\n')
+        q=r['DM_UPSCALE_RATIO']
+        self.assertEqual([o[0] for o in q['options']],['game','1.0','1.5','2.0','3.0'])
+        self.assertEqual(q['conflicts'],'DM_UPSCALER=game:3.0','the conflicts on Native (MetalFX AA), which Star Fox does not offer, go')
+        self.assertNotIn('rates',q)
+        self.assertNotIn('DM_UPSCALE_DYNAMIC',r,'no softest rate, no dynamic resolution row')
     def test_bananza_resolution_model_rows(self):   # the Mac window's sections: Resolution in the picture's order, then Effects, Frame rate and HDR
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':'mac','GFXAPI':'nvn'}):
             (Path(tmp)/'main.fixups.tsv').write_text(f'# BUILD_ID\t{self.DKB_MAIN}\n# SINGLE_UPSCALE\t1\n')
