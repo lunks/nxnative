@@ -293,6 +293,14 @@ A decoder hands out as many outputs as it has slots, and while every slot is tak
 - **Check:** `make -C dm/host/tests GAME=<id> run` runs `t_codec_video` (AddressSanitizer and UBSan), which covers the AV1 and SDK 22 forms, native images and the av1C record, and decodes a 64x64 AV1 key frame (SVT-AV1) on each backend the Mac has, read back as NV12.
 - **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 82 movies in WebM at 2560x1440; the opening's 3,301 pictures play. On #957's branch, VideoToolbox and dav1d gave the same pictures, bit for bit, over the opening's first 600 (about 450 pictures a second each on an M3 Pro), and a tester's M1 Pro played the first two movies through dav1d, smooth and in sync ([seedds/nxnative#927](https://github.com/seedds/nxnative/issues/927)).
 
+### dav1d decodes frames in parallel, outside the decoder lock
+
+- **Symptom:** on a Mac without hardware AV1 (before M3), a heavy 60 fps movie cannot reach 60 fps: Ocarina of Time's 1080p60 title movie took 9-20 ms a packet on an M1 Max, some packets 134 ms, and the game's `Release` and `Acquire` calls waited behind them.
+- **Cause:** dav1d ran one frame at a time (`max_frame_delay` 1, 2 threads), and more threads on one frame do not help: it scales by frames. The decode also ran under the decoder's lock.
+- **Fix:** 8 threads and 8 frames in flight. A picture then comes some packets after its own, sometimes with others: `mav1_decode_ts` carries the packet's timestamp through dav1d to its picture, `mav1_next` gives the rest of a burst and `mav1_drain` the frames in flight at the end of the stream. `cv_dec_submit` decodes AV1 under a decode lock of its own (lock order: decode lock, then decoder lock), so VideoToolbox's decode leaves the decoder lock too. A packet may add `CV_BURST` pictures past `CV_HOLD`; packets are still refused at `CV_HOLD`.
+- **Check:** `t_codec_video`: 20 packets through dav1d give 20 pictures in order, each with its packet's timestamp.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), by MetaIX (upstream PR #1377): at most 26.6 ms a packet on the M1 Max. The M5 decodes on VideoToolbox, so there only the lock changes.
+
 ### SDK 19's decoder forms
 
 - **Symptom:** an abort in `nn::codec` (the SDK's own decoder client, which opens a service the host does not have) when a movie starts in a game built with SDK 19 for the Switch 2.
