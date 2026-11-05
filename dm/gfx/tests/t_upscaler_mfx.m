@@ -2,7 +2,7 @@
 // 1920x1080 image is replaced by the spatial scaler, which fills the whole image with the texture's colour; equal sizes, another shader, and DM_UPSCALER unset
 // (the last run) leave the dispatch to the shader. Runs under any profile: the named shader is the profile's first upscaler (DM_GAME_UPSCALER_KEYS), and a profile with
 // none swaps no shader; the MetalFX draw itself (up_mfx_encode) does not look at the key. The colour (up_mfx_color) comes from synthetic code holding the curves' constants: a variant with sRGB input
-// comes out decoded to linear, and one whose output stays encoded is left to its shader
+// comes out decoded to linear, and one with no curve (encoded in and out) stores the bytes its texture holds into its 8-bit image (bound raw, as an sRGB image is), or is left to its shader for a float image
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -39,6 +39,12 @@ static int matches(id<MTLTexture> t, const float inside[4], MTLRegion region, co
     }
     return 1;
 }
+static int rgba8_at(id<MTLTexture> t, NSUInteger x, NSUInteger y, uint8_t px[4]) {   // one texel's bytes of an 8-bit RGBA texture
+    id<MTLBuffer> b = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared]; if (!b) return 0;
+    id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:b destinationOffset:0 destinationBytesPerRow:4 destinationBytesPerImage:4];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; memcpy(px, b.contents, 4); return 1;
+}
 // Code holding each constant 12 times, among others: the shape of a real variant's curves
 static int color_of(const float *f32, int n32, const float *f16, int n16) {
     uint8_t code[4096]; size_t o = 0;
@@ -62,10 +68,10 @@ int main(void) { @autoreleasepool {
     CHECK(color_of(both, 4, NULL, 0) == UP_COLOR_LINEAR, "an encode and a decode in floats: linear input and output (Bananza)");
     CHECK(color_of(NULL, 0, dec16, 3) == UP_COLOR_SRGB, "only a decode, in half floats: sRGB input, linear output (Splatoon Raiders)");
     CHECK(color_of(enc, 2, NULL, 0) == UP_COLOR_KEEP, "an encode with no decode: the output stays encoded, the shader runs");
-    CHECK(color_of(NULL, 0, NULL, 0) == UP_COLOR_KEEP, "no curve: the output stays encoded, the shader runs");
+    CHECK(color_of(NULL, 0, NULL, 0) == UP_COLOR_SRGB_ENC, "no curve: encoded in and out (Splatoon Raiders' and Star Fox's other variants)");
     CHECK(color_of(dec, 2, NULL, 0) == UP_COLOR_KEEP, "a shape no pack has shown (a decode in floats, no encode): the shader runs");
     CHECK(color_of(NULL, 0, (const float[4]){0.040435791015625f, 2.3984375f, 0.07745361328125f, enc16[0]}, 4) == UP_COLOR_KEEP, "a half float encode must not read as encoded input: the shader runs");
-    CHECK(up_mfx_color(rare, sizeof rare) == UP_COLOR_KEEP, "a constant used once is chance, not a curve");
+    CHECK(up_mfx_color(rare, sizeof rare) == UP_COLOR_SRGB_ENC, "a constant used once is chance, not a curve: no curve");
     const char *up = getenv("DM_UPSCALER"); int on = up && !strcmp(up, "metalfx");
     tex_t in = texture(77, 960, 540, NVN_FORMAT_RGBA16F), out = texture(78, 1920, 1080, NVN_FORMAT_RGBA16F), same = texture(79, 960, 540, NVN_FORMAT_RGBA16F);
     out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; same.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
@@ -122,6 +128,27 @@ int main(void) { @autoreleasepool {
         CHECK(up_mfx_encode(named), "MetalFX takes a packed sRGB-encoded subrectangle");
         CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the packed sRGB submission completes");
         CHECK(matches(written, decoded, MTLRegionMake2D(13, 9, 1900, 1060), black), "the packed sRGB input comes out decoded, in its destination rectangle only");
+        // Encoded in and out (Star Fox's ddc729bcdb4c8df9): encoded bytes read through an RGBA8 texture, stored into an RGBA8_SRGB image, which an image binding loads and stores raw:
+        // the image ends with the texture's bytes
+        {
+            tex_t sin = texture(82, 960, 540, NVN_FORMAT_RGBA8), sout = texture(83, 1920, 1080, NVN_FORMAT_RGBA8_SRGB); sout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+            mtl_reg_tex(706, &sin, NULL); mtl_reg_image(707, &sout, NULL);
+            fill(tex_mtl(&sin), MTLClearColorMake(0.5, 0.25, 0.75, 1)); fill(tex_mtl(&sout), MTLClearColorMake(0, 0, 0, 1));   // bytes about 128, 64, 191
+            { const uint32_t r[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], r, sizeof r); } S.tex[5][0] = 706; S.img[5][1] = 707;
+            named->up_color = UP_COLOR_SRGB_ENC; mtl_sub_begin();
+            CHECK(up_mfx_encode(named), "MetalFX takes encoded input to encoded output");
+            CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the encoded submission completes");
+            os_unfair_lock_lock(&g_rmu); id<MTLTexture> eo = tex_by_id(707); os_unfair_lock_unlock(&g_rmu);
+            uint8_t want[4] = {0}, got[4] = {0}; int same = rgba8_at(tex_mtl(&sin), 480, 270, want);
+            const NSUInteger at[5][2] = {{0, 0}, {1919, 0}, {960, 540}, {0, 1079}, {1919, 1079}};
+            for (int i = 0; i < 5; i++) { same &= rgba8_at(eo, at[i][0], at[i][1], got); for (int c = 0; c < 4; c++) same &= abs((int)got[c] - (int)want[c]) <= 2; }
+            if (!same) fprintf(stderr, "encoded output %u %u %u %u, texture %u %u %u %u\n", got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+            CHECK(same, "the encoded output holds the texture's bytes, neither decoded nor encoded twice");
+            S.img[5][1] = 702; mtl_sub_begin(); uint64_t kept0 = g_up_mfx_kept;
+            CHECK(!up_mfx_encode(named) && g_up_mfx_kept == kept0 + 1, "encoded in and out into a float image keeps the shader");
+            mtl_wait(mtl_sub_commit(), 5000000000ull);
+            named->up_color = UP_COLOR_SRGB;
+        }
         named->up_color = UP_COLOR_LINEAR;
         fill(tex_mtl(&in), MTLClearColorMake(colour[0], colour[1], colour[2], colour[3])); fill(written, MTLClearColorMake(0, 0, 0, 1));
         { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); } S.tex[5][0] = 701; mtl_sub_begin();
