@@ -195,54 +195,11 @@ def hmma_msl(msl):
     if not h: return msl
     _, start, end, v, _ = h
     return msl[:start] + HMMA_BODY % v + msl[end:]
-# The same helper through Metal 4 TensorOps (MetalPerformancePrimitives matmul2d, one SIMD-group, half x half -> half) over the same block, for the side library <key>_bt that the
-# host loads instead of <key>_b on GPUs with neural accelerators in their shader cores (Apple10: M5; DM_NVN_HMMA_TENSOR): Ampere HMMA through TensorOps in docs/reference/shaders.md.
-# Tensor extents run innermost first: A (k, m), B as stored, transposed (k, n) with transpose_right, C / D (n, m). The calls whose C is a constant zero (three of four in agl's
-# networks: a tile's first HMMA) go to a twin, dmsh_hmma16816_f16_z, in multiply mode, which neither stores C nor reads it
-HMMA_TENSOR_INCLUDE = '#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n'
-HMMA_TENSOR_C = '    s[192 + g * 4 + t] = uint(%(acc0)s); s[192 + (g + 8) * 4 + t] = uint(%(acc1)s);\n'
-HMMA_TENSOR_BODY = '''{
-    threadgroup uint* s = &%(scr)s[uint(%(blk)s)];
-    uint g = uint(%(lane)s) >> 2, t = uint(%(lane)s) & 3;
-    s[g * 8 + t] = uint(%(a0)s); s[(g + 8) * 8 + t] = uint(%(a1)s); s[g * 8 + 4 + t] = uint(%(a2)s); s[(g + 8) * 8 + 4 + t] = uint(%(a3)s);
-    s[128 + g * 8 + t] = uint(%(b0)s); s[128 + g * 8 + 4 + t] = uint(%(b1)s);
-%(cstore)s    simdgroup_barrier(mem_flags::mem_threadgroup);
-    threadgroup half* h = (threadgroup half*)s;
-    {
-        constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(16, 8, 16, false, true, false, mpp::tensor_ops::matmul2d_descriptor::mode::%(mode)s);
-        mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;
-        tensor<threadgroup half, extents<int, 16, 16>, tensor_inline> ta(h, extents<int, 16, 16>());
-        tensor<threadgroup half, extents<int, 16, 8>, tensor_inline> tb(h + 256, extents<int, 16, 8>());
-        tensor<threadgroup half, extents<int, 8, 16>, tensor_inline> td(h + 384, extents<int, 8, 16>());
-        op.run(ta, tb, td);
-    }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-    uint d0 = s[192 + g * 4 + t], d1 = s[192 + (g + 8) * 4 + t];
-    simdgroup_barrier(mem_flags::mem_threadgroup);
-    %(d1)s = as_type<%(dt)s>(d1);
-    return as_type<%(rt)s>(d0);
-}'''
-def hmma_tensor_msl(msl):
-    """The shader with its helper through TensorOps (see HMMA_TENSOR_BODY), compiled with -std=metal4.0; None for a shader without the helper. Raises ValueError as hmma_helper"""
-    h = hmma_helper(msl)
-    if not h: return None
-    head, start, end, v, order = h
-    if '#include <metal_stdlib>\n' not in msl[:head]: raise ValueError('dmsh_hmma16816_f16: no #include <metal_stdlib> to put the TensorOps headers after')
-    attrs = 'static inline __attribute__((always_inline))\n'
-    zero = ('\n\n' + (attrs if msl[:head].endswith(attrs) else '') + msl[head:start].replace('dmsh_hmma16816_f16(', 'dmsh_hmma16816_f16_z(', 1) +
-            HMMA_TENSOR_BODY % dict(v, cstore='', mode='multiply'))
-    rest = msl[end:]
-    # a constant zero C: a literal 0, or a variable spirv-cross declares as `int _N = 0;` and never assigns again
-    zeros = {n for n in re.findall(r'\bint (_\w+) = 0;', rest) if len(re.findall(r'\b%s = ' % n, rest)) == 1} | {'0'}
-    at = [order.index('acc0'), order.index('acc1')]
-    def call(c):
-        args = [a.strip() for a in c.group(1).split(',')]
-        return 'dmsh_hmma16816_f16_z(' + c.group(1) + ')' if len(args) == len(order) and all(args[i] in zeros for i in at) else c.group(0)
-    rest = re.sub(r'\bdmsh_hmma16816_f16\(([^()]*)\)', call, rest)
-    out = msl[:start] + HMMA_TENSOR_BODY % dict(v, cstore=HMMA_TENSOR_C % v, mode='multiply_accumulate') + zero + rest
-    return out.replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + HMMA_TENSOR_INCLUDE, 1)
-# Ampere IMMA.16832 on 8-bit elements of one sign (Star Fox's character networks) through the same TensorOps, for the TensorOps library <key>_bt: its source <key>_bi.metal is the
-# shader translated again with the products of each IMMA as a call of dmsh_imma16832_s8 / _u8(lane, block, A0..A3, B0, B1, out P1, P2, P3) → P0 and the subgroup's 320-word block of
+# Ampere IMMA.16832 on 8-bit elements of one sign (Star Fox's character networks) through Metal 4 TensorOps (MetalPerformancePrimitives), for the TensorOps library <key>_bt that the
+# host loads instead of <key>_b on GPUs with neural accelerators in their shader cores (Apple10: M5; DM_NVN_HMMA_TENSOR): Ampere IMMA in docs/reference/shaders.md. HMMA gets no such
+# library: inlined, matmul2d took minutes to compile, and out of line its dispatches were slower than through simdgroup_matrix (Ampere HMMA through TensorOps, the same file).
+# Its source <key>_bi.metal is the shader translated again with the products of each IMMA as a call of dmsh_imma16832_s8 / _u8(lane, block, A0..A3, B0, B1, out P1, P2, P3) → P0
+# and the subgroup's 320-word block of
 # the scratch shared memory as the last argument (imma_source; InstEmitAmpereTensor.AImma, TensorPass, HelperFunctionManager.GenerateImma16832); the caller adds C, wrapping or
 # with .SAT clamping. Its <key>_b library keeps the per-lane form. Here the helper's body becomes matmul2d (16 x 8 x 32, one SIMD-group, int8 x int8 or uint8 x uint8 -> int32) in
 # multiply mode over the block: A (k, m) at words 0..127, B as stored, transposed (k, n) at 128..191 with transpose_right, P (n, m) at 192..319. A sum of 32 products of bytes is
@@ -251,6 +208,7 @@ def hmma_tensor_msl(msl):
 # the HMMA library of its 60f3f31a0e0132e1, 288 calls: 94 s), while the called helper's dispatch is still 7 to 25 times faster than the per-lane one (docs/reference/shaders.md)
 IMMA_ROLES = ['lane', 'blk', 'a0', 'a1', 'a2', 'a3', 'b0', 'b1', 'p1', 'p2', 'p3']
 IMMA_HELPERS = {'dmsh_imma16832_s8': 'int8_t', 'dmsh_imma16832_u8': 'uint8_t'}
+IMMA_TENSOR_INCLUDE = '#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n'
 IMMA_NOINLINE = 'static __attribute__((noinline))\n'
 IMMA_TENSOR_BODY = '''{
     threadgroup uint* s = &%(scr)s[uint(%(blk)s)];
@@ -308,9 +266,8 @@ def imma_tensor_msl(msl):
         pre = msl[:head][:-len(attrs)] if msl[:head].endswith(attrs) else msl[:head]
         msl = pre + IMMA_NOINLINE + msl[head:start] + IMMA_TENSOR_BODY % dict(v, et=et) + msl[end:]
     if not found: return None
-    if HMMA_TENSOR_INCLUDE in msl: return msl   # its HMMAs went through TensorOps first (tensor_finish)
     if '#include <metal_stdlib>\n' not in msl: raise ValueError('dmsh_imma16832: no #include <metal_stdlib> to put the TensorOps headers after')
-    return msl.replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + HMMA_TENSOR_INCLUDE, 1)
+    return msl.replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + IMMA_TENSOR_INCLUDE, 1)
 def imma_calls(msl):   # the helper calls in a TensorOps library's source, without the helpers' own signatures
     return sum(len(re.findall(r'\b%s\(' % n, msl)) - (1 if re.search(r'\n\w+ %s\(' % n, msl) else 0) for n in IMMA_HELPERS)
 # Border colours: Maxwell's sampler takes any RGBA border colour, Metal's only transparent black, opaque black or opaque white, and the host's sampler gets the nearest of them
@@ -398,7 +355,7 @@ METAL_FP = dmsh_mtlcache.compiler_id('macosx') + ('\0iphoneos\0' + dmsh_mtlcache
 def mac_compile(msl, air, lib):   # same interface as ios_metal.compile; the precompiled header changes no output, so MAC_RECORD does not name it (dmsh_pch.py)
     dmsh_pch.compile(MAC_METAL, msl, air)
     subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', lib], check=True)
-# The TensorOps libraries (<key>_bt, hmma_tensor_msl) need Metal 4's language, as the Mac's other libraries do not
+# The TensorOps libraries (<key>_bt, imma_tensor_msl) need Metal 4's language, as the Mac's other libraries do not
 MAC_TENSOR_METAL = MAC_METAL + ['-std=metal4.0']
 MAC_TENSOR_RECORD = ' '.join(MAC_TENSOR_METAL) + '; xcrun -sdk macosx metallib'
 def mac_tensor_compile(msl, air, lib):   # through dmsh_pch as every library compile: the source on standard input, a header of its own for this language
@@ -738,37 +695,30 @@ def imma_source(key, w, j, binds, first, dr):
 
 TENSOR_STATS = collections.Counter()
 def tensor_finish(key, src, refl):
-    """A compute shader's TensorOps library <key>_bt, Mac only, through the MSL-keyed Metal cache: its HMMAs (hmma_tensor_msl) from its final MSL, or with its IMMAs (imma_tensor_msl)
-    from its TensorOps source <key>_bi.metal (imma_source) when it has one; reflection 'tensor' names its entry point, and 'primary' when it replaces <key>_b where TensorOps are taken
-    (IMMA alone: its pipeline compiles faster than the per-lane one, see IMMA_TENSOR_BODY). A shader with neither gets none (a stale one removed). Changes refl; the caller writes it"""
+    """A compute shader's TensorOps library <key>_bt, Mac only, through the MSL-keyed Metal cache: its IMMAs through matmul2d (imma_tensor_msl) from its TensorOps source
+    <key>_bi.metal (imma_source); reflection 'tensor' names its entry point. Where the host takes TensorOps the library replaces <key>_b (nvn_mtl.m cs_pipeline). A shader without that
+    source gets none (a stale one removed), HMMA alone included; one with HMMA too keeps it through simdgroup_matrix there, as in <key>_b (none seen). Changes refl; the caller writes it"""
     lib = os.path.join(out, key + '_bt.metallib'); refl.pop('tensor', None)
     def drop():
         try: os.unlink(lib)
         except FileNotFoundError: pass
-    if refl['stage'] != 'cs' or 'mac' not in TARGETS: drop(); return refl
     bi = os.path.join(out, key + '_bi.metal')
-    base = open(bi).read() if os.path.exists(bi) else None
-    where = 'per lane' if base else 'through simdgroup_matrix'
-    try:
-        h = hmma_tensor_msl(base or src)
-        v = (imma_tensor_msl(h or base) if base else None) or h
+    if refl['stage'] != 'cs' or 'mac' not in TARGETS or not os.path.exists(bi): drop(); return refl
+    try: v = imma_tensor_msl(open(bi).read())
     except ValueError as e:
-        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: no TensorOps library ({str(e)[:120]}): it runs {where} everywhere', flush=True)
+        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: no TensorOps library ({str(e)[:120]}): it runs per lane everywhere', flush=True)
         drop(); return refl
     if not v: drop(); return refl
     msl = os.path.join(w, key + '_bt.metal'); open(msl, 'w').write(v)
     try: MTL.compile('mac_tensor', msl, lib)
     except subprocess.CalledProcessError as e:
-        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: the TensorOps library does not compile ({str(e)[:120]}): it runs {where} everywhere', flush=True)
+        TENSOR_STATS['failed'] += 1; print(f'[RED] {key}: the TensorOps library does not compile ({str(e)[:120]}): it runs per lane everywhere', flush=True)
         drop(); return refl
     finally:
         try: os.unlink(msl)
         except FileNotFoundError: pass
     TENSOR_STATS['generated'] += 1
-    zero = v.count('dmsh_hmma16816_f16_z(') - 1 if h else 0   # the calls, without the helpers' own signatures
-    calls = v.count('dmsh_hmma16816_f16(') - 1 + zero if h else 0
-    imma = imma_calls(v)
-    refl['tensor'] = {'entry': refl.get('entry') or 'main0', 'calls': calls, 'zero_c': zero, **({'imma': imma, 'primary': not calls} if imma else {})}
+    refl['tensor'] = {'entry': refl.get('entry') or 'main0', 'imma': imma_calls(v)}
     return refl
 
 pc_of, loc = {}, {}
@@ -1684,7 +1634,7 @@ def finish(key, w, j, c1):
     if j['stage'] == 'vs': full = open(msl).read(); vin_finish(key, full, refl); pull_finish(key, full, refl)   # the shadow-input and pulling libraries (dmsh_vin.py, dmsh_pull.py), from the source with every entry point
     refl.update(side)   # the alpha test and logic operation entry points (ps_libraries)
     if j['stage'] == 'cs' and not mesh and res.get('imma_tensor') and 'mac' in TARGETS: imma_source(key, w, j, binds, first, dr)   # the source of a TensorOps library for IMMA
-    if j['stage'] == 'cs': tensor_finish(key, src, refl)   # the TensorOps library for HMMA and IMMA (see hmma_tensor_msl, imma_tensor_msl)
+    if j['stage'] == 'cs': tensor_finish(key, src, refl)   # the TensorOps library for IMMA (see imma_tensor_msl)
     write_refl(key, refl)
     fetch_finish(key, src, refl)
     return 'ok', '', refl
@@ -1789,7 +1739,7 @@ print(f'border correcting libraries (<key>_bb, border_plain): {BORDER_STATS["gen
 print(f'pulling libraries (<key>_bp, dmsh_pull.py): {PULL_STATS["generated"]} generated, {PULL_STATS["failed"]} failed to compile, {PULL_STATS["not generated"]} not generated, '
       f'{PULL_STATS["no stage input"]} vertex shaders without stage inputs (none needed)')
 print(f'IMMA TensorOps sources (<key>_bi.metal, imma_source): {BI_STATS["generated"]} generated, {BI_STATS["failed"]} failed')
-print(f'TensorOps libraries (<key>_bt, hmma_tensor_msl, imma_tensor_msl): {TENSOR_STATS["generated"]} generated, {TENSOR_STATS["failed"]} failed')
+print(f'TensorOps libraries (<key>_bt, imma_tensor_msl): {TENSOR_STATS["generated"]} generated, {TENSOR_STATS["failed"]} failed')
 print('mesh libraries (<vertex>_<geometry>_m3, dmsh_mesh.py): ' + (', '.join(f'{k} {v}' for k, v in MESH_STATS.items()) or 'none'))
 print(MTL.summary())
 for lvl in [k for k in st if k != 'ok']:

@@ -146,7 +146,7 @@ class Compute(unittest.TestCase):
 
     def test_pipelines_and_left_out(self):
         self.shader('c1', {'stage': 'cs', 'tensor': {'entry': 'main0'}}, {'_b': [('main0', False)], '_bt': [('main0', False)]})
-        self.shader('c2', {'stage': 'cs', 'tensor': {'entry': 'main0', 'primary': True}}, {'_b': [('main0', False)], '_bt': [('main0', False)]})   # IMMA: <key>_bt primary on an M5
+        self.shader('c2', {'stage': 'cs', 'tensor': {'entry': 'main0', 'imma': 1}}, {'_b': [('main0', False)], '_bt': [('main0', False)]})   # IMMA: <key>_bt in <key>_b's place on an M5
         self.shader('c3', {'stage': 'cs'}, {'_b': [('main0', True)]})   # function constants: the host specializes it, MTLDevice
         self.shader('c4', {'stage': 'cs', 'entry': 'k'}, {'_b': [('main0', False)]})
         self.shader('c5', {'stage': 'cs', 'chain': 'fedcba987654'}, {'_b': [('main0', False)]})

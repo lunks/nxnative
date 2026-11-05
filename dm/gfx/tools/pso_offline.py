@@ -14,7 +14,7 @@
 # the C rows of the profile's prewarm list (pso_manifest.tsv, recorded, in order), then every compute shader of its shader map (shader_map.tsv, stage compute), so a game whose list
 # names none (a provisional profile) still has them; per shader <key>_b, entry `entry`. Left out as the host would not find them: a reflection of another chain version or none, a
 # missing library or entry point, a function with function constants (the host specializes it through its library, fn_lib_spec, and builds that pipeline through the MTLDevice).
-# Not the TensorOps libraries <key>_bt (an M5's, hmma_tensor_on): metal-tt compiles them, but Metal finds no pipeline of theirs in the archive ("Undefined symbols:
+# Not the TensorOps libraries <key>_bt (an M5's, imma_tensor_on): metal-tt compiles them, but Metal finds no pipeline of theirs in the archive ("Undefined symbols:
 # __tensorops_impl_matmul2d_op_run_..."), and after that failed lookup it refuses to build the function at all (macOS 27.0, M5 Pro: a 16x8x16 matmul2d kernel built in 74 ms
 # without a lookup, and failed in 1 ms after one). The host never looks them up (cps_new)
 # Output folder (what the app bundles as pso/, the host's DM_PSO_BUNDLE):

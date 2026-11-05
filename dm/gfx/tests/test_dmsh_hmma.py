@@ -1,7 +1,6 @@
-"""Ampere HMMA.16816 with an f16 accumulator through simdgroup_matrix (dmsh_build.py hmma_msl) and through Metal 4 TensorOps (hmma_tensor_msl, the <key>_bt library): the
-rewrites of the translator's helper dmsh_hmma16816_f16 as spirv-cross writes it, its arguments and scratch array, the compile with the chain's Metal flags, and on this Mac's GPU
-the rewritten bodies against a CPU reference of PTX mma.m16n8k16 (f16 sources and accumulator) on random fragments, four SIMD-groups a threadgroup; for TensorOps also the
-calls whose C is a constant zero (dmsh_hmma16816_f16_z, multiply mode)."""
+"""Ampere HMMA.16816 with an f16 accumulator through simdgroup_matrix (dmsh_build.py hmma_msl): the rewrite of the translator's helper dmsh_hmma16816_f16 as spirv-cross writes
+it, its arguments and scratch array, the compile with the chain's Metal flags, and on this Mac's GPU the rewritten body against a CPU reference of PTX mma.m16n8k16 (f16 sources
+and accumulator) on random fragments, four SIMD-groups a threadgroup, C from the input and a constant zero C. HMMA has no TensorOps library (docs/reference/shaders.md)."""
 import ast
 from pathlib import Path
 import re
@@ -12,13 +11,13 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
 tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
-FUNCS = {'hmma_helper', 'hmma_msl', 'hmma_tensor_msl'}
+FUNCS = {'hmma_helper', 'hmma_msl'}
 selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in FUNCS)
             or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '').startswith('HMMA_') for t in n.targets))]
 scope = {'re': re}
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
-hmma_msl, hmma_tensor_msl = scope['hmma_msl'], scope['hmma_tensor_msl']
-METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']   # the chain's Mac flags (dmsh_build.py MAC_METAL); TensorOps add -std=metal4.0 (MAC_TENSOR_METAL)
+hmma_msl = scope['hmma_msl']
+METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']   # the chain's Mac flags (dmsh_build.py MAC_METAL)
 
 HEAD = '''#include <metal_stdlib>
 #include <simd/simd.h>
@@ -71,7 +70,7 @@ kernel void check(device const uint *in [[buffer(0)]], device uint *out [[buffer
 }
 '''
 # The GPU check: 64 threadgroups of 128 lanes, random halves in [-1, 1]; the reference sums in float and rounds once. simdgroup_matrix rounds the f16 accumulator as it goes,
-# as Ampere's f16 accumulator does (largest error 0.009); TensorOps round once (0.002). argv[2]: the tolerance's absolute part (plus 0.4 % of the value). Exit 2: no Metal 4
+# as Ampere's f16 accumulator does (largest error 0.009). argv[2]: the tolerance's absolute part (plus 0.4 % of the value). Exit 2: no Metal device
 RUNNER = r'''#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 static float h2f(uint16_t h) { __fp16 v; memcpy(&v, &h, 2); return (float)v; }
@@ -80,7 +79,6 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); NSError *e = nil;
         if (!dev) { printf("no Metal device\n"); return 2; }
-        if (argc > 3 && ![dev supportsFamily:MTLGPUFamilyMetal4]) { printf("no Metal 4 GPU family\n"); return 2; }
         double tol = atof(argv[2]);
         NSData *lib_data = [NSData dataWithContentsOfFile:@(argv[1])];
         id<MTLLibrary> lib = [dev newLibraryWithData:dispatch_data_create(lib_data.bytes, lib_data.length, nil, DISPATCH_DATA_DESTRUCTOR_DEFAULT) error:&e];
@@ -143,52 +141,15 @@ class HmmaRewrite(unittest.TestCase):
     def test_other_shaders_unchanged(self):
         src = HEAD + KERNEL.replace('dmsh_hmma16816_f16(', 'max(')
         self.assertEqual(hmma_msl(src), src)
-        self.assertIsNone(hmma_tensor_msl(src))
 
     def test_unexpected_signature_refused(self):
-        for f in (hmma_msl, hmma_tensor_msl):
-            with self.assertRaises(ValueError):
-                f(HEAD + HELPER.replace('thread const int& _42970, ', ''))
-
-
-class HmmaTensorRewrite(unittest.TestCase):
-    def setUp(self):
-        self.out = hmma_tensor_msl(HEAD + HELPER + KERNEL)
-
-    def test_headers(self):
-        self.assertIn('#include <metal_stdlib>\n#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n', self.out)
-
-    def test_multiply_accumulate_body(self):
-        body = body_of(self.out, 'dmsh_hmma16816_f16')
-        self.assertIn('mode::multiply_accumulate', body)
-        self.assertIn('matmul2d_descriptor(16, 8, 16, false, true, false,', body)   # B is stored transposed
-        self.assertIn('mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;', body)
-        self.assertIn('s[192 + (g + 8) * 4 + t] = uint(_42970)', body)           # C stored
-        self.assertIn('_42971 = as_type<int>(d1);', body)
-        self.assertNotIn('simdgroup_multiply', body)
-        self.assertNotIn('_42974', body)
-
-    def test_zero_c_twin(self):
-        body = body_of(self.out, 'dmsh_hmma16816_f16_z')
-        self.assertTrue(self.out[:self.out.index('int dmsh_hmma16816_f16_z(')].endswith('static inline __attribute__((always_inline))\n'))
-        self.assertIn('mode::multiply)', body)
-        self.assertNotIn('uint(_42969)', body)                                   # C neither stored nor read
-        self.assertNotIn('uint(_42970)', body)
-        self.assertIn('s[128 + g * 8 + 4 + t] = uint(_42968)', body)             # B1 still stored
-
-    def test_calls(self):
-        kernel = self.out[self.out.index('kernel void check'):]
-        self.assertIn('= dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, c0, c1, d1, scr);', kernel)       # C from the input
-        self.assertIn('= dmsh_hmma16816_f16_z(l, blk, a0, a1, a2, a3, b0, b1, _900, _901, z1, scr);', kernel)  # C a constant zero
-
-    def test_reassigned_zero_kept(self):   # a variable that starts at 0 and is assigned again is no constant
-        out = hmma_tensor_msl(HEAD + HELPER + KERNEL.replace('    int z1;\n', '    int z1;\n    _901 = c1;\n'))
-        self.assertIn('= dmsh_hmma16816_f16(l, blk, a0, a1, a2, a3, b0, b1, _900, _901, z1, scr);', out)
+        with self.assertRaises(ValueError):
+            hmma_msl(HEAD + HELPER.replace('thread const int& _42970, ', ''))
 
 
 @unittest.skipUnless(shutil.which('xcrun') and shutil.which('clang'), 'needs Xcode')
 class HmmaOnGpu(unittest.TestCase):
-    def run_check(self, msl, flags, tol, metal4=False):
+    def run_check(self, msl, flags, tol):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             (d / 'h.metal').write_text(msl)
@@ -196,15 +157,12 @@ class HmmaOnGpu(unittest.TestCase):
             subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(d / 'h.air'), '-o', str(d / 'h.metallib')], check=True)
             (d / 'run.m').write_text(RUNNER)
             subprocess.run(['clang', '-fobjc-arc', '-O1', str(d / 'run.m'), '-framework', 'Metal', '-framework', 'Foundation', '-o', str(d / 'run')], check=True)
-            r = subprocess.run([str(d / 'run'), str(d / 'h.metallib'), str(tol), *(['metal4'] if metal4 else [])], capture_output=True, text=True)
+            r = subprocess.run([str(d / 'run'), str(d / 'h.metallib'), str(tol)], capture_output=True, text=True)
             if r.returncode == 2: self.skipTest(r.stdout.strip())
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_matches_reference(self):
         self.run_check(hmma_msl(HEAD + HELPER + KERNEL), [], 0.01)
-
-    def test_tensor_matches_reference(self):   # rounds once: a tighter tolerance than the simdgroup_matrix body's
-        self.run_check(hmma_tensor_msl(HEAD + HELPER + KERNEL), ['-std=metal4.0'], 0.004, metal4=True)
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ from test_dmsh_ampere_mem import EXIT, Translated, inst
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
 tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
 selected = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in {'imma_helper', 'imma_tensor_msl', 'imma_calls'})
-            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '').startswith('IMMA_') or getattr(t, 'id', '') == 'HMMA_TENSOR_INCLUDE' for t in n.targets))]
+            or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '').startswith('IMMA_') for t in n.targets))]
 scope = {'re': re}
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
 imma_tensor_msl, imma_calls = scope['imma_tensor_msl'], scope['imma_calls']
@@ -278,8 +278,7 @@ class ImmaTensorRewrite(unittest.TestCase):
     def test_headers_once(self):
         out = imma_tensor_msl(HEAD + HELPER + KERNEL)
         self.assertIn('#include <metal_stdlib>\n#include <metal_tensor>\n#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n', out)
-        hmma_first = (HEAD + HELPER + KERNEL).replace('#include <metal_stdlib>\n', '#include <metal_stdlib>\n' + scope['HMMA_TENSOR_INCLUDE'])   # hmma_tensor_msl came first
-        self.assertEqual(imma_tensor_msl(hmma_first).count('#include <metal_tensor>'), 1)
+        self.assertEqual(out.count('#include <metal_tensor>'), 1)
 
     def test_other_sources(self):
         self.assertIsNone(imma_tensor_msl(HEAD + KERNEL.replace('dmsh_imma16832_s8(', 'max(')))

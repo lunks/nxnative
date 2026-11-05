@@ -4,7 +4,7 @@
 // and a draw of a covered pair takes its base from the bundle and captures nothing for the device's own archive;
 // a stamp of another depth mode or other pairs runs the device's prebuild, which still takes the bundled bases it finds; an archive whose bases the probe does not find is not trusted;
 // a folder without this GPU's file and a file that is no archive leave no archive; the compute shaders of the shader map have their pipelines in the archive (cs_pipeline, cps_new:
-// nothing built), but a primary TensorOps library (<key>_bt in <key>_b's place) is never looked up, and a shader with function constants or not in the map is built as before.
+// nothing built), but a TensorOps library (<key>_bt in <key>_b's place) is never looked up, and a shader with function constants or not in the map is built as before.
 // Without metal-tt (no Metal toolchain) it says so and passes
 #include "../nvn/nvn_mtl.m"
 uint64_t g_t0_ns;
@@ -54,7 +54,7 @@ int main(void) { @autoreleasepool {
     put([msl stringByAppendingPathComponent:@"v1_b.json"], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"entry\": \"main0\", \"entry_z\": \"main0_z\", \"pull\": {}, \"vertex_inputs\": []}", DMSH_CHAIN]);
     for (NSString *k in @[@"f1", @"f2", @"fc"]) put([msl stringByAppendingFormat:@"/%@_b.json", k], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"entry\": \"main0\"}", DMSH_CHAIN]);
     for (NSString *c in @[@"c1", @"c2", @"c3", @"cc"]) put([msl stringByAppendingFormat:@"/%@_b.json", c], [NSString stringWithFormat:@"{\"chain\": \"%s\", \"route\": \"B\", \"bindings\": [], \"stage\": \"cs\", \"entry\": \"main0\"%@}",
-                                                DMSH_CHAIN, [c isEqualToString:@"c1"] ? @", \"tensor\": {\"entry\": \"main0\", \"primary\": true}" : @""]);
+                                                DMSH_CHAIN, [c isEqualToString:@"c1"] ? @", \"tensor\": {\"entry\": \"main0\", \"imma\": 1}" : @""]);
     put([tables stringByAppendingPathComponent:@"shader_map.tsv"], @"package\tindex\tstage\tdm_ctl_sha16\tsource\ncs.bin\t0\tcompute\tc1\tx\ncs.bin\t1\tcompute\tc2\tx\ncs.bin\t2\tcompute\tcc\tx\n");
     setenv("DM_NVN_HMMA_TENSOR", "1", 1);   // the TensorOps libraries on any GPU, as on an Apple10 Mac by default
     put([tables stringByAppendingPathComponent:@"shader_pairs.tsv"], @"# pairs\nv1\tf1\nv1\tf2\nv1\tfc\n");
@@ -108,7 +108,7 @@ int main(void) { @autoreleasepool {
     shmap_load(); pso4_init();
     EXPECT("bundle: opened", 1, g_arch_bundle != nil);
     EXPECT("bundle: first among the files without a vertex layout", 1, g_arch4p.count && g_arch4p[0] == g_arch_bundle);
-    // compute pipelines: the shader map's compute shaders come from the bundle; a primary TensorOps library is built, never looked up (a failed lookup of a TensorOps function makes
+    // compute pipelines: the shader map's compute shaders come from the bundle; a TensorOps library is built, never looked up (a failed lookup of a TensorOps function makes
     // Metal refuse to build it); its <key>_b fallback, a shader with function constants and one the map does not have are not taken from the bundle unless it holds them
     @autoreleasepool {
         NvShader *c1 = shader_load(@"c1_b", 5, 0), *c2 = shader_load(@"c2_b", 5, 0), *c3 = shader_load(@"c3_b", 5, 0), *cc = shader_load(@"cc_b", 5, 0); NSError *err = nil;
