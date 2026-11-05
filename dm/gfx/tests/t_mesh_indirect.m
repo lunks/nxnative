@@ -41,4 +41,7 @@ int main(void) { @autoreleasepool {
     assert(!memcmp((const uint8_t *)converted.contents + qo, expected_3, sizeof expected_3));
     res_remove(seed); mtl_pool_del(guest); mtl_drain(); munmap(guest, bytes);
     puts("GPU-written mesh arguments: grid, first task and zero-work dispatch PASS");
+    // DM_NVN_ENC_THREAD records encoders: an indirect mesh draw needs its stand-in, or the first one stops the host (deferred encoding: DmRecEnc has no stand-in)
+    assert([DmRecEnc instancesRespondToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]);
+    puts("the encoding thread records an indirect mesh draw PASS");
 } return 0; }
