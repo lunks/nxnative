@@ -4,7 +4,7 @@ The Switch 2 base dump reaches its title screen on the Mac. VideoToolbox decodes
 
 ## Profile
 
-SDK 22.2.8, NVN API 231.40, with Nintendo's sead, agl and gsys. The three loaded modules are `main`, `subsdk0` (NintendoSDK_movie), and `sdk`. The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap, which fits in the profile's 12 GiB reservation with the stack and alias regions. The registered builds are the supplied base dump (`v0`) and update `v131072` (1.1.1), which a NUP carries alone as the whole game: their three modules are the same builds, and v131072's shader split is v0's key for key, so the tables are v131072's (`package`, `shader_versions`).
+SDK 22.2.8, NVN API 231.40, with Nintendo's sead, agl and gsys. The three loaded modules are `main`, `subsdk0` (NintendoSDK_movie), and `sdk`. The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap, which fits in the profile's 17.6 GiB reservation with the stack and alias regions. The registered builds are the supplied base dump (`v0`) and update `v131072` (1.1.1), which a NUP carries alone as the whole game: their three modules are the same builds, and v131072's shader split is v0's key for key, so the tables are v131072's (`package`, `shader_versions`).
 
 ## Mac dry run
 
