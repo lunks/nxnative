@@ -54,7 +54,7 @@
 # Usage: shader_split.py <RomFS dir> <ExeFS main> <output package dir> <output map> <output answer table> [<output pair table> [<output pipeline pair table (pso_pairs.tsv)> [<DLC RomFS dirs, comma-separated>]]]   Environment J=concurrency (default 8)
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
-# Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
+# Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program; Star Fox's engine programs, engine_pairs); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
 import base64, collections, concurrent.futures as cf, glob, hashlib, json, os, re, struct, subprocess, sys, time, zlib
 from typing import NoReturn
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../tools'))
@@ -818,16 +818,198 @@ def vipr_shaders(d, label):
         out.append((f'{label}#VIPR@{c:#x}', st, ctl, code))
     return out
 
-def zip_shaders(path, rel, names, out):
+# Star Fox's engine says which vertex shader goes with which pixel shader in its own files, not in its shader records (bare_shader, which pair with nothing). Its type database,
+# data/game/types.c.import (a vjson file of 8,918 types with their fields, offsets and sizes), names the objects: a GLSL source compiles to a _vrender_shader_new_t (its
+# .glsl.import, a VIPR file) whose variants are _vrender_shader_binary_t, one stage each; a .shader file (vjson) is a _vrender_shader_t, a program whose binaries refer to
+# shader_new objects with a variant key; a .shader_graph.import (VIPR) is a _vrender_shader_graph_t, a material's program: its own binaries and references to the shared ones,
+# a vertex binary per vertex format (13) and a fragment binary per fragment variant (11, the passes: standard, depth prepass, shadow, ...). Every member of data.zip is named by
+# the FNV-1a 64-bit hash of its path (data/game/shaders/vfx_basic.frag.glsl.import → 5ad19eb2e4614556), and a binary's shader record is the member
+# '<source path>.<n>.nvn_gen2.raw', n its place among the import's GPU objects (2,818 of the 2,826 records are named so by a binary; the other 8 are compute shaders of graphs)
+VB_SHADER_NEW, VB_GRAPH, VB_SHADER = '00000001-0000-0000-5a86-51a622bd1447', '00000001-0000-0000-14be-d19c915cba78', '00000001-0000-0000-43b0-dfa1601044ea'   # the types' GUIDs in types.c.import
+VB_BOOL = '00000000-0000-0000-0bed-ad15fbead88d'   # a built-in type (no entry of its own): bool, one byte
+VB_NO_FORMAT, VB_NO_VARIANT = 13, 11   # k_vrender_vertex_format_count, k_vrender_fragment_variant_count: a binary for any vertex format / fragment variant
+class VProgs(list): pass   # what zip_shaders found of the engine's programs, handed from the pool to main (scan_file's extra) and paired there (engine_pairs)
+
+def fnv1a64(b, h=0xcbf29ce484222325):
+    for x in b: h = (h ^ x) * 0x100000001b3 & 0xffffffffffffffff
+    return h
+
+def vguid(d, o=0):   # the engine's 16-byte GUID: u32, u16, u16, two bytes, u16, u32, little-endian words, as its vjson files write it
+    a, x, y, e, f = struct.unpack_from('<IHH2xHI', d, o)
+    return f'{a:08x}-{x:04x}-{y:04x}-{d[o + 8:o + 10].hex()}-{e:04x}{f:08x}'
+
+def vbin_image(d):
+    """A VIPR file (vbin-2): 'VIPR', u32 2, u32 table length, u32 8, u32 n, u32 0, n × (u32 platform, u32 GPU objects); then 'GARD' + the table (its u64 at +0 the image's length),
+    'GARD' + the image (_vmarshal_image_v0_t: imports at +0x28 and exports at +0x40, vectors of GUIDs) and 'GARD' + each segment, which starts with its descriptor (inline name,
+    u64 length at +0x20, the exported objects at +0x40, the other objects at +0x58), up to 'GARDBYE!' (all 24,650 of Star Fox's VIPR files end there exactly).
+    A reference is a u32 offset and a u32 tag: 0x8fff0000 in the segment that holds it, 0x90NN0000 in segment NN, 0xbfff0000 an import's number.
+    → (imports, exports, [(segment name, start)]), or None"""
+    if len(d) < 0x20 or d[:4] != b'VIPR': return None
+    hsz, _, n = struct.unpack_from('<3I', d, 8)
+    t = 0x18 + 8 * n
+    if d[t:t + 4] != b'GARD': return None
+    img = t + 8 + hsz
+    if d[img - 4:img] != b'GARD': return None
+    o, segs = img + struct.unpack_from('<Q', d, t + 4)[0], []
+    while d[o:o + 4] == b'GARD' and d[o:o + 8] != b'GARDBYE!':
+        s = o + 4; segs.append((vstring(d, segs, s, s), s)); o = s + struct.unpack_from('<Q', d, s + 0x20)[0]
+    if d[o:o + 8] != b'GARDBYE!' or not segs: return None
+    return [vguid(d, p + 16 * i) for p, k in [vvec(d, segs, img, img + 0x28)] for i in range(k)], [vguid(d, p + 16 * i) for p, k in [vvec(d, segs, img, img + 0x40)] for i in range(k)], segs
+
+def vptr(d, segs, base, a):   # → the address a tagged reference points at, or None (null, an import, or a segment that is not there)
+    o, t = struct.unpack_from('<II', d, a)
+    if t == 0x8fff0000: return base + o
+    if t & 0xff00ffff == 0x90000000 and (t >> 16 & 0xff) < len(segs): return segs[t >> 16 & 0xff][1] + o
+    return None
+
+def vimport(d, imports, a):   # → the GUID a tagged reference names among the image's imports, or None
+    o, t = struct.unpack_from('<II', d, a)
+    return imports[o] if t == 0xbfff0000 and o < len(imports) else None
+
+def vvec(d, segs, base, a):   # a vector: a reference to its elements, u32 count → (address, count)
+    p = vptr(d, segs, base, a)
+    return (p, struct.unpack_from('<I', d, a + 8)[0]) if p is not None else (0, 0)
+
+def vstring(d, segs, base, a):   # a 32-byte string: u32 length and the characters inline, or (0x60000000 set) the length, u32 capacity and a reference to them
+    n = struct.unpack_from('<I', d, a)[0]
+    if n & 0x60000000 == 0x60000000: p = vptr(d, segs, base, a + 8); n &= 0xffffff
+    else: p = a + 4
+    return d[p:p + n].decode('latin1') if p is not None and n < 0x1000 else ''
+
+def vipr_programs(d, label):
+    """A VIPR file's shader program (its first exported object): a _vrender_shader_new_t → [('new', GUID, path, key type, binaries)]; a _vrender_shader_graph_t → [('graph', path,
+    {(stage, slot): binary}, {(stage, slot): (shader_new GUID, key)})], its own binaries at +0x70 (13 vertex) and +0x140 (11 fragment), its references to shared ones
+    ({shader_new, variant key}, 16 bytes) at +0x1f8 and +0x398. A binary (_vrender_shader_binary_t, from the type database): variant key at +0x28, stage at +0x3c (0 vertex,
+    1 fragment), vertex format +0x40, fragment variant +0x44, and from +0x48 one reference per platform to its GPU object, whose place gives the record's member name.
+    A key is (its type's GUID, the bytes after its vtable and identifier: engine_pairs cuts them at the type's size). [] for any other file, or one that does not read"""
+    try:
+        im = vbin_image(d)
+        if not im: return []
+        imports, exports, segs = im
+        base = segs[0][1]
+        p, n = vvec(d, segs, base, base + 0x40)
+        r = vptr(d, segs, base, p) if n else None
+        if r is None or not exports: return []
+        ty = vimport(d, imports, r)
+        if ty not in (VB_SHADER_NEW, VB_GRAPH): return []
+        path = vstring(d, segs, base, r + 0x10).lstrip('/')
+        gi = next((i for i, (nm, _) in enumerate(segs) if nm.startswith('gpu-')), None)
+        blobs, plat = {}, None
+        if gi is not None:
+            gb = segs[gi][1]; q, k = vvec(d, segs, gb, gb + 0x58)
+            blobs = {a: i for i in range(k) if (a := vptr(d, segs, gb, q + 8 * i)) is not None}; plat = segs[gi][0][4:].replace('-', '_')   # 'gpu-nvn-gen2' → <path>.<n>.nvn_gen2.raw
+        def key(a):
+            kp = vptr(d, segs, base, a)
+            return (vimport(d, imports, kp), d[kp + 0x10:kp + 0x110]) if kp is not None else None
+        def binary(x):
+            if x is None: raise TypeError('a binary reference that points nowhere')
+            stage, vf, fv = struct.unpack_from('<3I', d, x + 0x3c)
+            raw = next((blobs[a] for a in (vptr(d, segs, base, x + 0x48 + 8 * i) for i in range(24)) if a in blobs), None)
+            return (f'{fnv1a64(f"{path}.{raw}.{plat}.raw".encode()):x}' if raw is not None else None, stage, vf, fv, key(x + 0x28))
+        def refs(at, count, size):
+            return [(i, a) for i in range(count) for a in [at + size * i] if struct.unpack_from('<Q', d, a)[0]]
+        if ty == VB_SHADER_NEW:
+            q, k = vvec(d, segs, base, r + 0x58)
+            return [('new', exports[0], path, vimport(d, imports, r + 0x30), [binary(vptr(d, segs, base, q + 8 * i)) for i in range(k)])]
+        own = {(st, i): binary(vptr(d, segs, base, a)) for st, at, cnt in ((0, 0x70, VB_NO_FORMAT), (1, 0x140, VB_NO_VARIANT)) for i, a in refs(r + at, cnt, 8)}
+        ext = {(st, i): (vimport(d, imports, a), key(a + 8)) for st, at, cnt in ((0, 0x1f8, VB_NO_FORMAT), (1, 0x398, VB_NO_VARIANT)) for i, a in refs(r + at, cnt, 16)}
+        return [('graph', path, own, ext)]
+    except Exception as e:   # one member: the rest of its zip range is still read (scan_file would leave the whole range out)
+        print(f'[RED] {label}: a VIPR shader program that does not read ({type(e).__name__}: {e}); its pairs are left out', flush=True)
+        return []
+
+def vjson_programs(d, label):
+    """A vjson file's programs (_vrender_shader_t: its binaries, each {"shader": shader_new GUID, "variant_key": {field: value}}) → [('shader', path, [(GUID, key or None)])],
+    and the type database's types (data/game/types.c.import) → [('types', {GUID: (kind, size, [(field, offset, size, type, default)], {constant: value}, underlying type)})]"""
+    if d[:1] != b'{' or (VB_SHADER.encode() not in d and b'"k_type_kind_struct"' not in d): return []
+    try: o = json.loads(d)
+    except ValueError: return []   # not UTF-8 or not JSON: 9 of Star Fox's 24,802 members that start with '{'
+    out, types = [], {}
+    try:
+        for seg in o.get('segments', []):
+            for x in seg.get('exported_objects', []):
+                if x.get('vtable') == VB_SHADER:
+                    out.append(('shader', x.get('path', ''), [(b.get('shader'), {k: v for k, v in b['variant_key'].items() if k != 'vtable'} if 'variant_key' in b else None) for b in x.get('binaries', [])]))
+                elif x.get('kind') in ('k_type_kind_struct', 'k_type_kind_enum', 'k_type_kind_typedef') and '$guid' in x:
+                    sizes = {f.get('name_hash'): f.get('size_bits', 0) // 8 for f in x.get('field_offsets', [])}
+                    fields = [(f.get('name'), f.get('offset_bits', 0) // 8, sizes.get(f.get('name_hash'), 0), f.get('type'), f.get('default_value')) for f in x.get('fields', [])]
+                    types[x['$guid']] = (x['kind'], x.get('size_bits', 0) // 8, fields, {c.get('name'): c.get('value', 0) for c in x.get('constants', [])}, x.get('underlying_type'))
+    except (AttributeError, TypeError) as e:   # another shape: one member, not its whole zip range
+        print(f'[RED] {label}: a vjson file of another shape ({e}); its programs and types are left out', flush=True)
+        return []
+    if types: out.append(('types', types))
+    return out
+
+def engine_pairs(progs):
+    """Star Fox's vertex / pixel pairs from its programs (vipr_programs, vjson_programs; the records' keys from zip_shaders): a shader graph pairs its vertex binary of every
+    vertex format with its fragment binary of every fragment variant; a .shader file pairs every vertex binary its references take with every fragment binary. A reference takes
+    the binaries of its shader_new whose variant key is the same (a .shader file's key: its fields over the type's defaults), and in a graph's slot those for that vertex format or
+    fragment variant (or any). A binary whose record is not in data.zip (37: present.vert.glsl's, ...) pairs with nothing. → (pairs, summary)"""
+    keyof, news, graphs, shaders, types = {}, {}, [], [], {}
+    for p in progs:
+        if p[0] == 'raw': keyof[p[1]] = p[2]
+        elif p[0] == 'new': news[p[1]] = p[3:]
+        elif p[0] == 'graph': graphs.append(p[2:])
+        elif p[0] == 'shader': shaders.append(p[2])
+        elif p[0] == 'types': types.update(p[1])
+    def cut(k):   # a key's bytes after its vtable and identifier, cut at its type's size; a key of a type not known matches none
+        if k is None: return None
+        size = types.get(k[0], (0, 0))[1]
+        return (k[0], k[1][:size - 0x10]) if size > 0x10 and len(k[1]) >= size - 0x10 else object()
+    def enum_value(ty, v):
+        while ty in types and types[ty][0] == 'k_type_kind_typedef': ty = types[ty][4]
+        return types[ty][3].get(v, 0) if ty in types else 0
+    def json_key(kt, want):   # a .shader file's key: the type's default bytes with its fields set
+        if kt not in types or types[kt][1] <= 0x10: return None
+        b = bytearray(types[kt][1] - 0x10)
+        for name, off, size, ty, dflt in types[kt][2]:
+            v = want.get(name, dflt) if want else dflt
+            if off < 0x10 or not 0 < size <= 8: continue
+            if isinstance(v, str): v = enum_value(ty, v)
+            elif isinstance(v, (bool, int)): v = int(v)
+            else: continue   # no default: zero
+            b[off - 0x10:off - 0x10 + size] = (v & (1 << 8 * size) - 1).to_bytes(size, 'little')
+        return (kt, bytes(b))
+    def take(guid, k, stage, slot=None):
+        kt, bins = news.get(guid, (None, []))
+        out = []
+        for m, st, vf, fv, bk in bins:
+            if st != stage or slot is not None and (vf, fv)[stage] not in (slot, (VB_NO_FORMAT, VB_NO_VARIANT)[stage]): continue
+            if m and (kt is None or cut(bk) == k): out.append(m)
+        return out
+    pairs, missing = set(), set()
+    def pair(vs, fs):
+        for v in vs:
+            for f in fs:
+                if v not in keyof or f not in keyof: missing.update(m for m in (v, f) if m not in keyof); continue
+                pairs.add((keyof[v], keyof[f]))
+    for own, ext in graphs:
+        side = [collections.defaultdict(list), collections.defaultdict(list)]
+        for (st, i), b in own.items():
+            if st == b[1] and b[0]: side[st][i].append(b[0])
+        for (st, i), (g, k) in ext.items(): side[st][i] += take(g, cut(k), st, i)
+        pair([m for ms in side[0].values() for m in ms], [m for ms in side[1].values() for m in ms])
+    for refs in shaders:
+        side = [[], []]
+        for g, want in refs:
+            kt = news.get(g, (None,))[0]
+            for st in (0, 1): side[st] += take(g, json_key(kt, want) if kt is not None else None, st)
+        pair(*side)
+    return pairs, f'engine programs: {len(graphs)} shader graphs and {len(shaders)} .shader files give {len(pairs):,} vertex / pixel pairs' + (f' ({len(missing)} of their binaries have no record in the archive)' if missing else '') + ('' if types or not graphs else '; no type database, so no variant key matched')
+
+def zip_shaders(path, rel, names, out, progs=None):
     """A range of zip members (zip_jobs), each inflated and scanned like a loose file: scan_blob, then whole GLSLC outputs (Portal's .nvsb files: a 0x60-byte 'NVSB' header, then one
-    GLSLC output of a vertex and a pixel shader)"""
+    GLSLC output of a vertex and a pixel shader). With progs, Star Fox's engine programs and its records' keys by member go there too (engine_pairs pairs them)"""
     import zipfile
     with open(path, 'rb') as source, zipfile.ZipFile(source) as z:
         for nm in names:
             i = z.getinfo(nm)
             d = zip_lz4_member(source, i, f'/{rel}/{nm}') if i.compress_type == zipfile.ZIP_STORED and i.compress_size != i.file_size else z.read(nm); n = len(out)
             scan_blob(d, f'/{rel}/{nm}', out)
-            if len(out) == n: out += bare_shader(d, f'/{rel}/{nm}') or vipr_shaders(d, f'/{rel}/{nm}')
+            if len(out) == n:
+                bare = bare_shader(d, f'/{rel}/{nm}')
+                out += bare or vipr_shaders(d, f'/{rel}/{nm}')
+                if progs is not None: progs += [('raw', nm, skey(ctl, code)) for _, _, ctl, code in bare] or vipr_programs(d, f'/{rel}/{nm}') or vjson_programs(d, f'/{rel}/{nm}')
             if len(out) == n and d[:4] != b'MSHD' and b'\x91\x68\x86\x19' in d: out += glslc_shaders(d, f'/{rel}/{nm}', need=False)
 
 def pgdat_members(d, label):
@@ -2687,7 +2869,8 @@ def var_pairs(found):
 WHOLE_RED = 1 << 30   # a loose file this large scanned whole gets a red line first (Star Fox's 14.5 GB data.zip, before zip_jobs read its VZIP header, held one worker for minutes)
 
 def scan_file(args):
-    """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, 'defer' (no type tree, scanned again in the second pass), or ('unreadable', why).
+    """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, 'defer' (no type tree, scanned again in the second pass), ('unreadable', why), or the
+    engine programs of a zip range (VProgs).
     A file no reader can read (a format revision the reader does not know: its red line, or the exception it raised) is left out, and the split goes on: one such
     archive used to end the whole split with nothing written (PR #282: one of Mario Strikers: Battle League's 879 Next Level Games archives). main reports them"""
     try: return scan_file_in(args)
@@ -2716,8 +2899,8 @@ def scan_file_in(args):
         trinity_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] in (ZIP, VZIP) and args[2][0] == ZIP:   # members of a zip archive (zip_jobs)
-        zip_shaders(path, rel, args[2][1], found)
-        return rel, uniq_keys(found), var_pairs(found), trees
+        progs = VProgs(); zip_shaders(path, rel, args[2][1], found, progs)
+        return rel, uniq_keys(found), var_pairs(found), progs
     if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)
         ue_legacy_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -2947,6 +3130,8 @@ def main():
                 if not same_shader(keys[key][2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
                 continue
             keys[key] = v; per_src[group(v[0])] += 1
+    progs = VProgs(x for *_, extra in results if isinstance(extra, VProgs) for x in extra)
+    if any(p[0] != 'raw' for p in progs): ep, note = engine_pairs(progs); pairs |= ep; print(note)   # Star Fox's programs: they pair records of other members
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
