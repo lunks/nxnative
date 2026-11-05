@@ -38,3 +38,7 @@ shader_note	0400486024DEC000 shaders
 # agl wraps its depth clears in render conditions, as on Donkey Kong Bananza and Splatoon Raiders: in Kokiri Forest the main opaque pass tests EQUAL against a copy of the prepass depth
 # that a conditional clear (skipped on the console) wiped first, so no lit geometry landed and the full-screen sky showed through everywhere (a white scene)
 render_cond	on
+# The scene camera for MetalFX's motion vectors (DM_UPSCALER=metalfx-temporal, DM_MFX_INTERP; nvn_mfx.inc): gsys's Context uniform block at vertex uniform 0 of the scene passes, the view
+# (3x4 rows) at +0x0 and the view-projection at +0x30, as on Donkey Kong Bananza. Read in a run (DM_MFX_PROBE, v131072): the opening's 3D cutscenes and Link's house give a GL perspective
+# camera (50 degrees, 16:9, near 0.1, far 25037, no projection offset) in the 1920x1080 D32F depth pass that matches the upscaler's input; 15,000 upscaler frames, none without a camera
+camera_mats	vertex 0 0x0 0x30
