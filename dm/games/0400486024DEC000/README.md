@@ -54,12 +54,13 @@ The cost is [the temporal scaler's encode itself](../../../docs/reference/render
 | Value | Scene → output | Upscaler |
 |---|---|---|
 | game | 1920x1080 → 2560x1440 (level 0, 0.75) | the network, or MetalFX |
-| 1.0 Native | 2560x1440 → 2560x1440 | the game's network still runs, 1:1 (run with the game's own); MetalFX's spatial scaler leaves a 1:1 dispatch to it, the temporal one would anti-alias it (not run) |
+| 1.0 Native | 2560x1440 → 2560x1440 | the game's network still runs, 1:1; MetalFX's spatial scaler leaves a 1:1 dispatch to it |
+| native-mfx Native (MetalFX AA) | 2560x1440 → 2560x1440 | MetalFX temporal at the output's size, the same word as 1.0, only with `DM_UPSCALER=metalfx-temporal` |
 | 1.5 Quality | 1743x981 → 2560x1440 | MetalFX temporal |
 | 2.0 Performance | 1280x720 → 2560x1440 | MetalFX temporal |
 | 3.0 Ultra performance | 854x480 → 2560x1440 | MetalFX temporal (content scale 3.0, its limit) |
 
-Quality renders 1743x981, not the 1710x962 of the scale written (0.668): the caller multiplies by a ratio of the controller's own (`ctrl+0xe58 / +0xe50`), which 0.5 and 1.0 hit exactly. Dynamic resolution between two rates (Bananza's Softest) and Native (MetalFX AA) have no rows yet.
+Quality renders 1743x981, not the 1710x962 of the scale written (0.668): the caller multiplies by a ratio of the controller's own (`ctrl+0xe58 / +0xe50`), which 0.5 and 1.0 hit exactly. **Dynamic resolution** (`DM_UPSCALE_DYNAMIC=1`, sharpest `DM_UPSCALE_RATIO`, softest `DM_UPSCALE_SOFTEST`) keeps the controller stepping and maps its palette onto the chosen range, `s' = a s + b`, in seven words of padding after the update ([`setting_patches.tsv`](setting_patches.tsv)). Checked with Quality to Ultra performance: 1743x981 in Link's house, where the game stays at its first level, and 854x480 with the load threshold zeroed by a test row, which sent the controller straight to its last level. The levels between were not seen. Handheld's palette ends at 0.4445, so it stops short of the softest.
 
 The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
 
