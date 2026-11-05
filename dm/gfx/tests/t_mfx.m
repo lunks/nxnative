@@ -515,6 +515,11 @@ int main(void) { @autoreleasepool {
             if (g_mfi_pend) mfx_ui_point();
             memset(&R, 0, sizeof R);
             CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the frame's submission completes");
+            if (f >= 1 && f < nshake && !inf) {   // the camera's motion reaches the motion texture: every pixel of this flat scene moved with it, by the whole pixels of the offset's change
+                uint8_t *m = read_all(g_mm.mv[g_mm.cur]); __fp16 hv[2]; memcpy(hv, m + ((size_t)270 * g_mm.w + 480) * 4, 4); free(m);
+                double want = round(shake[f - 1]) - round(px);
+                CHECK(fabs((double)(float)hv[0] - want) < 4, "a camera's motion reaches the motion vectors");
+            }
             if (inf) { fill(tex_mtl(&in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); continue; }
             if (interp) { game_window_pass(tex_mtl(&out), tex_mtl(&win8), 0); uint64_t v = 0; mfx_present_frame(&win8, 1.0 / 60, 0, &v);
                 for (int k = 0; k < 3; k++) { uint64_t t0 = now_ns(); while (atomic_load(&g_mfi.busy[k]) && now_ns() - t0 < 5000000000ull) usleep(200); } }

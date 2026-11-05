@@ -14,6 +14,7 @@ using namespace metal;
 struct MvParams {
     float4x4 reproj;
     float4 prevz;        // the previous projection's z row and w row terms: P22, P23, P32 (clip w = P32 * z), and 1 when the previous frame's depth is in pdep
+    float4 curz;         // this frame's projection's: reproj takes a pixel to the previous frame's clip space over this frame's clip w
     uint2 org, size;     // content origin in the depth texture, content size (also the motion / depth outputs' rectangle at their origin)
     uint ylow, glz, dyn, pad;
     uint2 fill, psize, pfill;
@@ -38,10 +39,10 @@ kernel void mfx_mv(depth2d<float, access::read> dep [[texture(0)]], texture2d<fl
         m = pv * ps - uv * sz;
         int2 q = int2(floor(pv * float2(p.psize)));
         if (p.dyn && p.prevz.w > 0.5 && all(q >= 1) && all(q < int2(p.psize) - 1)) {
-            bool still = false;
+            bool still = false; float pw = c.w * clip_w_of(d, p.curz, p.glz);   // its clip w in the previous frame
             for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
                 float w = clip_w_of(pdep.read(uint2(q + int2(x, y))).x, p.prevz, p.glz);
-                still = still || abs(w - c.w) <= 0.02 * abs(c.w);
+                still = still || abs(w - pw) <= 0.02 * abs(pw);
             }
             if (!still) m = rate;
         }

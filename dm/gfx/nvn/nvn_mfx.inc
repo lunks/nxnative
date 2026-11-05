@@ -404,12 +404,13 @@ static int mfx_motion(const mfx_io *io) {
     mfx_mul4(reset ? cam.vp0 : g_mm.prev.vp0, ic, m);   // this frame's normalized device coordinates to the previous frame's clip space (itself at a reset: no motion)
     int k = g_mm.cur = (g_mm.cur + 1) % MFX_RING, pk = (k + MFX_RING - 1) % MFX_RING;
     uint64_t gpu; uint8_t *pb = mfx_par(&gpu);
-    float *pf = (float *)pb; uint32_t *pu = (uint32_t *)(pb + 96);
+    float *pf = (float *)pb; uint32_t *pu = (uint32_t *)(pb + 112);
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) pf[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     pf[16] = (float)g_mm.prev.p[10]; pf[17] = (float)g_mm.prev.p[11]; pf[18] = (float)g_mm.prev.p[14]; pf[19] = reset ? 0.0f : 1.0f;
+    pf[20] = (float)cam.p[10]; pf[21] = (float)cam.p[11]; pf[22] = (float)cam.p[14]; pf[23] = 0;
     NSUInteger cw = io->ir.width, ch = io->ir.height, vw = mfx_content(w, io->orr.width, cw), vh = mfx_content(h, io->orr.height, ch);
-    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112, pfill at +128 (the frame before's: g_mm's are still its; a reset has none)
-    uint32_t *po = (uint32_t *)(pb + 80); po[0] = (uint32_t)io->ir.xoffset; po[1] = (uint32_t)io->ir.yoffset; po[2] = (uint32_t)io->ir.width; po[3] = (uint32_t)io->ir.height;
+    // layout (MvParams): reproj 64 bytes, prevz 16, curz 16, org / size at +96, ylow / glz / dyn at +112, fill / psize at +128, pfill at +144 (the frame before's: g_mm's are still its; a reset has none)
+    uint32_t *po = (uint32_t *)(pb + 96); po[0] = (uint32_t)io->ir.xoffset; po[1] = (uint32_t)io->ir.yoffset; po[2] = (uint32_t)io->ir.width; po[3] = (uint32_t)io->ir.height;
     pu[0] = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll; pu[1] = !atomic_load(&g_depth_zero); pu[2] = (uint32_t)mfx_mv_dyn(); pu[3] = 0;
     pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)(reset ? cw : g_mm.cw); pu[7] = (uint32_t)(reset ? ch : g_mm.ch); pu[8] = (uint32_t)(reset ? vw : g_mm.vw); pu[9] = (uint32_t)(reset ? vh : g_mm.vh);
     id<MTLComputePipelineState> ps = g_mm.ps; id<MTL4ArgumentTable> at = g_mm.at; id<MTLTexture> mv = g_mm.mv[k], dout = g_mm.dep[k], pdep = g_mm.dep[pk];
