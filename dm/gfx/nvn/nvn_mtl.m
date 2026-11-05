@@ -2049,7 +2049,7 @@ static nvn_hmap g_alias = {.klen = sizeof(alias_key)};
 static nvn_hmap g_alias_seen = {.klen = sizeof(alias_key)};   // key → g_fence + 1 at its last lookup or creation (alias_take_over spares entries looked up lately)
 static nvn_hmap g_alias_used = {.klen = sizeof(alias_key)};   // key → its last use by something other than a pool walk (alias_stamp; alias_age)
 static nvn_hmap g_walk_empty = {.klen = sizeof(alias_key)};   // key → walk_empty_t (tex_mtl_)
-static nvn_hmap g_twin = {.klen = 8};   // serial → the shared texture its sRGB / linear view is a view of (not retained, only compared), under g_smu: a parent that leaves the table has their IDs noted
+static nvn_hmap g_twin = {.klen = 8};   // live serial → the shared texture its sRGB / linear view is a view of (not retained, only compared), under g_smu: takeover spares that parent (twin_holds)
 // Live GPU-only image descriptions, including those not used yet. A dynamic-resolution family declares its largest image before any particular resolution is used.
 // Keeping only descriptions here lets its first allocation cover that family exactly, without allocating every resolution or rounding to a power of two.
 static nvn_hmap g_image_desc = {.klen = 8};   // serial → malloc'ed tex_t, under g_smu
@@ -2116,11 +2116,13 @@ static uint64_t g_alias_idle;   // shared textures let go for being idle (for th
 static nvn_hmap g_ghost;   // defined below (finalized texture serials)
 static nvn_hmap g_ghost_active = {.klen = 8};   // finalized serials touched in the submission being encoded, under g_smu
 static int serial_holds(nvn_hmap *m, id o) { for (uint32_t i = 0; i < m->cap; i++) if (m->vals[i] == (__bridge void *)o) return 1; return 0; }
+// A live object resolving to an sRGB / linear view of this texture holds it too, though no serial table names it
+static int twin_holds(id o) { for (uint32_t i = 0; g_twin.n && i < g_twin.cap; i++) if (g_twin.vals[i] == (__bridge void *)o) return 1; return 0; }
 // The serials of a table that resolve to this object are noted (ser_note): their IDs and tables take them again. Returns whether there are any
 static int serial_note_holders(nvn_hmap *m, id o) { int n = 0; for (uint32_t i = 0; i < m->cap; i++) if (m->vals[i] == (__bridge void *)o) { uint64_t k; memcpy(&k, m->keys + (size_t)i * m->klen, sizeof k); ser_note(k); n++; } return n; }
 // These entries leave the sharing table. A finalized object resolved through the ghost tables keeps its own reference; otherwise the texture is retired. Everything that resolves to them gets a
-// note, so tables are patched and not built whole: finalized serials here, sRGB / linear views' here too (they make their view again on what holds the storage now, tex_mtl_), retired IDs' views
-// in alias_sweep at the end of the submission, until when the texture stays alive and resident. No live serial holds them (the callers looked). Caller holds g_smu
+// note, so tables are patched and not built whole: finalized serials here, retired IDs' views in alias_sweep at the end of the submission, until when the texture stays alive and resident.
+// No live serial holds them, directly or through an sRGB / linear view (the callers looked). Caller holds g_smu
 static void alias_let_go(const alias_key *ks, uint32_t n) {
     for (uint32_t j = 0; j < n; j++) {
         void *old = nvn_hm_del(&g_alias, &ks[j]);
@@ -2130,9 +2132,6 @@ static void alias_let_go(const alias_key *ks, uint32_t n) {
         if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
         int ghosts = serial_note_holders(&g_ghost, o); ghosts += serial_note_holders(&g_ghost_active, o);
         if (ghosts) defer_obj_unref(o); else defer_obj_release(o);
-        if (g_twin.n) { uint64_t ser[16]; uint32_t nt = 0;   // deletion shifts entries: collected first; more than 16 on one texture wait for the epoch of the bare bump
-            for (uint32_t i = 0; i < g_twin.cap; i++) if (g_twin.vals[i] == (__bridge void *)o) { if (nt == 16) { g_ser_gen++; break; } memcpy(&ser[nt++], g_twin.keys + (size_t)i * g_twin.klen, 8); }
-            for (uint32_t i = 0; i < nt; i++) { ser_note(ser[i]); nvn_hm_del(&g_twin, &ser[i]); } }
     }
 }
 static void alias_take_over(const alias_key *nk) {
@@ -2146,7 +2145,7 @@ static void alias_take_over(const alias_key *nk) {
         if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi) continue;
         nvn_texlayout kl; nvn_tex_layout(&k.d, &kl);
         uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
-        if (k.off + (int64_t)kl.size <= lo || (seen && g_fence + 1 - seen < ALIAS_IDLE) || serial_holds(&g_by_serial, (__bridge id)g_alias.vals[i])) continue;
+        if (k.off + (int64_t)kl.size <= lo || (seen && g_fence + 1 - seen < ALIAS_IDLE) || serial_holds(&g_by_serial, (__bridge id)g_alias.vals[i]) || twin_holds((__bridge id)g_alias.vals[i])) continue;
         ks[n++] = k;
     }
     alias_let_go(ks, n);
@@ -3765,7 +3764,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             v = [b newTextureViewWithPixelFormat:d.pixelFormat textureType:b.textureType levels:NSMakeRange(0, b.mipmapLevelCount) slices:NSMakeRange(0, b.arrayLength) swizzle:b.swizzle];
             if (v) { pthread_mutex_lock(&g_smu); nvn_hm_put(&g_alias_seen, &k, (void *)(uintptr_t)(g_fence + 1)); alias_use(&k); pthread_mutex_unlock(&g_smu); }
         }
-        if (v) { tex_put(t->serial, v); pthread_mutex_lock(&g_smu); nvn_hm_put(&g_twin, &t->serial, (__bridge void *)v.parentTexture); pthread_mutex_unlock(&g_smu); return v; }
+        if (v) { tex_put(t->serial, v); if (live) { pthread_mutex_lock(&g_smu); nvn_hm_put(&g_twin, &t->serial, (__bridge void *)v.parentTexture); pthread_mutex_unlock(&g_smu); } return v; }
     }
     id<MTLTexture> mt = tex_linear(t);
     if (!mt && t->pool && nvn_sparse_pool(t->pool)) mt = sparse_gpu_make(t);   // a large one in a sparse pool: only the tiles the game maps take memory
@@ -5716,8 +5715,8 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
     // Before, every guest write to any protected page sent every texture ID, render targets included, down this path
     rp->view_pkg = (rp->t.has_layout || tex_cpu_written(rp->t.serial)) && rp->t.mem;
     if (v) {   // The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
-        id<MTLTexture> cur = treg_tex(rp);
-        if (cur == v || v.parentTexture == cur) { rp->view_ser = sg; rp->view_dirty = dg; treg_pkg_stamp(rp, cur); return v; }
+        id<MTLTexture> cur = treg_tex(rp);   // nil, with a walk's empty verdict among the reasons: a view with no parent must not pass for one of nothing
+        if (cur && (cur == v || v.parentTexture == cur)) { rp->view_ser = sg; rp->view_dirty = dg; treg_pkg_stamp(rp, cur); return v; }
         defer_obj_unref(v); CFRelease(rp->view); rp->view = NULL; rp->view_rid = 0; v = nil;
     }
     treg_t r = *rp;

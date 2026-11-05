@@ -165,19 +165,27 @@ static void notes(void) {
     CHECK(g_stat_pool_builds == builds, "without a whole table");
     mtl_sub_commit(); mtl_drain(); t1 = t2 = nil;
     mtl_tex_release(&n1); mtl_tex_release(&n2); mtl_reg_tex(8, NULL, NULL); mtl_reg_tex(9, NULL, NULL);
-    // A live sRGB view whose parent's entry left: the stale view goes, and the object's next bind makes it on what holds the storage now
+    // A live sRGB view keeps its parent's entry from takeover, though the view is all a serial names
     mtl_set_frame(11000);
     tex_t par = nt(3 << 20, 64, NVN_FORMAT_RGBA8), srgb = nt(3 << 20, 64, NVN_FORMAT_RGBA8_SRGB); mtl_reg_tex(10, &srgb, NULL);
     mtl_sub_begin(); tex_mtl(&par); tex_mtl(&srgb); uint64_t was = table_entry(10, &dummy); mtl_sub_commit();
     CHECK(was != dummy, "the table holds the view");
     mtl_tex_release(&par);
-    alias_key k; tex_alias_key(&par, &k);
-    pthread_mutex_lock(&g_smu); alias_let_go(&k, 1); g_alias_taken++; pthread_mutex_unlock(&g_smu);
-    mtl_sub_begin(); table_entry(10, NULL); mtl_sub_commit();   // this submission ends with the sweep; the ID's table takes it at the next
-    mtl_sub_begin(); builds = g_stat_pool_builds; CHECK(table_entry(10, &dummy) == dummy, "the stale view leaves the table");
-    id<MTLTexture> again = tex_mtl(&srgb); CHECK(again && !again.parentTexture, "a bind of the live object makes it again");
-    CHECK(table_entry(10, NULL) == again.gpuResourceID._impl, "and the table takes it"); mtl_sub_commit(); mtl_drain(); again = nil;
-    CHECK(g_stat_pool_builds == builds, "without a whole table");
+    for (int i = 0; i <= ALIAS_IDLE; i++) { mtl_sub_begin(); mtl_sub_commit(); }
+    mtl_drain();
+    mtl_sub_begin(); tex_t big = nt(3 << 20, 128, NVN_FORMAT_RGBA8); tex_mtl(&big); mtl_sub_commit();
+    CHECK(shared(&par), "takeover spares the parent of a live sRGB view");
+    mtl_sub_begin(); CHECK(table_entry(10, NULL) == was, "and the view stays in the table"); mtl_sub_commit();
+    mtl_tex_release(&big);
+    // A retired ID's view with no parent, whose texture left the table: resolving to nothing is no match for a view with no parent (nil == nil kept it, and the table named a texture that had left the residency set)
+    tex_t gone = nt(4 << 20, 64, NVN_FORMAT_RGBA8); mtl_reg_tex(12, &gone, NULL);
+    mtl_sub_begin(); tex_mtl(&gone); CHECK(table_entry(12, &dummy) != dummy, "the table holds it"); mtl_sub_commit();
+    mtl_tex_release(&gone);
+    mtl_sub_begin(); CHECK(table_entry(12, NULL) != dummy && g_treg[12].view, "the retired ID has a view of the shared texture"); mtl_sub_commit();
+    alias_key gk; tex_alias_key(&gone, &gk);
+    mtl_sub_begin(); pthread_mutex_lock(&g_smu); alias_let_go(&gk, 1); g_ser_gen++; pthread_mutex_unlock(&g_smu);   // an epoch, before the sweep has run
+    CHECK(table_entry(12, NULL) == dummy, "the table does not name it"); CHECK(!g_treg[12].view, "and the view went"); mtl_sub_commit();
+    mtl_reg_tex(12, NULL, NULL);
     mtl_tex_release(&srgb); mtl_reg_tex(10, NULL, NULL); mtl_alias_drop_pool(&g_tpool);
 }
 // A memory pool added or removed changes no table but for the IDs that found storage in it or lost their pool
