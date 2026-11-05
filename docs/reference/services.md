@@ -684,6 +684,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** hooked (`hle_net.c`, `hle_offline.c`): the `nifm` IP queries with SDK 10's `socket::InAddr` / `in_addr` mangling; `prepo::AddSessionId` / `AddInternetConnectionStatus`; `ldn::GetNetworkConfig`; SDK 11's socket overloads with plain `sockaddr` / `int` arguments (`Connect`, `Accept`, `GetSockName`, `Get` / `SetSockOpt`, `Fcntl`, `Recv`, `Send`).
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (SDK 10: `nifm`, `prepo`); [Big Brain Academy: Brain vs. Brain](../../dm/games/0100620012D6E000/README.md) (SDK 11.4.3: LDN, sockets); [Star Fox](../../dm/games/0400E88025B1A000/README.md) (SDK 21.4.4: `nn::socket::internal::Initialize`, called after `SetAllocator`, which aborts on any result but success; unhooked, the SDK connects to `bsd` itself).
 
+### An asynchronous play report opens prepo:u
+
+- **Symptom:** `[RED] sf: the game connects to service prepo:u itself, which the host does not serve`, then `nn::diag` aborts with Result `0xe15` at the gameplay transition.
+- **Cause:** `PlayReport::Send(Uid const&)` gets a service session. Its nontrivial `AsyncContext` return uses the caller's result address in `x8`. The caller waits on the returned context's completion event, then reads its result and destroys it.
+- **Fix:** `hle_offline.c` calls the guest SDK's `AsyncContext(Result)` constructor in that storage with success. The SDK provides an already-signalled completion event for this context and destroys it without an IPC object. Report submission follows the existing offline policy.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) (`sdk+0x5aae10` in `PlayReportImpl::Send`).
+
 ### Bluetooth LE at boot
 
 - **Symptom:** `[RED] sf: the game connects to service bt itself, which the host does not serve`, then `game called nn::diag abort` at `sdk+0x16ba48` and exit 134, a second after the audio renderer starts. With `bt` and `btm:u` served as zeroed host sessions the abort moves to `nn::btm::user::InitializeBtmUserInterface` (`sdk+0xb8eb4`), before either session gets a request.
@@ -697,7 +704,7 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** the host failed every `nn::socket` call with ENETDOWN, `EventFd` included. An eventfd is not networking: a 64-bit counter that a write adds to and a read takes, which wakes a thread; Horizon's bsd service serves it with no network. gRPC's poll engine needs one as its wakeup descriptor: its check (`EventFd(0, 0)`, then close) failed, `grpc_has_wakeup_fd` read 0, every engine's initializer returned null, and gRPC asserted.
 - **Fix:** `hle_net.c` serves eventfds: descriptors 512–575 (under select's 1024; the host makes no other descriptor), Linux's semantics (a read takes the counter, or 1 with the semaphore flag; an empty nonblocking read fails with EAGAIN; a write past 2^64−2 waits or fails), Horizon's flags (1 semaphore, 4 nonblocking; gRPC passes 6), `Poll` / `Select` readiness with waits in slices of at most 100 ms, `Fcntl`'s `F_GETFL` / `F_SETFL` with `O_NONBLOCK`, and `Close`. A failure sets the socket error code (FreeBSD numbers) and the C library's `errno` through the guest's `__errno_location` (Linux numbers: gRPC compares with 11 and 4). Every other socket call still fails as offline.
 - **Check:** `make -C dm/host/tests GAME=<id> run` runs `t_net_eventfd`: the counter, the semaphore flag, EAGAIN in both error numbers, poll and select readiness, a poll woken by another thread's write, `O_NONBLOCK`, close, and other descriptors still offline (a poll reports POLLNVAL for them).
-- **Found on:** The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, SDK 22.2.8, a provisional profile; no note yet): with the fix it boots to its title screen.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): with the fix it boots to its title screen.
 
 ### Network requests stay on hold before they settle
 

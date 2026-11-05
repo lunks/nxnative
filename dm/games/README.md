@@ -60,7 +60,7 @@ A launcher row for one is a `choice` with values `patches` and the condition `pa
 
 ## Games
 
-One row per profile; the notes are each profile's `README.md`.
+The games below have completed a gameplay check. Each profile links to its `README.md`. Bring-up profiles have a separate table.
 
 | Game | Title ID | Build | SDK | Engine | Graphics |
 |---|---|---|---|---|---|
@@ -205,6 +205,12 @@ One row per profile; the notes are each profile's `README.md`.
 | [Xenoblade Chronicles 2](0100E95004038000/README.md) | `0100E95004038000` | 2.1.0 | 3.5.0 | Monolith's engine | NVN |
 | [Xenoblade Chronicles 3](010074F013262000/README.md) | `010074F013262000` | 2.2.1 | 12.3.9 | Monolith's engine | NVN |
 | [Yoshi's Crafted World](01006000040C2000/README.md) | `01006000040C2000` | 1.0.1 | 4.4.1 | Unreal Engine 4.18 era (Good-Feel) | NVN |
+
+## Bring-up profiles
+
+| Game | Title ID | Build | SDK | Engine | Graphics |
+|---|---|---|---|---|---|
+| [The Legend of Zelda: Ocarina of Time](0400486024DEC000/README.md) | `0400486024DEC000` | v0 (Switch 2) | 22.2.8 (Ounce) | sead / agl / gsys, Havok | NVN2 |
 
 ## Keys
 
