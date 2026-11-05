@@ -33,6 +33,38 @@ class Translated(unittest.TestCase):
             return r.stdout
 
 
+class SurfaceLoadLiveness(Translated):
+    # S2R R4, SR_TID.X and S2R R5, SR_TID.Y; SULD.2D RGBA R8, [R4], image slot 0.
+    COORDS = inst(0x000fe20000002100, 0x0000000000047919) + inst(0x000fe20000002200, 0x0000000000057919)
+    LOAD = inst(0x000fe200001e0f00, 0x60000a0004087b97)
+
+    @staticmethod
+    def dead_add(src):
+        # IADD3 R16, R<src>, 1, RZ, where R16 is unused.
+        return inst(0x000fe20007ffe0ff, 0x0000000100107810 | src << 24)
+
+    def test_a_dead_component_does_not_kill_the_loads_coordinates(self):
+        for dead, live in ((8, 11), (11, 8)):
+            with self.subTest(dead=dead, live=live):
+                # SUST.2D R [RZ], R<live>, image slot 1.
+                store = inst(0x000fe20000100100, 0x60000c00ff007b9b | live << 32)
+                msl = self.translate(self.COORDS + self.LOAD + self.dead_add(dead) + store + inst(*EXIT))
+                self.assertIn('.read(', msl)
+                self.assertIn('.write(', msl)
+                self.assertIn('gl_LocalInvocationID.x', msl)
+                self.assertIn('gl_LocalInvocationID.y', msl)
+
+    def test_a_load_with_all_components_dead_is_eliminated(self):
+        msl = self.translate(self.COORDS + self.LOAD + self.dead_add(8) + self.dead_add(11) + inst(*EXIT))
+        self.assertNotIn('.read(', msl)
+
+    def test_a_dead_atomic_result_preserves_the_atomic_and_its_address(self):
+        address = inst(0x000fe20000002100, 0x0000000000037919)  # S2R R3, SR_TID.X
+        msl = self.translate(address + inst(*SUATOM) + self.dead_add(12) + inst(*EXIT))
+        self.assertIn('atomic_fetch_add', msl)
+        self.assertIn('gl_LocalInvocationID.x', msl)
+
+
 class Suatom(Translated):
     def test_add_u32_on_a_1d_image(self):
         msl = self.translate(inst(*SUATOM) + inst(*EXIT))
@@ -202,6 +234,27 @@ class AtomgCas(Translated):
     def test_another_form_is_refused(self):   # 64-bit (type 2 at 73..76)
         with self.assertRaises(AssertionError) as e: self.msl((self.CAS[0] | 2 << 9, self.CAS[1]))
         self.assertIn('ATOMG.CAS type 2', str(e.exception))
+
+
+class RedF32(Translated):
+    """RED.E.ADD.F32.FTZ.RN (0x98e, type 3 at 73..76), in Ocarina of Time's encoding (agl's sky_analyze 21d9f83e6027c565 at +0xa70, there on UR4 and R9): the IR has no float atomic, so
+    the add retries a compare-and-swap of the word. The translator used to log `Invalid reduction type: F32FtzRn` and drop the instruction"""
+    RED = (0x000fe8000c10e706, 0x00000005ff00798e)   # RED.E.ADD.F32.FTZ.RN [UR6], R5: at the start of storage slot 0
+
+    def msl(self, red=None):
+        code = mov(5, 0x3fc00000) + inst(*AtomgCas.ULDC) + inst(*(red or self.RED)) + inst(*EXIT)
+        return self.translate(code, nvn2_cs=[3, 1, 0, 0x50, 0])
+
+    def test_the_add_is_kept(self):
+        msl = self.msl()
+        self.assertRegex(msl, r'atomic_compare_exchange_weak_explicit\(\(device atomic_uint\*\)&\(\*spvDescriptorSet0\.cp_s0\)\._m0\[0\]')
+        self.assertIn('1.5', msl)   # the value, as a float operand of the add
+
+    def test_it_retries_until_the_word_held_what_it_read(self):
+        self.assertRegex(self.msl(), r'\bdo\s*\{[^}]*\}\s*while|for \(;;\)|while \(')
+
+    def test_the_sum_flushes_denormals(self):
+        self.assertIn('1.1754943508222875', self.msl())
 
 
 def ctrl(wb=7, wait=0, stall=2):   # an instruction's control bits, high word: stall, yield, write barrier wb, no read barrier, waiting on the barriers in wait

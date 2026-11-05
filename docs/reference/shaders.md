@@ -615,9 +615,11 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Dead-code removal dropped the inputs of atomics
 
-- **Cause:** Ryujinx's `Optimizer.RemoveNode` removes a dead node, then follows each source whose last use went away into the node that produced it. It did so even when that producer has side effects, such as an atomic or a call whose result is unused. Such a producer stays in the block, but its sources lost their uses, so the next dead-code pass deleted the chain that feeds it, and the atomic read undefined values.
-- **Fix:** general: `RemoveNode` follows only into producers without side effects (`HasSideEffects`). This follows MacNativeGames' translator patch 0002.
-- **Found on:** no game on hand so far. Rebuilding the chain changed no shader for this reason in Tears of the Kingdom, Breath of the Wild, Wonder, Scarlet or ANIMAL WELL (94,717 shaders); every MSL change was the early fragment tests attribute.
+- **Symptom:** a translated image load can use uninitialized coordinates after one result is discarded and another remains in use.
+- **Cause:** when `Optimizer.RemoveNode` removes the last use of a result, it may follow that result back into its producer and detach the producer's input uses. This is valid only if the producer can also be removed. A live sibling result keeps the producer in the block, where it still reads those inputs. The same applies to an atomic or a call with side effects.
+- **Fix:** use the existing `IsUnused` check for the producer before following it. It checks every destination and retains the side-effect protection added by MacNativeGames' translator patch 0002.
+- **Found on:** Ocarina of Time's two foliage simulation compute shaders with uninitialized coordinates in translated SPIR-V. The earlier atomic case did not change the translated output of 94,717 shaders from Tears of the Kingdom, Breath of the Wild, Wonder, Scarlet and ANIMAL WELL.
+- **Check:** `SurfaceLoadLiveness` in `dm/gfx/tests/test_dmsh_ampere_mem.py` uses synthetic instructions to exercise partial and complete image-load elimination and an atomic with an unused result.
 
 ### Position invariance across shaders
 
@@ -1072,11 +1074,20 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Comparisons with .FTZ
 
-- **Symptom:** single bright dots at thin far geometry (railings, track edges), changing frame to frame as the camera moves; already in the lit picture before anti-aliasing.
-- **Cause:** FSET and FSETP have an .FTZ flag (bit 80, after the comparison at 76..80): on NVIDIA a denormal operand compares as zero. The translator decoded it and dropped it, and Apple's GPUs keep fp32 denormals. A guard like `sum != 0` before `1 / sum` then lets a denormal sum through: its reciprocal overflows, the products give NaN, and a `min(x, 1.0)` (`precise::`, see [min, max and clamp with a NaN operand](#min-max-and-clamp-with-a-nan-operand)) turns it into 1.0, a fully lit pixel.
-- **Fix:** `AFset` / `AFsetp` compare a flushed operand where bit 80 is set: `|x| < FLT_MIN ? 0 : x` (`AFtz`, `InstEmitAmpereAlu.cs`). Maxwell's FSETP has the same flag (`InstFsetp*.Ftz`) and is not changed here.
-- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md): its deferred lighting `635061c90d75a8d1` normalises four depth-weighted half-resolution samples by `1 / sum` only where `FSETP.NEU.FTZ` says the sum is not zero (+0x10a0); every FSETP of that shader has the flag. On the Grand Prix's first flyover, a hand-patched library took the isolated dots out; the dotted rims along silhouettes stay (another cause, open).
-- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` (`CompareFtz`, on the game's encoding; it fails on the translator before).
+- **Symptom:** single bright dots at thin far geometry (railings, track edges), changing frame to frame as the camera moves, already in the lit picture before anti-aliasing. Most of them come from another cause (below).
+- **Cause:** a float comparison has an .FTZ flag (Ampere: FSET and FSETP bit 80, after the comparison at 76..80; Maxwell: FSETP bit 47, FSET bit 55, FCMP bit 47): on NVIDIA a denormal operand compares as zero. The translator decoded it and dropped it, and Apple's GPUs keep fp32 denormals. A guard like `sum != 0` before `1 / sum` then lets a denormal sum through: its reciprocal overflows, the products give NaN, and a `min(x, 1.0)` (`precise::`, see [min, max and clamp with a NaN operand](#min-max-and-clamp-with-a-nan-operand)) turns it into 1.0, a fully lit pixel.
+- **Fix:** a comparison flushes each operand where the flag is set: `|x| < FLT_MIN ? 0 : x` (`FlushDenormal`, `InstEmitAluHelper.cs`, from `AFset` / `AFsetp` and from Maxwell's `EmitFset`, `EmitFsetp` and `EmitFcmp`, which flushes only the source it compares). An immediate or RZ needs no code.
+- **Limit:** only the comparisons. The compilers set .FTZ on nearly every float instruction of every shader, so it is in effect a mode of the whole shader, and Metal has none (`MTLCompileOptions` has math modes, no denormal control). Flushing the arithmetic would be about 3.3 million more sites in Mario Kart World, so its FADD, FMUL and FFMA keep denormals. Four denormal weights can still add up to a normal sum, which NVIDIA sees as zero; it stays finite, so it makes no NaN.
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md): its deferred lighting `635061c90d75a8d1` normalises four depth-weighted half-resolution samples by `1 / sum` only where `FSETP.NEU.FTZ` says the sum is not zero. No Switch 1 game has shown the symptom; Maxwell's comparisons follow for the same semantics (the flag is on all of them in the 8 Switch 1 games counted).
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` (`CompareFtz`, on the game's encoding) and `test_dmsh_maxwell_ftz.py`.
+
+### Float add atomics
+
+- **Symptom:** `Invalid reduction type: F32FtzRn` in the shader build's translator notes. In the game, a value that shaders sum on the GPU stays 0: Ocarina of Time's outdoor scenes washed out to near white, with fog over everything and a huge glare at a doorway, while interiors looked right.
+- **Cause:** `EmitAtomicOp` handled integer sizes only and logged any other, dropping the instruction: RED and ATOMG `.ADD.F32.FTZ.RN` left no trace in the shader. The IR has no float atomic.
+- **Fix:** general: `EmitAtomicAddF32` in `InstEmitMemory.cs` adds through a compare-and-swap loop of the word, flushing denormals as `.FTZ` does. `GlobalToStorage` lowers the load and the exchange as any others, to a storage buffer or through the pool table.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): 416 instructions in 34 shaders.
+- **Check:** `RedF32` in `dm/gfx/tests/test_dmsh_ampere_mem.py`, on the game's encoding.
 
 ### Barrier moves around warp shuffles
 

@@ -65,16 +65,23 @@ class HalfImmediate(Alu):
 class CompareFtz(Alu):
     """FSETP / FSET .FTZ (bit 80): a denormal operand compares as zero, as on NVIDIA; Apple's GPUs keep denormals. Mario Kart World's deferred lighting 635061c90d75a8d1
     normalises its four depth-weighted samples by 1 / sum only where FSETP.NEU.FTZ says sum != 0: a denormal sum passed, its reciprocal overflowed, and the NaN came out
-    of a min(x, 1.0) as a fully lit dot (sparkles at thin far geometry)"""
-    FSETP = (0x000fca0003f1d000, 0x800000141300720b)   # FSETP.NEU.FTZ.AND P0, PT, R19, -R20, PT (the game's +0x10a0, there on R35 and -R10)
+    of a min(x, 1.0) as a fully lit dot. test_dmsh_maxwell_ftz.py has Maxwell's"""
+    FSETP = (0x000fca0003f1d000, 0x800000141300720b)   # FSETP.NEU.FTZ.AND P0, PT, R19, -R20, PT (the game's guard, there on R35 and -R10)
+    FSET = (0x000fe2000381d000, 0x800000141306720a)    # FSET.NEU.FTZ.AND R6, R19, -R20, PT
     FSEL = (0x000fe40000000000, 0x0000001413067208)    # FSEL R6, R19, R20, P0: keeps the predicate
     FLUSH = '1.1754943508222875'                       # FLT_MIN, the bound under which an operand is flushed
 
-    def test_ftz_flushes_denormal_operands(self):
-        self.assertIn(self.FLUSH, self.kept(self.FSETP, self.FSEL, srcs=(19, 20)))
+    def test_fsetp_flushes_both_operands(self):
+        self.assertEqual(self.kept(self.FSETP, self.FSEL, srcs=(19, 20)).count(self.FLUSH), 2)
+
+    def test_fset_flushes_both_operands(self):
+        self.assertEqual(self.kept(self.FSET, srcs=(19, 20)).count(self.FLUSH), 2)
 
     def test_without_ftz_compares_as_is(self):
         self.assertNotIn(self.FLUSH, self.kept((self.FSETP[0] & ~(1 << 16), self.FSETP[1]), self.FSEL, srcs=(19, 20)))
+
+    def test_against_zero_flushes_one(self):
+        self.assertEqual(self.kept((self.FSETP[0], 0x000000ff1300720b), self.FSEL, srcs=(19, 20)).count(self.FLUSH), 1)
 
 
 def s2r(rd, sr): return (0x000e260000000000 | sr << 8, 0x0000000000007919 | rd << 16)   # S2R Rd, SR (0x21 SR_TID.X, 0x25 SR_CTAID.X)

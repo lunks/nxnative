@@ -174,17 +174,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res);
         }
 
-        // .FTZ (bit 80 of FSET and FSETP, after the comparison's 76..80): a denormal operand compares as zero. Apple's GPUs keep denormals, so without this a sum of weights
-        // that NVIDIA flushes to zero passes a "!= 0" guard and its reciprocal overflows: Mario Kart World's deferred lighting (635061c90d75a8d1) normalises its four depth-weighted
-        // half-resolution samples by 1 / sum only where sum != 0, and the NaN it got at thin far silhouettes came out of a min(x, 1.0) as a fully lit dot (the sparkles on railings)
+        // .FTZ (bit 80 of FSET and FSETP, after the comparison's 76..80, Mesa NAK's layout). Without it a sum of weights that NVIDIA flushes to zero passes a "!= 0" guard and its reciprocal
+        // overflows: Mario Kart World's deferred lighting (635061c90d75a8d1) normalises its four depth-weighted half-resolution samples by 1 / sum only where sum != 0, and the NaN came out
+        // of a min(x, 1.0) as a fully lit dot. The arithmetic's own .FTZ stays dropped: Metal has no denormal mode, and a flush on every FADD, FMUL and FFMA would cost far more than it can show
         private static Operand AFtz(EmitterContext context, AmpereOp x, Operand v)
         {
-            if (!x.Bit(80))
-            {
-                return v;
-            }
-
-            return context.ConditionalSelect(context.FPCompareLess(context.FPAbsolute(v), ConstF(1.17549435e-38f)), ConstF(0), v);
+            return x.Bit(80) ? FlushDenormal(context, v) : v;
         }
 
         // FSET Rd, a, b: 1.0 where (a cmp b) bop P (87..90) holds, else 0.0
