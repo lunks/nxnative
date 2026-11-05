@@ -73,6 +73,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- [GPU memory past Metal's working set](../../../docs/reference/memory.md#gpu-memory-past-metals-working-set-freezes-the-mac): a session ended in a GPU out-of-memory and a stuck game, and #1326 in a Mac frozen until the power button. A guard before each residency commit now stops the game first.
 - [Mesh draws left out while their pipelines built](../../../docs/reference/shaders.md#a-mesh-draw-left-out-while-its-pipeline-is-built): after a load in the first session on a new chain, the forest was washed white and filled in over seconds. `pso_manifest.tsv` holds the `M` rows of the title, a save load and Kokiri Forest.
 - [Pool walks gave every registered ID a texture of its own](../../../docs/reference/nvn-objects.md#a-pool-walk-gives-every-registered-id-a-texture-of-its-own): GPU out of memory within 2 minutes of an outdoor save on a 24 GB Mac. The fix lowers the growth and does not end it.
 - A [shader rebuild after a chain change](../../../docs/reference/shaders.md#a-shader-rebuild-after-a-chain-change-runs-on-one-core) took 38 to 42 minutes on one core with about 5% of its libraries to compile.
