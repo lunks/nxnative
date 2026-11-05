@@ -33,6 +33,20 @@ For a run past the opening, copy the committed save folder to the new run's `DM_
 - **Resolution:** `ModelSceneExtensionParam` (`Pack/Bootup`) gives the final image and base size per mode, 2560x1440 twice and 1920x1080 once, and a dynamic-resolution palette for each: 10 levels at 2560x1440 (`ResolutionReduceScale` 0.75 down to 0.3333, so upscale rates 1.33 to 3.0, load threshold 95) and 8 at 1920x1080 (0.75 to 0.4445, threshold 108). The scene never renders at the output size, so the network always runs. `main` queries no display size (no `oe::GetDefaultDisplayResolution` or `vi::QueryDisplayBufferMaxResolution`), and it imports `oe::GetCurrentGraphicsScale`, HDR status and 120 Hz / VRR queries.
 - **Motion and camera:** `EnableMotionBuffer` and `MotionVectors3D` are off and there is no TAA, so MetalFX needs camera-only motion vectors from depth, as on [Donkey Kong Bananza](../040074A01BF12000/README.md#metalfx-temporal-scaling-and-frame-interpolation-current-opt-in-not-played-yet). agl's shaders name gsys's Context members (`cGSysCtxView`, `cGSysCtxProj`, `cGSysCtxViewProj`, `cGSysCtxInvView`, `cGSysCtxNearFarParam`, `cGSysCtxFovyParam`), and Bananza's `camera_mats` (`vertex 0 0x0 0x30`) holds (current, checked in a run with `DM_MFX_PROBE`): the opening's 3D cutscenes and Link's house give a GL perspective camera, 50 degrees, 16:9, near 0.1, far 25037, no projection offset (no jitter), in the 1920x1080 D32F depth pass that has the upscaler's input size; over 15,000 upscaler frames every one had motion vectors, one of them without a camera, and the cutscenes' cuts reset the history.
 
+### MetalFX's frame time (current, in a run)
+
+Docked at rate 3.0 (854x480 → 2560x1440), from the autosave in Link's house, the p50 of the last 300-frame windows, one boot each:
+
+| Upscaler | Encoding thread | Frame time | GPU p50 |
+|---|---|---|---|
+| Game's network | off | 18.5 ms | 14.5 ms |
+| Game's network | on | 18.7 ms | 14.2 ms |
+| MetalFX spatial | off | 20.7 ms | 14.0 ms |
+| MetalFX temporal | off | 30.7 ms | 24.2 ms |
+| MetalFX temporal | on | 25.4 ms | 17.9 ms |
+
+The cost is [the temporal scaler's encode itself](../../../docs/reference/rendering.md#metalfx-temporal-scaling-at-a-games-own-upscaler), not the host's copies or check, and it is why the profile sets `enc_thread on`. Temporal still costs about 7 ms a frame over the network.
+
 ### Render resolution (current, in a run)
 
 **Render resolution** (`DM_UPSCALE_RATIO`, [`setting_patches.tsv`](setting_patches.tsv)) fixes the scale the game renders at. The dynamic-resolution controller (built at stage start by `main+0x31c3b30` from the palette's level entries: {scale, priority} nodes) returns the chosen level's scale from its update (`main+0x805aa0`) through `main+0x805ff0` (`fmov w9,s8`), and its caller (`main+0x31d3ee0`) makes it the scene's scale when the level changes or the stage starts. One word there, `movz w9,#<the float's upper half>,lsl #16`, gives every level the preset's scale. Docked, from the autosave in Link's house:
