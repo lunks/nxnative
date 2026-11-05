@@ -38,6 +38,30 @@ def pack():
     return bytes(d)
 
 
+def ndsr_pack():
+    """agl's variable-ratio NDSR pack: 8-byte entries from +0x14, a program, 4 bytes of data (type 9), then a second program that lands on an odd entry, and a third on an even one"""
+    d = bytearray(0x800)
+    d[:4] = b'NDSR'; struct.pack_into('<I', d, 4, 0x10100)
+    words, ctl_at, code_at = [], 0x200, 0x400
+    for i in range(3):
+        code = bytes([0x19, 0x79, i]) + bytes(0xfd)
+        d[code_at:code_at + len(code)] = code
+        d[ctl_at:ctl_at + 0xe0] = ctl(0x11, 0, len(code))
+        words += [ctl_at, 0xe0 << 4 | 6, code_at, len(code) << 4 | 7]
+        if i == 0: words += [0x1f0, 4 << 4 | 9]
+        ctl_at += 0xe0; code_at += 0x100
+    struct.pack_into(f'<{len(words)}I', d, 0x14, *words)
+    return bytes(d)
+
+
+class NdsrTests(unittest.TestCase):
+    def test_a_program_on_an_odd_entry(self):
+        found = split.ndsr_shaders(ndsr_pack(), 'Lib/agl/x.pck')
+        self.assertEqual(len(found), 3)
+        self.assertEqual({st for _, st, _, _ in found}, {'cs'})
+        self.assertEqual([code[2] for _, _, _, code in found], [0, 1, 2])
+
+
 class NdveTests(unittest.TestCase):
     def test_raw_and_table_programs(self):
         found = split.ndve_shaders(pack(), 'Movie/Ndve/x.dat')

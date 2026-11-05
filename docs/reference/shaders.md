@@ -476,6 +476,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** `ndsr_shaders` in `shader_split.py` takes the start at which more of the first 16 records point at an NVN2 control section.
 - **Found on:** [Splatoon Raiders](../../dm/games/0400380020056000/README.md).
 
+### Programs on odd entries of an NDSR pack
+
+- **Symptom:** `[RED] shader … is not in the shader map` and `the dispatched program has no compute shader` once, just before the first `upscaler: output` line, and hard stair-stepped edges on foliage: the upscaler's SMAA has no blend weights. The key is in no archive by the split's reckoning.
+- **Cause:** an NDSR pack is a list of 8-byte entries, `{offset, length << 4 | type}`: a control section (0, 3, 6) followed by its code area (1, 4, 7), and constant data. `ndsr_shaders` walked two entries at a time, which holds while every run of data has an even count. In the variable-ratio packs a 4-byte entry (type 9) sits between two programs and the next program falls on an odd entry.
+- **Fix:** `ndsr_shaders` walks single entries and takes the entry after a control section as its code area.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): `d17eefaff4f0bc23` (both variable-ratio packs), `1fdc85178b60f6ce` (`agl_ndsr_vr_light.pck`) and `92918e9b7e2f89a4` (`agl_ndsr_vr.pck`).
+- **Check:** `NdsrTests` in `dm/gfx/tests/test_ndve.py`.
+
 ### The movie library's NDVE shader pack
 
 - **Symptom:** a movie decodes (`[codec] AV1 decoder 1: first picture …`), then `[RED] shader … is not in the shader map` and `the dispatched program has no compute shader`, and the movie's layer stays black while the UI over it draws (a title logo on black). The dumped shaders (`DM_NVN_SHDUMP`) have 72-byte keys' control sections and are in no BNSH, BAHS or module.
