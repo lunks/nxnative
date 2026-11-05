@@ -1,0 +1,49 @@
+# Star Fox (Switch 2, update v131072). In bring-up on the Mac: see README.md
+# Its engine "eclipse" (Bullet, Granny, Wwise 2024.1, NPLN, libuv), SDK 21.4.4 built for the Switch 2 (Ounce), NVN2 (Ampere shaders); modules main + subsdk0 (movie) + subsdk3 (nn::camera) + sdk.
+# Packed from a NUP (base + update 131072). Shaders: bare records in data.zip (VZIP, linked LZ4 chunks) and VIPR packs (shader_split.py).
+
+# ---- Identity ----
+title_id	0400E88025B1A000
+program_id	0400E88025B1A000
+
+# ---- App ----
+name	Star Fox
+ipa	StarFox.ipa
+app_category	public.app-category.action-games
+
+# ---- Versions ----
+# the NUP's update carries no display version: v131072 is a placeholder
+build	v131072	v131072	main=a7730d0f74d168d90422354c8317f76f	subsdk0=593524e167fecd3c7a42a184c9da3963	subsdk3=973102ab6bb2be3dc4f0c3a4c9e7e1c4	sdk=41d4de4a3b78214ad20c896960df0e5e
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk1 (C / libc), subsdk2 (NintendoSDK_DLSS: the host implements NVN2's DLSS on MetalFX)
+modules	main subsdk0 subsdk3 sdk
+# the RomFS holds two files: data.zip (14.5 GB) and a .cvar file
+romfs_marker	data.zip
+# data.zip's members are LZ4 already: stored, not compressed again
+zip_store	.zip:.metallib
+
+# ---- Memory ----
+# The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure). The NPDM declares 16 MB of system resource, so virtual address memory is on, and main sets no heap.
+# Set by hand for the first build: the SDK 21 Switch 2 split of Splatoon Raiders, which ships the same sdk build (41d4de4a…) and needs its 16 GB alias region (docs/reference/memory.md).
+# The survey's guess, a 5 GB block with a 4.375 GB alias region, is less than the game maps: up to +8.53 GB in a session's log
+mem_reserve	0x550000000
+mem_alias	0x400000000
+mem_stack	0x10000000
+app_pool	0x240000000
+sys_resource	0x1000000
+
+# ---- Frame rate ----
+# No fps_target: the game sets its own present interval (1, and 2 in some stretches; frame time p50 16.67 ms in headless runs), and main has neither a frame step
+# nor an engine frame limit the host writes, so the host would not apply a target (hle_nvn.c fps_present_cap) and the Frame rate setting would do nothing
+
+# ---- Shader split (shader_split.py) ----
+# shader inputs: kept as the provisional profile had them
+shader_groups	/=romfs
+shader_note	0400E88025B1A000 shaders
+
+# ---- Graphics ----
+# the game calls nvnDeviceSetDepthMode with near = 0 (found by the NSP script's address region check, which found no address regions)
+depth_mode	zero

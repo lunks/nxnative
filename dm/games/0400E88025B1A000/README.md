@@ -1,0 +1,75 @@
+# Star Fox (`0400E88025B1A000`)
+
+A Switch 2 game: update v131072 over the base game, packed from a NUP, SDK 21.4.4 built for the Switch 2 (`Ounce`), NVN2. Its engine is "eclipse" (Bullet, Granny, Wwise 2024.1, NPLN, libuv); modules `main`, `subsdk0` (movie), `subsdk3` (`nn::camera`) and `sdk`. **In bring-up on the Mac** (M5 Pro): it boots, and the title, the hangar, the briefing and the prologue / tutorial render; sound plays through Wwise's output stream. 60 fps, as the game asks. No IPA has been built.
+
+## What it needs
+
+No rewriter cuts and no `patches.py`: nothing in the host or the rewriter names its builds.
+
+| Setting | Where | Why |
+|---|---|---|
+| `mem_alias 0x400000000`, `mem_reserve 0x550000000`, `mem_stack 0x10000000`, `app_pool 0x240000000` | [`game.tsv`](game.tsv) | set by hand for the first build: the SDK 21 Switch 2 split of Splatoon Raiders, which ships the same `sdk` build (`41d4de4a…`) ([An SDK 21 Switch 2 game with a 4.5 GB alias region](../../../docs/reference/memory.md#an-sdk-21-switch-2-game-with-a-45-gb-alias-region)). The survey's guess, a 4.375 GB alias region, is less than the game maps: up to +8.53 GB in a play session's log |
+| `sys_resource 0x1000000` | `game.tsv` | the NPDM declares 16 MB, so virtual address memory is on; `main` sets no heap |
+| `modules main subsdk0 subsdk3 sdk` | `game.tsv` | `subsdk1` (libc) and `subsdk2` (`NintendoSDK_DLSS`) stay unloaded: `main` takes nothing from them the host does not supply ([NVN2's DLSS on MetalFX](../../../docs/reference/rendering.md#nvn2s-dlss-on-metalfx)) |
+| `depth_mode zero` | `game.tsv` | the game sets near = 0; the NSP script's address region check found it (and no address regions) |
+| `zip_store .zip:.metallib` | `game.tsv` | `data.zip`'s members are LZ4 already |
+| no `fps_target` | `game.tsv` | see [Frame rate](#frame-rate) |
+
+## Files
+
+- One NUP (`Star Fox [0400E88025B1A000].nup`): the base game and update 131072, packed by the NSP script ([The packing script in detail](../../../docs/development.md#the-packing-script-in-detail)). It carries no control data, so the display version `v131072` is a placeholder, and the app's icon comes from `--icon`.
+- The RomFS holds two files: `data.zip` (14.5 GB) and a `.cvar` file. `data.zip` has a VZIP header before its first member; its members are named by the FNV-1a hash of their path, and many are stored as linked 64 KB LZ4 chunks (`shader_split.py`).
+
+## Shaders
+
+- 3,021 in [`shader_map.tsv`](shader_map.tsv) (1,483 vertex, 1,305 pixel, 233 compute), all read by `shader_split.py`: 2,828 bare records in `data.zip` (code, then an NVN2 control section, whatever their third word: Corneria's two water shaders have 0x48000 there), and two VIPR packs, the NDSR upscaler's (28) and the characters' compute archive of control sections with their code (165). All 3,021 build.
+- Pairs: 8,892 in [`shader_pairs.tsv`](shader_pairs.tsv), from the engine's own program descriptions ([Program pairs from the engine's own shader descriptions](../../../docs/reference/shaders.md#program-pairs-from-the-engines-own-shader-descriptions)).
+- The characters' networks: 85 compute shaders with IMMA ([Ampere IMMA, the integer matrix multiply-accumulate](../../../docs/reference/shaders.md#ampere-imma-the-integer-matrix-multiply-accumulate)); on an Apple10 GPU (M5) their 84 TensorOps libraries `<key>_bt` stand in for the per-lane ones. HMMA (`60f3f31a0e0132e1`) runs through `simdgroup_matrix` ([Ampere HMMA through TensorOps](../../../docs/reference/shaders.md#ampere-hmma-through-tensorops)).
+- Compute pipelines come from the pipeline archive ([Compute pipelines compiled at first use](../../../docs/reference/shaders.md#compute-pipelines-compiled-at-first-use), [Compute pipelines outside the bundled archive built at every start](../../../docs/reference/shaders.md#compute-pipelines-outside-the-bundled-archive-built-at-every-start)).
+- Prewarm list ([`pso_manifest.tsv`](pso_manifest.tsv)): empty, not recorded yet.
+
+## Rendering
+
+- The DLSS network is made at 1920x1080 and resized to 768x432 at boot; MetalFX's temporal scaler stands in for it, 768x432 to 768x432. A copy pass encodes the result into an RGBA8_SRGB target, and the upscaler network `ddc729bcdb4c8df9` takes it to 1536x864, which goes to the 3840x2160 window.
+- Resolved: the black picture after the intro and the black character fur (62 pixel shaders and a compute shader with a binding left without a slot, TXD reads removed), [A separate sampler word alone among a handle's values](../../../docs/reference/shaders.md#a-separate-sampler-word-alone-among-a-handles-values) and [NVN2 compute's separate texture and sampler handles](../../../docs/reference/shaders.md#nvn2-computes-separate-texture-and-sampler-handles).
+- Resolved: the pale, hazy picture, encoded to sRGB twice: [sRGB textures loaded and stored raw through an image](../../../docs/reference/rendering.md#srgb-textures-loaded-and-stored-raw-through-an-image). General Pepper's close-up in the intro now matches console footage.
+- Resolved: stalls of seconds at each scene change of the prologue (7.6 s and 10.0 s frames): [A GPU copy into a texture uploaded from its storage uploaded all of it again](../../../docs/reference/nvn-objects.md#a-gpu-copy-into-a-texture-uploaded-from-its-storage-uploaded-all-of-it-again).
+
+## Frame rate
+
+The game asks for present interval 1 (60 fps) and sets 2 itself in some stretches: frame time p50 16.67 ms in headless runs, 33 ms in parts of a play session. `main` has neither a frame step nor an engine frame limit the host writes, so the host keeps the game's own interval and would not apply a profile target; the profile sets no `fps_target`, and the **Frame rate** setting is not offered.
+
+## Sound
+
+Wwise opens an SDK 20+ output stream ([Output streams and virtual audio devices](../../../docs/reference/audio.md#output-streams-and-virtual-audio-devices-sdk-20-auddmgu)), float stereo at 48 kHz. Two Opus decoder managers start at boot ([SDK 21's hardware Opus decoder manager](../../../docs/reference/audio.md#sdk-21s-hardware-opus-decoder-manager)).
+
+## Driving it on the Mac
+
+The work folder's `run/boot.sh <log> [seconds] [VAR=value …]` boots the Mac app's host headless from that folder (its own saves), killed after the given time.
+
+## Open
+
+- **Current, being fixed:** GPU hangs after the prologue's scene loads: `[RED] command buffer execution error`, the failed command buffer `Caused GPU Hang Error (kIOGPUCommandBufferCallbackErrorHang)`, the others discarded as its victims.
+- **Current:** with HDR on (`DM_HDR=1`) the session shows a black screen.
+- **Current, under investigation:** the scene renders at 768x432 before DLSS ([Rendering](#rendering)); whether the console renders it larger is not known.
+- **Current:** the game's NDSR upscaler is not recognised: `upscaler_keys` (`dm/games/game.py`) takes compute shaders whose source matches `/agl_ndsr\.pck#`, and Star Fox's 20 NDSR compute shaders are `/data.zip/<hash>#VIPR@…#NDSR@…`. `DM_GAME_UPSCALER_KEYS` is empty, so **Game's upscaler** and frame interpolation (which also needs `camera_mats`) are not offered.
+- DLSS's bias mask (a reactive mask for MetalFX) is not passed on (a `[RED]` line at boot).
+- An IPA: the 16 GB alias region is over iOS's limit until the SDK 21 cuts are ported, as for Splatoon Raiders.
+
+## Found on this game
+
+General changes first needed here; each applies to every game:
+
+- **Packing a NUP with no profile** (`scripts/build_ipa_from_nsp.py`): the survey reads the container's own files, and `--icon` gives an app an icon for a NUP that carries none ([The packing script in detail](../../../docs/development.md#the-packing-script-in-detail)).
+- **The shader split** (`shader_split.py`): `data.zip` read member by member past its VZIP header, linked LZ4 chunks inflated, bare shader records and VIPR packs taken; a loose file of 1 GB or more that no reader takes gets a `[RED]` line. Pairs: [Program pairs from the engine's own shader descriptions](../../../docs/reference/shaders.md#program-pairs-from-the-engines-own-shader-descriptions).
+- [A camera session with no camera plugged in](../../../docs/reference/services.md#a-camera-session-with-no-camera-plugged-in) and [The camera through the graphics system](../../../docs/reference/services.md#the-camera-through-the-graphics-system): the crash at `main+0xba54e4c` 1.4 s into the boot.
+- [GameChat with no chat room](../../../docs/reference/services.md#gamechat-with-no-chat-room): the null chat service in `nn::chat::GetChattingUid`.
+- [Socket `Poll` and `Select` with nothing to wait on](../../../docs/reference/services.md#socket-poll-and-select-with-nothing-to-wait-on): libuv's poll loop, through the sdk's POSIX `poll`, gets `POLLNVAL` for a descriptor the host never opened. [Network interface, LDN, socket and play report calls](../../../docs/reference/services.md#network-interface-ldn-socket-and-play-report-calls): `nn::socket::internal::Initialize` offline.
+- [Output streams and virtual audio devices](../../../docs/reference/audio.md#output-streams-and-virtual-audio-devices-sdk-20-auddmgu) and [SDK 21's hardware Opus decoder manager](../../../docs/reference/audio.md#sdk-21s-hardware-opus-decoder-manager): the aborts at audio init.
+- [NVN2's DLSS on MetalFX](../../../docs/reference/rendering.md#nvn2s-dlss-on-metalfx): `nvnDlssNetworkResize` records the network's new size.
+- Translation: [A separate sampler word alone among a handle's values](../../../docs/reference/shaders.md#a-separate-sampler-word-alone-among-a-handles-values) (with VOTEU into a uniform predicate), [NVN2 compute's separate texture and sampler handles](../../../docs/reference/shaders.md#nvn2-computes-separate-texture-and-sampler-handles), [Texture handles of SDK 22's Ampere code](../../../docs/reference/shaders.md#texture-handles-of-sdk-22s-ampere-code) (TXD and TLD4 through a uniform register, PIXLD.COVMASK, BMSK), [Ampere SURED image reductions](../../../docs/reference/shaders.md#ampere-sured-image-reductions) (OR), [Ampere IMMA, the integer matrix multiply-accumulate](../../../docs/reference/shaders.md#ampere-imma-the-integer-matrix-multiply-accumulate) (through TensorOps on an M5).
+- [sRGB textures loaded and stored raw through an image](../../../docs/reference/rendering.md#srgb-textures-loaded-and-stored-raw-through-an-image): the haze.
+- [A GPU copy into a texture uploaded from its storage uploaded all of it again](../../../docs/reference/nvn-objects.md#a-gpu-copy-into-a-texture-uploaded-from-its-storage-uploaded-all-of-it-again): the stalls.
+- [Compute pipelines compiled at first use](../../../docs/reference/shaders.md#compute-pipelines-compiled-at-first-use) and [Compute pipelines outside the bundled archive built at every start](../../../docs/reference/shaders.md#compute-pipelines-outside-the-bundled-archive-built-at-every-start).
+- [A covered window's presents follow the host's clock](../../../docs/reference/frame-rate.md#a-covered-windows-presents-follow-the-hosts-clock): about 3 fps while the window was covered.
+- [An SDK 21 Switch 2 game with a 4.5 GB alias region](../../../docs/reference/memory.md#an-sdk-21-switch-2-game-with-a-45-gb-alias-region): the same split as Splatoon Raiders.
