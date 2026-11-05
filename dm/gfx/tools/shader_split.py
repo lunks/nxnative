@@ -55,6 +55,7 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program; Star Fox's engine programs, engine_pairs); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
+# Mesh table (mesh_pipelines.tsv, beside the pipeline pair table, for a game with mesh shaders): (task key or -, mesh key, pixel key) of every mesh-shaded BNSH or BAHS program variation; pso_offline.py --mesh puts their pipelines in the archive
 import base64, collections, concurrent.futures as cf, glob, hashlib, json, os, re, struct, subprocess, sys, time, zlib
 from typing import NoReturn
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../tools'))
@@ -275,9 +276,9 @@ def ndve_shaders(d, label):
 BAHS_VAR = {}   # BAHS entry label → the program variation it belongs to (bahs_variations; var_pairs pairs by it)
 def bahs_variations(d, label, entries):
     """The variations of an agl BAHS file's programs, for var_pairs. The table area holds a binary array (u32 byte size, u32 count, then per binary a record: u32 record size, u32 kind
-    (0 vertex, 1 fragment, 3 compute), two u32, the 16-byte entry bahs_shaders reads) and right after it a program array (u32 byte size, u32 count, then per program: u32 record size,
+    (0 vertex, 1 fragment, 3 compute, 4 task, 5 mesh), two u32, the 16-byte entry bahs_shaders reads) and right after it a program array (u32 byte size, u32 count, then per program: u32 record size,
     u32 name length, u32 stage mask, u32 index of its first binary, its name, its macros). A program's binaries run from its first index to the next program's; the n-th vertex binary
-    and the n-th fragment binary in that range are one variation. Breath of the Wild: 109 of the 543 pairs drawn on a cold start in Zora's Domain came from these files, and none was in
+    and the n-th fragment binary in that range are one variation, as are a mesh-shaded program's n-th fragment, task and mesh binaries. Breath of the Wild: 109 of the 543 pairs drawn on a cold start in Zora's Domain came from these files, and none was in
     shader_pairs.tsv, which paired only BNSH variations. A file whose arrays do not read back (another layout, or an entry bahs_shaders took that no record holds) gives no pairs"""
     if not entries: return
     taken = {int(e.rsplit('@', 1)[1], 16) for e in entries}
@@ -305,10 +306,10 @@ def bahs_variations(d, label, entries):
     if q != o + psz: return
     bases.append(acnt)
     for p in range(pcnt):
-        seen = [0, 0]
+        seen = collections.Counter()
         for i in range(bases[p], bases[p + 1]):
             a, k = recs[i]
-            if k > 1: continue   # compute and the other kinds pair with nothing
+            if k not in (0, 1, 4, 5): continue   # compute and the other kinds pair with nothing
             if a in taken: BAHS_VAR[f'{label}#BAHS@{a:#x}'] = f'{label}#BAHS#prog{p}#var{seen[k]}'
             seen[k] += 1
 
@@ -2905,12 +2906,14 @@ def ue_shaders(d, label):
 
 def var_pairs(found):
     """(vertex key, pixel key) within the same BNSH variation; (vertex key, pixel key, 'prog') within the same BAHS program variation (bahs_variations).
-    The tables stay separate; dmsh_build.py pads against both, as the pipeline prebuild uses both."""
+    The tables stay separate; dmsh_build.py pads against both, as the pipeline prebuild uses both.
+    And (task key or '-', mesh key, pixel key, 'mesh') of a mesh-shaded variation, for mesh_pipelines.tsv: Ocarina of Time's 2,058 such variations give 1,312 triples, 52 of which its first scenes drew"""
     var = collections.defaultdict(dict)
     for where, st, ctl, code in found:
         g = where if '#var' in where else BAHS_VAR.get(where)
         if g: var[g][st] = skey(ctl, code)
-    return {(v['vs'], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() if 'vs' in v and 'ps' in v}
+    return ({(v['vs'], v['ps']) + (('prog',) if '#BAHS#prog' in g else ()) for g, v in var.items() if 'vs' in v and 'ps' in v}
+            | {(v.get('ts', '-'), v['ms'], v['ps'], 'mesh') for v in var.values() if 'ms' in v and 'ps' in v})
 
 WHOLE_RED = 1 << 30   # a loose file this large scanned whole gets a red line first (Star Fox's 14.5 GB data.zip, before zip_jobs read its VZIP header, held one worker for minutes)
 
@@ -3178,6 +3181,7 @@ def main():
             keys[key] = v; per_src[group(v[0])] += 1
     progs = VProgs(x for *_, extra in results if isinstance(extra, VProgs) for x in extra)
     if any(p[0] != 'raw' for p in progs): ep, note = engine_pairs(progs); pairs |= ep; print(note)   # Star Fox's programs: they pair records of other members
+    mesh = {x[:3] for x in pairs if x[-1] == 'mesh'}; pairs -= {x + ('mesh',) for x in mesh}
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
@@ -3228,6 +3232,10 @@ def main():
         with open(psopairsout, 'w') as f:
             f.write('# kind: evidence  supplemental vertex / pixel shader pairs (BAHS program variations and legacy Unity pass-input covers) for vertex output padding and the pipeline prebuild (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> pixel key\n')
             for a, b in sorted(prog - pairs): f.write(f'{a}\t{b}\n')
+        if mesh:   # beside it, only for a game with mesh shaders: the task / mesh pipelines of the pipeline archive (pso_offline.py --mesh)
+            with open(os.path.join(os.path.dirname(psopairsout), 'mesh_pipelines.tsv'), 'w') as f:
+                f.write('# kind: evidence  task (- for none) / mesh / pixel shaders of each mesh-shaded program variation, for the offline pipeline archive (generated by dm/gfx/tools/shader_split.py, do not edit): task key <TAB> mesh key <TAB> pixel key\n')
+                for row in sorted(mesh): f.write('\t'.join(row) + '\n')
     print(f'shaders: {len(rows)} (' + ', '.join(f'{STAGE_NAME[s]} {n}' for s, n in sorted(stat.items())) + '); sources ' + ', '.join(f'{g} {n}' for g, n in per_src.most_common()) + f'; compute shader answers {len(facts)} rows' + (f'; variation pairs {len(pairs)}' if pairsout else ''))
 
 if __name__ == '__main__':

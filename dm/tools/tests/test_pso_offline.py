@@ -171,6 +171,45 @@ class Compute(unittest.TestCase):
         self.assertEqual([(n, len(x), len(y)) for n, x, y in po.groups_of([], c, 5, 0)], [('c00001', 0, 3)])
 
 
+class Mesh(unittest.TestCase):
+    """The task / mesh pipelines of mesh_pipelines.tsv: what the host's lookup names (mtk_bundled), and the triples it would not find"""
+    setUp, shader = Plan.setUp, Plan.shader
+    def test_read_meshes(self):
+        t = self.d / 'mesh_pipelines.tsv'
+        t.write_text('# header\n-\tm1\tf1\nt1\tm2\tf2\n-\tm1\tf1\nshort\tline\n')
+        self.assertEqual(po.read_meshes([t, self.d / 'none.tsv', None]), [(None, 'm1', 'f1'), ('t1', 'm2', 'f2')])
+        self.assertEqual(po.read_meshes(None), [])
+
+    def test_pipelines_and_left_out(self):
+        one = {'_b': [('main0', False), ('main0_z', False)]}
+        self.shader('t', {'mesh_stage': {'kind': 'ts', 'threads': 32, 'payload': 250, 'task': True}}, one)
+        self.shader('m', {'entry_z': 'main0_z', 'mesh_stage': {'kind': 'ms', 'threads': 64, 'payload': 250, 'task': True}}, one)
+        self.shader('n', {'mesh_stage': {'kind': 'ms', 'threads': 32, 'payload': 0, 'task': False}}, one)
+        self.shader('f', {}, one)
+        self.shader('p', {'raster': {'primitive_id': 1}}, one)
+        self.shader('c', {}, {'_b': [('main0', True)]})
+        self.shader('e', {'entry': 'other'}, one)
+        self.shader('x', {'chain': 'fedcba987654'}, one)
+        self.shader('l', {}, {})
+        task = ('t_b', 'main0', 32, 256)   # the payload as the host rounds it
+        rows = [('t', 'm', 'f'), (None, 'n', 'f'), ('t', 'm', 'f'), (None, 'm', 'f'), ('t', 'n', 'f'), ('t', 'm', 'p'), ('t', 'm', 'c'), ('t', 'm', 'e'), ('t', 'm', 'l'), ('t', 'm', 'x'), ('t', 'm', 'gone'), ('m', 'm', 'f'), ('t', 'f', 'f')]
+        pipes, left = po.plan_mesh(self.d, CHAIN, rows, False)
+        self.assertEqual(pipes, [(*task, 'm_b', 'main0', 64, 'f_b', 'main0'), (None, None, 0, 0, 'n_b', 'main0', 32, 'f_b', 'main0')])
+        self.assertEqual(left, {'reflection': 4, 'task': 2, 'primitive ID': 1, 'library': 1, 'entry': 1, 'constants': 1})
+        self.assertEqual(po.plan_mesh(self.d, CHAIN, rows[:1], True)[0], [(*task, 'm_b', 'main0_z', 64, 'f_b', 'main0')])   # the near = 0 depth mode, as shader_load takes it
+
+    def test_script(self):
+        pipes = [('t_b', 'main0', 32, 256, 'm_b', 'main0', 64, 'f_b', 'main0'), (None, None, 0, 0, 'n_b', 'main0', 32, 'f_b', 'main0')]
+        j = po.script(self.d, [], (), pipes)
+        self.assertEqual([l['label'] for l in j['libraries']], ['t_b', 'm_b', 'f_b', 'n_b'])
+        first, second = j['pipeline_descriptors']['mesh_render_pipeline_descriptors']
+        self.assertEqual({k: v for k, v in first.items() if k != 'color_attachments'}, {
+            'object_function_descriptor': 'fnd:t_b.main0', 'max_total_threads_per_object_threadgroup': 32, 'payload_memory_length': 256,
+            'mesh_function_descriptor': 'fnd:m_b.main0', 'fragment_function_descriptor': 'fnd:f_b.main0', 'max_total_threads_per_mesh_threadgroup': 64})
+        self.assertEqual(first['color_attachments'], [dict.fromkeys(po.COLOUR, 'Unspecialized')] * 8)   # one base for every colour format, blend and mask
+        self.assertNotIn('object_function_descriptor', second)
+        self.assertNotIn('mesh_render_pipeline_descriptors', po.script(self.d, [('v_bp', 'main0', 'f_b', 'main0')])['pipeline_descriptors'])   # none: the script as before
+
 class Build(unittest.TestCase):
     """main: one archive per architecture, made again only when its key changes; the stamp, rest_pairs.tsv and archive.tsv beside them"""
     def setUp(self):
@@ -291,8 +330,8 @@ class Build(unittest.TestCase):
         self.main('--depth', 'gl')
         self.assertEqual(len(self.calls), 2)
         original = po.script
-        def changed(lib_dir, bases, computes=()):
-            config = original(lib_dir, bases, computes)
+        def changed(lib_dir, bases, computes=(), meshes=()):
+            config = original(lib_dir, bases, computes, meshes)
             config['pipeline_descriptors']['render_pipeline_descriptors'][0]['raster_sample_count'] = 4
             return config
         with mock.patch.object(po, 'script', changed):
@@ -517,6 +556,63 @@ class Build(unittest.TestCase):
             observed.clear(); self.main('--os-min', '27.0', '--depth', 'gl'); self.assertEqual(observed, [('compile', []), ('merge', 2)])
             observed.clear(); self.main('--os-min', '27.0', '--depth', 'gl', '--no-compute'); self.assertEqual(observed, [('compile', ['main0'])])   # bases alone: one compiler run
             self.assertIn('compute\t0\n', (self.out / 'archive.tsv').read_text())
+
+    def mesh_game(self, rows):   # a mesh table with shaders m1..m5 and f
+        for i in range(1, 6):
+            (self.lib / f'm{i}_b.json').write_text(json.dumps({'chain': CHAIN, 'entry': 'main0', 'mesh_stage': {'kind': 'ms', 'threads': 32, 'payload': 0, 'task': False}}))
+            (self.lib / f'm{i}_b.metallib').write_bytes(metallib([('main0', False)]))
+        (self.prof / 'mesh_pipelines.tsv').write_text(rows)
+
+    def mesh_runner(self, refused=(), error='applegpu-nt: error: plugin wrapper-nt.dylib cannot emit pipeline\n'):   # metal-tt stops at a mesh shader of refused, and reports why in its log
+        run, observed = self.batched_runner()
+        def tt(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            if 'metal-tt' in cmd and '-o' in cmd:
+                js = next(Path(p) for p in cmd if p.endswith('.mtl4-json'))
+                libs = {l['label'] for l in json.loads(js.read_text())['libraries']}
+                if libs & set(refused):
+                    kw['stdout'].write(error); kw['stdout'].flush()
+                    return subprocess.CompletedProcess(cmd, 1)
+            return run(cmd, **kw)
+        return tt, observed
+
+    def test_mesh_pipelines_are_groups_of_their_own(self):
+        self.mesh_game('# triples\n-\tm1\tf\n-\tm2\tf\n')
+        runner, observed = self.mesh_runner()
+        with mock.patch.object(self, 'fake_run', runner):
+            self.main('--os-min', '27.0')
+            self.assertEqual(observed, [('compile', ['main0_z']), ('compile', []), ('merge', 2)])   # the bases, the mesh pipelines, one archive
+            self.assertEqual(sorted(d.name for d in (self.work / 'batches.applegpu_g18p').iterdir()), ['00001', 'm00001'])
+            self.assertIn('mesh\t2\n', (self.out / 'archive.tsv').read_text())
+            descriptors = json.loads((self.work / 'batches.applegpu_g18p/m00001/bases.mtl4-json').read_text())['pipeline_descriptors']
+            self.assertEqual(list(descriptors), ['render_pipeline_descriptors', 'mesh_render_pipeline_descriptors'])
+            self.assertEqual(len(descriptors['mesh_render_pipeline_descriptors']), 2)
+            observed.clear(); self.main('--os-min', '27.0'); self.assertEqual(observed, [])   # unchanged: the archive reused
+            (self.lib / 'm2_b.metallib').write_bytes(metallib([('main0', False), ('other', False)]))   # another mesh library: its group again, the bases kept
+            observed.clear(); self.main('--os-min', '27.0'); self.assertEqual(observed, [('compile', []), ('merge', 2)])
+            (self.prof / 'mesh_pipelines.tsv').unlink()   # a game without the table: the archive as before, the mesh group gone
+            observed.clear(); self.main('--os-min', '27.0'); self.assertEqual(observed, [('compile', ['main0_z'])])
+            self.assertIn('mesh\t0\n', (self.out / 'archive.tsv').read_text())
+
+    def test_a_refused_mesh_pipeline_is_left_out_alone(self):   # metal-tt stops at it, and the others stay: 23 of Ocarina of Time's 1,312 read an output their mesh shader does not write
+        self.mesh_game(''.join(f'-\tm{i}\tf\n' for i in range(1, 6)))
+        runner, observed = self.mesh_runner(['m4_b'])
+        out = io.StringIO()
+        with mock.patch.object(po.subprocess, 'run', runner), mock.patch.dict(os.environ, DM_GAMES_DIR=str(self.prof.parent)), contextlib.redirect_stdout(out):
+            self.assertEqual(po.main(['--game', '0100000000001000', '--msl', str(self.lib), '--out', str(self.out), '--work', str(self.work), '--os-min', '27.0']), 0)
+        self.assertTrue((self.out / 'applegpu_g18p.mtl4a').is_file())
+        self.assertRegex(out.getvalue(), r'refused the task / mesh pipeline - m4_b f_b: left out')
+        groups = self.work / 'batches.applegpu_g18p'
+        libs = lambda d: sorted(l['label'] for l in json.loads((d / 'bases.mtl4-json').read_text())['libraries'] if l['label'] != 'f_b')
+        pieces = sorted(d.name for d in groups.iterdir() if (d / 'applegpu_g18p.mtl4a').is_file() and d.name.startswith('m'))
+        self.assertEqual(sorted(l for p in pieces for l in libs(groups / p)), ['m1_b', 'm2_b', 'm3_b', 'm5_b'])   # every other pipeline made it
+
+    def test_another_mesh_failure_stops_the_build(self):   # not a refusal: nothing is left out quietly
+        self.mesh_game('-\tm1\tf\n-\tm2\tf\n')
+        runner, _ = self.mesh_runner(['m1_b'], 'air-tt: command failed\n')
+        with mock.patch.object(self, 'fake_run', runner), self.assertRaises(SystemExit):
+            self.main('--os-min', '27.0')
+        self.assertEqual(list(self.out.glob('*.mtl4a')), [])
 
     def test_compute_pipelines_alone_make_an_archive(self):   # no base (every pair has function constants), but compute shaders: still an archive
         (self.prof / 'shader_pairs.tsv').write_text('v\tc\n')

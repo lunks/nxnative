@@ -466,9 +466,18 @@ class SplitShaders(Base):
     def split(self, cmd, log, env=None, cwd=None, on_line=None):   # shader_split.py: the package and the four tables, deterministic for the same rows
         self.splits += 1; self.last_cmd = cmd; out = Path(cmd[4]); out.mkdir(parents=True); (out / 'main.bin').write_bytes(self.rows.encode())
         for n, t in zip(self.NAMES, cmd[5:]): Path(t).write_text(self.table(n))
+        if getattr(self, 'mesh', None): Path(cmd[8]).with_name('mesh_pipelines.tsv').write_text(self.mesh)
         Path(log).write_text(self.log)
 
     def table(self, n): return self.tables[n] if hasattr(self, 'tables') else f'# split header\n{n}\t{self.rows}\n'
+
+    def test_mesh_table_is_kept_with_the_package_it_was_split_with(self):
+        g = game.Game(self.src); kept = self.pkg.with_name('mesh_pipelines.tsv')
+        self.go(g); self.assertFalse(kept.exists())   # no mesh shaders: no table
+        self.mesh = '-\tm\tf\n'; self.rows = 'other'; (self.ex / 'ExeFS/main').write_bytes(b'other')
+        self.go(g); self.assertEqual(kept.read_text(), self.mesh)
+        self.mesh = None; (self.ex / 'ExeFS/main').write_bytes(b'third')
+        self.go(g); self.assertFalse(kept.exists())   # another game's or version's split: not left behind
 
     def go(self, g, own=True, oodle=None, dlc_roms=(), derive_dlc=None, derive_compute=None, env=None):
         return nsp.split_shaders(sys.executable, self.repo, [self.ex / 'RomFS'], [self.ex / 'ExeFS/main'], self.pkg, env or {}, self.logs, g, own, oodle, dlc_roms, derive_dlc, derive_compute)

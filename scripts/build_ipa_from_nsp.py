@@ -2235,6 +2235,9 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
         promote(derive_compute, 'compute')
     if provisional or g.table('pso_pairs.tsv').is_file(): names += ('pso_pairs.tsv',)
     else: shutil.copyfile(tmp / 'tables' / 'pso_pairs.tsv', pkg.with_name('pso_pairs.tsv'))
+    # mesh_pipelines.tsv (a game with mesh shaders): the task / mesh pipelines of the archive, made again with the package, for mac_pso; no profile needs it
+    if (tmp / 'tables/mesh_pipelines.tsv').is_file(): shutil.copyfile(tmp / 'tables/mesh_pipelines.tsv', pkg.with_name('mesh_pipelines.tsv'))
+    else: pkg.with_name('mesh_pipelines.tsv').unlink(missing_ok=True)
     if provisional:   # a provisional profile takes the tables as they come
         for n in names: shutil.copyfile(tmp / 'tables' / n, g.table(n))
     else:
@@ -2775,6 +2778,7 @@ def mac_pso(py, repo, work, lib, g, gpus, env, logs):
     cmd = [py, repo / 'dm/gfx/tools/pso_offline.py', '--game', g.id, '--msl', lib, '--out', out, '--work', work / 'pso/mac-work', '--gpu', arch, '--platform', 'macos']
     if not g.table('pso_pairs.tsv').is_file() and (work / 'shader/pso_pairs.tsv').is_file():   # the split's copy, as the app gets it (--pso-pairs)
         cmd += ['--pairs', g.table('shader_pairs.tsv'), '--pairs', work / 'shader/pso_pairs.tsv']
+    if (work / 'shader/mesh_pipelines.tsv').is_file(): cmd += ['--mesh', work / 'shader/mesh_pipelines.tsv']   # split_shaders' copy
     if run(cmd, logs / 'pso_offline_mac.log', env=env, fatal=False):   # an optimization: the app builds the bases on its first start without it
         shutil.rmtree(out, ignore_errors=True)
         PROG.end('failed, the app is packed without one', warn=True)
