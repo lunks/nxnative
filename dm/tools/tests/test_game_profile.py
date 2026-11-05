@@ -201,9 +201,10 @@ class ResChain(unittest.TestCase):   # res_chain: the resolution chain the host 
     def test_macro(self):
         self.assertIn('#define DM_GAME_RES_CHAIN ""', header_with(''))
         self.assertIn('#define DM_GAME_RES_CHAIN "2304x1296 2880x1620 1920x1080 1.375 2.0"', header_with('res_chain\t2304x1296 2880x1620 1920x1080 1.375 2.0\n'))
+        self.assertIn('#define DM_GAME_RES_CHAIN "2560x1440 2560x1440 1920x1080 1.3333 3.0 1.3333"', header_with('res_chain\t2560x1440 2560x1440 1920x1080 1.3333 3.0 1.3333\n'))   # a start rate
 
     def test_refused(self):
-        for bad in ('2304x1296 2880x1620 1920x1080 1.375', '2304x1296 2880x1620 1920x1080 2.0 1.375', '2304x1296 2880x1620 1920x1080 0.5 2.0', '2304*1296 2880x1620 1920x1080 1.375 2.0'):
+        for bad in ('2304x1296 2880x1620 1920x1080 1.375', '2304x1296 2880x1620 1920x1080 2.0 1.375', '2304x1296 2880x1620 1920x1080 0.5 2.0', '2304*1296 2880x1620 1920x1080 1.375 2.0', '2560x1440 2560x1440 1920x1080 1.3333 3.0 4.0'):
             self.assertIn('res_chain takes', header_with(f'res_chain\t{bad}\n'), bad)
 
 

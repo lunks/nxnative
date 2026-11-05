@@ -297,9 +297,10 @@ def header_one(g):
     if cm and (len(cm) != 4 or cm[0] not in ('vertex', 'fragment') or not cm[1].isdigit() or int(cm[1]) > 15 or not all(re.fullmatch(r'0x[0-9a-fA-F]+|\d+', w) for w in cm[2:]) or any(int(w, 0) % 16 for w in cm[2:])):
         sys.exit(f'{g.id}: camera_mats takes <vertex | fragment> <slot 0-15> <view offset> <view-projection offset> (offsets 16-byte aligned): {" ".join(cm)}')
     rc = g.words('res_chain', '')   # the resolution chain the host logs at launch (loader.c res_chain_log): the upscaler's output docked, docked with single upscale, handheld, the game's own rate range
-    if rc and not (len(rc) == 5 and all(re.fullmatch(r'[1-9]\d{1,4}x[1-9]\d{1,4}', w) for w in rc[:3]) and all(re.fullmatch(r'\d+(\.\d+)?', w) for w in rc[3:])
-                   and 1.0 <= float(rc[3]) <= float(rc[4])):
-        sys.exit(f'{g.id}: res_chain takes <docked output WxH> <docked output with single upscale WxH> <handheld output WxH> <lowest rate> <highest rate> (rates from 1.0): {" ".join(rc)}')
+    # and, optionally, the rate the game's own dynamic resolution starts a stage at (1.0 without it: Donkey Kong Bananza starts without its upscaler; Ocarina of Time at its lowest, 1.3333)
+    if rc and not (len(rc) in (5, 6) and all(re.fullmatch(r'[1-9]\d{1,4}x[1-9]\d{1,4}', w) for w in rc[:3]) and all(re.fullmatch(r'\d+(\.\d+)?', w) for w in rc[3:])
+                   and 1.0 <= float(rc[3]) <= float(rc[4]) and (len(rc) == 5 or 1.0 <= float(rc[5]) <= float(rc[4]))):
+        sys.exit(f'{g.id}: res_chain takes <docked output WxH> <docked output with single upscale WxH> <handheld output WxH> <lowest rate> <highest rate> [<start rate>] (rates from 1.0): {" ".join(rc)}')
     # The uniform blocks a camera jitter offsets (nvn_mfx.inc, DM_MFX_JITTER): <block bytes>@<view-projection offset>[,<offset>...] per kind, at most 4 kinds of 4 matrices; a binding of that
     # size whose 4x4 at the first offset is the frame's main view-projection gets a copy with every listed 4x4 (rows) offset by the jitter
     cj = []

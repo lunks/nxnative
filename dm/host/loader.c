@@ -361,6 +361,7 @@ static int mip_bias_jitter(void) { const char *j = getenv("DM_MFX_JITTER"); retu
 // The rates a launch can reach (the fixed one, a dynamic range's ends and the game's own rates between them), each with the bias NVIDIA's words give it
 static void mip_bias_launch_log(double r0, double r1, double lo, double hi, int aa) {
     const char *label = NULL, *want = getenv("DM_MIP_BIAS"), *up = getenv("DM_UPSCALER");
+    if (!dm_setting_patch_offered("DM_MIP_BIAS")) return;   // a profile without the setting: nothing known of the game's own bias
     int mode = mip_bias_mode(&label), jit = mip_bias_jitter();
     if (mode != 2) {
         int temporal = up && !strcmp(up, "metalfx-temporal");
@@ -382,9 +383,12 @@ static void mip_bias_launch_log(double r0, double r1, double lo, double hi, int 
 }
 
 // The upscaler's output for the mode and single upscale (res_chain's three outputs; match display: the window mw x mh); 0 without res_chain
+static double g_res_start = 1.0;   // the rate the game's own dynamic resolution starts a stage at (res_chain's sixth word; 1.0 without it)
 static int res_chain_out(int single, int mw, int mh, int *w, int *h, double *lo, double *hi) {
-    int ow[3], oh[3];
-    if (sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], lo, hi) != 8) return 0;
+    int ow[3], oh[3]; double start = 1.0;
+    int n = sscanf(DM_GAME_RES_CHAIN, "%dx%d %dx%d %dx%d %lf %lf %lf", &ow[0], &oh[0], &ow[1], &oh[1], &ow[2], &oh[2], lo, hi, &start);
+    if (n != 8 && n != 9) return 0;
+    g_res_start = start;
     int docked = dm_opmode() == 1, k = docked ? (single ? 1 : 0) : 2;
     *w = ow[k]; *h = oh[k];
     if (docked && single == 2) { *w = mw; *h = mh; }   // the window's size, the screen's
@@ -428,7 +432,11 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     }
     char rate[320], scene[96], ups[160];
     const char *name = up && *up ? up : "game";
-    if (r0 < 1.0) {   // the game's own: no upscaler at a stage's start, then its range
+    if (r0 < 1.0 && g_res_start > 1.0) {   // the game's own, upscaling from a stage's start (Ocarina of Time: its levels' rates, from the sharpest)
+        snprintf(rate, sizeof rate, "the game's own: %.5g to %.5g, starts at %.5g", lo, hi, g_res_start);
+        snprintf(scene, sizeof scene, "%dx%d to %dx%d", (int)ceil(w / lo), (int)ceil(h / lo), (int)ceil(w / hi), (int)ceil(h / hi));
+        snprintf(ups, sizeof ups, "%s, on", name);
+    } else if (r0 < 1.0) {   // the game's own: no upscaler at a stage's start, then its range
         snprintf(rate, sizeof rate, "the game's own: starts at 1.0 (no upscaler), %.5g to %.5g once a frame is over budget", lo, hi);
         snprintf(scene, sizeof scene, "%dx%d, then %dx%d to %dx%d", w, h, (int)ceil(w / lo), (int)ceil(h / lo), (int)ceil(w / hi), (int)ceil(h / hi));
         snprintf(ups, sizeof ups, "%s, off at the start (rate 1.0)", name);
@@ -447,11 +455,12 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     char mip[160];
     if (mode == 2) snprintf(mip, sizeof mip, "nvidia (%s log2(rate) at each rate, jitter %s)", jit ? "-1 -" : "-", jit ? "on" : "off");
     else if (mode == 1) snprintf(mip, sizeof mip, "game (%s)", mbl);
-    else snprintf(mip, sizeof mip, "the game's own (-0.5 while upscaling)");
+    else snprintf(mip, sizeof mip, "%s", dm_setting_patch_offered("DM_MIP_BIAS") ? "the game's own (-0.5 while upscaling)" : "the game's own");
     const char *pool = dm_setting_patch_applied("DM_RT_POOL", NULL);   // the render-target pool sized for the output and effects (Bananza's README.md, Render-target pool)
     LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; mip bias %s; effects %s; shadows %s; render-target pool %s", docked ? "docked" : "handheld", w, h,
         docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups, mip,
-        eff ? eff : "the game's (half-res effects at half)", shd ? shd : "the game's (scaled with the scene)", pool ? pool : "the game's own");
+        eff ? eff : dm_setting_patch_offered("DM_EFFECTS_RES") ? "the game's (half-res effects at half)" : "the game's own",
+        shd ? shd : dm_setting_patch_offered("DM_SHADOW_RES") ? "the game's (scaled with the scene)" : "the game's own", pool ? pool : "the game's own");
     mip_bias_launch_log(r0, r1, lo, hi, aa);
 }
 // The texture mip bias the game applies (MIP_BIAS_LOG: Bananza's stub on the controller's apply call, main+0x38e074, writes the rate at +0xa0, the bias at +0xa4, then a

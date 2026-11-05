@@ -35,6 +35,7 @@ void thr_svc_leave(void) {}
 void dm_spin_wait(uint64_t r, uint64_t a) { (void)r; (void)a; }
 int dm_opmode(void) { return 1; }   // loader.c res_chain_log (hle_oe.c, hle_cheats.c)
 const char *dm_setting_patch_applied(const char *var, const char **value) { (void)var; (void)value; return NULL; }
+int dm_setting_patch_offered(const char *var) { (void)var; return 0; }
 uint64_t svc_dispatch(int n, uint64_t *r, uint64_t a) { (void)n; (void)r; (void)a; return 0; }
 static const char *wrap_kind, *wrap_name;
 static unsigned wraps;

@@ -47,6 +47,8 @@ For a run past the opening, copy the committed save folder to the new run's `DM_
 
 Quality renders 1743x981, not the 1710x962 of the scale written (0.668): the caller multiplies by a ratio of the controller's own (`ctrl+0xe58 / +0xe50`), which 0.5 and 1.0 hit exactly. Dynamic resolution between two rates (Bananza's Softest) and Native (MetalFX AA) have no rows yet.
 
+The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
+
 ## Found on this game
 
 - The online library's [eventfd for its poller](../../../docs/reference/services.md#eventfds-served-offline) and the [virtual audio input list](../../../docs/reference/audio.md#output-streams-and-virtual-audio-devices-sdk-20-auddmgu) blocked startup.

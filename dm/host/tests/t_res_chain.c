@@ -29,6 +29,11 @@ const char *dm_setting_patch_applied(const char *var, const char **value) {
     return NULL;
 }
 
+// The settings the profile has rows for (hle_cheats.c): Bananza's mip bias, effects and shadows; a profile with a start rate (Ocarina of Time) has none of them
+int dm_setting_patch_offered(const char *var) {
+    return !strstr(DM_GAME_RES_CHAIN, " 1.3333") && (!strcmp(var, "DM_MIP_BIAS") || !strcmp(var, "DM_EFFECTS_RES") || !strcmp(var, "DM_SHADOW_RES"));
+}
+
 static int checks, fails;
 // The line res_chain_log writes to stderr for single upscale off / on / match display (the window mw x mh), captured through a temporary file
 static int mw, mh;
@@ -69,6 +74,13 @@ int main(void) {
     if (!*DM_GAME_RES_CHAIN) { printf("no res_chain in this profile: nothing to check\n"); return 0; }
     unsetenv("DM_UPSCALE_DYNAMIC"); unsetenv("DM_UPSCALER");
     const char *l = chain(0);
+    if (strstr(DM_GAME_RES_CHAIN, " 1.3333")) {   // Ocarina of Time's (a start rate, res_chain's sixth word): upscaling from a stage's start, none of Bananza's settings
+        expect(l, "resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; upscaler game, on; mip bias the game's own; "
+                  "effects the game's own; shadows the game's own; render-target pool the game's own\n", "a start rate: the game's own range from it, and no settings it lacks");
+        ratio_label = "Performance (2.0)"; ratio_value = "2.0";
+        expect(chain(0), "upscale rate 2 fixed, start 2 (Performance (2.0)); scene 1280x720; upscaler game, on at the sharpest; mip bias the game's own;", "a fixed rate");
+        printf("t_res_chain: %d checks, %d failed\n", checks, fails); return fails != 0;
+    }
     expect(l, "resolution: docked, output 2880x1620; upscale rate the game's own: starts at 1.0 (no upscaler), 1.375 to 2 once a frame is over budget", "the game's own: its output, its start and its rates");
     expect(l, "scene 2880x1620, then 2095x1179 to 1440x810; upscaler game, off at the start (rate 1.0); mip bias the game's own (-0.5 while upscaling); "
               "effects the game's (half-res effects at half); shadows the game's",

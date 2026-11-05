@@ -2010,6 +2010,13 @@ static int sp_apply(const setting_patch_t *t, int n) {
 static const setting_patch_t k_setting_patches[] = DM_GAME_SETTING_PATCHES;
 #endif
 
+// Whether the profile has setting patch rows for var (any value, any build): the host's launch lines describe a game's own behaviour only for the settings it has
+int dm_setting_patch_offered(const char *var) {
+#if DM_GAME_SETTING_PATCHES_N
+    for (size_t i = 0; i < sizeof k_setting_patches / sizeof *k_setting_patches; i++) if (!strcmp(k_setting_patches[i].var, var)) return 1;
+#endif
+    (void)var; return 0;
+}
 // The profile's setting patches, at launch (dm_cheats_init: the modules are loaded, the game's code has not run)
 static void setting_patches_init(void) {
 #if DM_GAME_SETTING_PATCHES_N
