@@ -113,6 +113,27 @@ HLE_FORCE("_ZN2nn6applet23GetAppletResourceUserIdEv", "applet resource user ID; 
 // Star Fox's webcam thread activates the camera as soon as its camera session is up ([The camera through the graphics system], hle_sf.c)
 HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "the application starts using the camera (am); the host has no other applet to take it from", void, h_applet_CamBegin, void) {}
 HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "the application stops using the camera (am)", void, h_applet_CamEnd, void) {}
+// The program's arguments (nn::os::GetHostArgc / GetHostArgv): a development kit's host passes them, a retail console none. A game may read settings from them: Star Fox reads
+// each of its cvars from "-<name, '.' as '_'>=<value>" when it registers it (main+0xb6b0740; the arguments copied at main+0xb66ccc0, 32 at most). The host gives, after a first one naming
+// the program, DM_GAME_ARGS's (space-separated, a diagnostic; first, so they win where the game takes the first match) and the profile's setting patches' argument rows
+// (hle_cheats.c dm_setting_args, chosen at launch before the game's code runs). None: none, as on a retail console
+__attribute__((weak)) const char *const *dm_setting_args(int *n) { *n = 0; return NULL; }   // hle_cheats.c; unit tests without it have none
+static char **host_args(int *n) {
+    static char *v[33], *buf; static int c = -1;
+    if (c < 0) {
+        const char *e = getenv("DM_GAME_ARGS"); int ns = 0; const char *const *sa = dm_setting_args(&ns);
+        c = 0;
+        if ((e && *e) || ns) v[c++] = "main";
+        if (e && *e && (buf = strdup(e))) for (char *s = strtok(buf, " "); s && c < 32; s = strtok(NULL, " ")) v[c++] = s;
+        for (int i = 0; i < ns && c < 32; i++) v[c++] = (char *)sa[i];
+        v[c] = NULL;
+        if (c) { char all[1024]; size_t u = 0; all[0] = 0; for (int i = 1; i < c && u < sizeof all; i++) u += (size_t)snprintf(all + u, sizeof all - u, "%s%s", i > 1 ? " " : "", v[i]);
+                 LOG("os::GetHostArgv: %d program argument%s: %s", c - 1, c == 2 ? "" : "s", all); }
+    }
+    *n = c; return v;
+}
+HLE_FORCE("_ZN2nn2os11GetHostArgcEv", "program arguments: none as on a retail console, or DM_GAME_ARGS's", int, h_os_HostArgc, void) { int n; host_args(&n); return n; }
+HLE_FORCE("_ZN2nn2os11GetHostArgvEv", "program arguments: none as on a retail console, or DM_GAME_ARGS's", char **, h_os_HostArgv, void) { int n; return host_args(&n); }
 // Launch parameter (present only when another program launched this one with one; returns bool): the host never passes one
 // Launch parameter (present only when another program launched this one with one; returns bool): DM_LAUNCH_PARAM=<file>, written by oe::ExecuteProgram on the way here (below), else what
 // the profile's launch_param describes, for a program of a multi-program application run by itself: Super Mario 3D All-Stars' games quit without the launcher's language and two volumes

@@ -53,6 +53,7 @@ DM_FULLSCREEN	player	`1` (any value but `0`) starts the Mac window in fullscreen
 DM_GAME	switch	Selects the game profile (a title ID under `dm/games` or `DM_GAMES_DIR`) for the Python tools and the rewriter; there is no default
 DM_GAMES_DIR	path	Profile folders outside the repository, separated by `:`, searched after `dm/games`; the NSP script points it at a provisional or derived profile
 DM_GAMES_FIRST	switch	`=1` searches `DM_GAMES_DIR` before `dm/games`, so a provisional or derived profile wins over the game's own (the NSP script's `--provisional`)
+DM_GAME_ARGS	diagnostic	Program arguments the game gets from `nn::os::GetHostArgv`, space-separated, before the setting patches' argument rows (Star Fox: `-render_resolution_scale_console=0.75`); unset: none, as on a retail console
 DM_GAME_ENV	switch	`KEY=VALUE` pairs, separated by spaces, that the game's own `getenv` returns, in place of the profile's `game_env` (`hle_os.c`); any other name goes to the SDK's empty environment
 DM_GFX_FIXTURE_OUT	test	`=<dir>`: graphics tests write their raw result textures and buffers there
 DM_GFX_SCALE	diagnostic	The graphics scale tier `oe::GetCurrentGraphicsScale` answers: `0` the whole GPU (default), `1` or `2` the smaller shares the system leaves a game while it uses the GPU itself (GameChat video)

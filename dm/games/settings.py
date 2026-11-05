@@ -101,7 +101,8 @@ def patch_options(g, patched):
     its build). A variable with no write for this build is absent: its setting is not shown (the host would refuse every value)"""
     builds, out, writes = {}, {}, set()
     for r in game.setting_patches(g):
-        if 'module' in r:
+        if 'arg' in r: writes.add(r['var'])   # a program argument holds on any build
+        elif 'module' in r:
             if r['module'] not in builds: builds[r['module']] = fixups_build(Path(patched) / f'{r["module"]}.fixups.tsv')
             if builds[r['module']] != r['build']: continue
             writes.add(r['var'])

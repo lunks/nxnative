@@ -128,6 +128,16 @@ class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes 
                                 f'#define DM_GAME_SETTING_PATCHES {{{{"DM_X", "big", "Big", "main", "{BID}", 0x1000, 0x5281001Au, 0x5282001Au, ""}}, '
                                 f'{{"DM_X", "big", "Big", "main", "{BID}", 0x1004, 0xF2C1001Au, 0xF2C2001Au, ""}}}}'])
 
+    def test_argument_rows(self):   # module args: a program argument, on any build (hle_oe.c nn::os::GetHostArgv)
+        rows = with_patches('DM_X\tgame\tGame\t-\nDM_X\tq\tQuality\targs\t-\t-\t-\t-render_scale=0.75\tDM_Y=1\n')
+        self.assertEqual(rows, ['#define DM_GAME_SETTING_PATCHES_N 1',
+                                '#define DM_GAME_SETTING_PATCHES {{"DM_X", "q", "Quality", "args", "", 0, 0, 0, "DM_Y=1", "-render_scale=0.75"}}'])
+        for table, why in [('DM_X\tq\tQ\targs\t-\t-\t-\trender_scale=1\n', '-<name>=<value>'), ('DM_X\tq\tQ\targs\t-\t-\t-\t-render scale=1\n', '-<name>=<value>'),
+                           (f'DM_X\tq\tQ\targs\t{BID}\t-\t-\t-render_scale=1\n', 'has - for build'),
+                           ('DM_X\tq\tQ\targs\t-\t-\t-\t-render_scale=1\nDM_Y\tq\tQ\targs\t-\t-\t-\t-render_scale=2\n', 'already given by DM_X'),
+                           ('DM_X\tq\tQ\targs\t-\t-\t-\t-render_scale=1\nDM_X\tq\tQ\targs\t-\t-\t-\t-render_scale=2\n', 'given twice')]:
+            self.assertIn(why, with_patches(table), table)
+
     def test_refused(self):
         w = f'main\t{BID}\t0x1000\t5281001A\t5282001A'
         for table, why in [(f'DM_X\tbig\tBig\tmain\t{"f" * 32}\t0x1000\t5281001A\t5282001A\n', 'is not one of the profile\'s build rows'),

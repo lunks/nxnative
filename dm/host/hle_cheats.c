@@ -1793,7 +1793,11 @@ static void sources_scan(void) {
 // (main_write_check), so a cheat's on / off pair can never undo the setting or fight it. Only main's code is written (the
 // one module with a writable alias); on the iPhone no code page is writable, so a group with code words is refused there.
 // The settings are chosen before Play and hold for the whole session: there is no change while the game runs
-typedef struct { const char *var, *value, *label, *module, *build; uint64_t off; uint32_t orig, new_; const char *when; } setting_patch_t;
+// An argument row (module "args") writes nothing: its arg is a program argument the host gives the game (dm_setting_args → hle_oe.c nn::os::GetHostArgv), on any build
+typedef struct { const char *var, *value, *label, *module, *build; uint64_t off; uint32_t orig, new_; const char *when, *arg; } setting_patch_t;
+enum { SP_ARGS_MAX = 16 };
+static const char *g_sp_args[SP_ARGS_MAX]; static int g_sp_nargs;
+const char *const *dm_setting_args(int *n) { *n = g_sp_nargs; return g_sp_args; }
 
 // A quantity a row's condition (when) may test, as the host knows it at launch: 0 and its value, or -1 when it has none now.
 //   hdr_peak  the HDR peak / paper white the display will report to the game (hle_vi.c dm_vi_hdr_launch_peak: DM_HDR=1 and a screen with
@@ -1908,8 +1912,8 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
     for (int i = 0; i < n; i++) {
         if (strcmp(t[i].var, var) || strcmp(t[i].value, val)) continue;
         if (!first) first = &t[i];
-        module_t *m = sp_module(t[i].module);
-        if (!m || strcasecmp(m->build_id, t[i].build)) continue;
+        module_t *m = t[i].arg ? NULL : sp_module(t[i].module);
+        if (!t[i].arg && (!m || strcasecmp(m->build_id, t[i].build))) continue;
         nbuild++;
         if (t[i].when && *t[i].when) conds = 1;
         if (sp_when(t[i].when, cond, sizeof cond) && ng < SP_HELD_MAX) g[ng++] = &t[i];   // rows whose condition does not hold now are not this launch's
@@ -1930,33 +1934,42 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         return 0;
     }
     const char *label = g[0]->label;   // the chosen row's (a value with conditions: the one whose condition holds)
-    for (int i = 0; i < ng; i++) for (int k = 0; k < i; k++) if (g[i]->off == g[k]->off) {
+    for (int i = 0; i < ng; i++) for (int k = 0; k < i; k++) if (!g[i]->arg && !g[k]->arg && g[i]->off == g[k]->off) {
         LOG("[RED] setting %s=%s: not applied, nothing written: two rows for main+0x%llX hold together (%s; %s): their conditions overlap", var, val, (unsigned long long)g[i]->off, g[k]->label, g[i]->label);
         return 0;
     }
-    for (int i = 0; i < ng; i++) if (strcmp(g[i]->module, "main") || !g_main_mod) {
+    int nw = 0, na = 0; for (int i = 0; i < ng; i++) { if (g[i]->arg) na++; else nw++; }
+    if (g_sp_nargs + na > SP_ARGS_MAX) { LOG("[RED] setting %s=%s (%s): not applied, nothing written: more than %d program arguments", var, val, label, SP_ARGS_MAX); return 0; }
+    for (int i = 0; i < ng; i++) if (!g[i]->arg && (strcmp(g[i]->module, "main") || !g_main_mod)) {
         LOG("[RED] setting %s=%s (%s): not applied: it writes module %s, and setting patches write only main's code", var, val, label, g[i]->module);
         return 0;
     }
-    if (!g_alias) {   // the writable alias of main, mapped once (as for a picked cheat file), and the rewriter's list beside it
+    if (nw && !g_alias) {   // the writable alias of main, mapped once (as for a picked cheat file), and the rewriter's list beside it
         alias_setup();
         if (g_alias) LOG("setting patches: writable alias of main mapped");
     }
-    if (g_alias) changed_load();
+    if (nw && g_alias) changed_load();
     char why[160]; int bad = 0;
     for (int i = 0; i < ng && !bad; i++) {   // verify every word before writing any
+        if (g[i]->arg) continue;
         uint64_t off = g[i]->off; uint32_t now;
         if (main_refusal(off, 4, why, sizeof why)) { bad = 1; break; }
         memcpy(&now, (uint8_t *)g_main_mod->base + off, 4);
         if (now != g[i]->orig) { snprintf(why, sizeof why, "main+0x%llX holds %08X, not the original %08X the patch was made for", (unsigned long long)off, now, g[i]->orig); bad = 1; }
         else if (sp_held_hit(off, 4) >= 0) { snprintf(why, sizeof why, "main+0x%llX is already written by %s", (unsigned long long)off, g_sp_held[sp_held_hit(off, 4)].who); bad = 1; }
     }
-    if (bad || g_sp_nheld + ng > SP_HELD_MAX) {
+    if (bad || g_sp_nheld + nw > SP_HELD_MAX) {
         LOG("[RED] setting %s=%s (%s): not applied, nothing written: %s", var, val, label, bad ? why : "too many held words");
         return 0;
     }
     char list[4096]; size_t used = 0; list[0] = 0;
     for (int i = 0; i < ng; i++) {
+        if (g[i]->arg) {
+            g_sp_args[g_sp_nargs++] = g[i]->arg;
+            int k = snprintf(list + used, sizeof list - used, "%sargument %s", i ? ", " : "", g[i]->arg);
+            if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
+            continue;
+        }
         uint64_t off = g[i]->off; uint32_t w = g[i]->new_;
         main_write_pages((uint64_t)(uintptr_t)g_main_mod->base + off, 4, &w);
         g_sp_held[g_sp_nheld].off = off;
@@ -1965,7 +1978,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         int k = snprintf(list + used, sizeof list - used, "%smain+0x%llX %08X -> %08X", i ? ", " : "", (unsigned long long)off, g[i]->orig, w);
         if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
     }
-    LOG("setting %s=%s%s (%s): %d word%s written: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, ng, ng == 1 ? "" : "s", list,
+    LOG("setting %s=%s%s (%s): %d word%s written, %d argument%s given: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, nw, nw == 1 ? "" : "s", na, na == 1 ? "" : "s", list,
         conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
     if (g_sp_napplied < SP_APPLIED_MAX) {
         snprintf(g_sp_applied[g_sp_napplied].var, sizeof g_sp_applied[0].var, "%s", var); snprintf(g_sp_applied[g_sp_napplied].value, sizeof g_sp_applied[0].value, "%s", val);

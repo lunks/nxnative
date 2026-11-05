@@ -581,6 +581,14 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** tier 0 in both modes (`hle_oe.c`; check: `t_oe`). `DM_GFX_SCALE=1` or `2` answers a reduced tier, to see what a game does with less of the GPU.
 - **Found on:** [Star Fox](../../dm/games/0400E88025B1A000/README.md) (docked: scene 960x540 to its 1920x1080 window, as handheld); [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) (docked: its upscaler's output is its 2880x1620 window, `res_chain` updated).
 
+### Program arguments
+
+- **Symptom:** a game whose settings live in its own variables (Star Fox's cvars: `render.resolution_scale_console`, `render.present_resolution_override`) offers no way to change them: on a console they come from its data and its server, and the host has no setting patch to write, since the values are not words of its code.
+- **Cause:** `nn::os::GetHostArgc` / `GetHostArgv` give the arguments a development kit's host passes; a retail console passes none, and so did the host (the SDK's own answer). Star Fox reads each cvar from `-<name, '.' as '_'>=<value>` among them as it registers it (`main+0xb6b0740`, the arguments copied once at `main+0xb66ccc0`, 32 at most).
+- **Fix:** the host answers both (`hle_oe.c`): after a first argument naming the program, `DM_GAME_ARGS`'s (space-separated, a diagnostic) and the profile's setting patches' argument rows (`module` `args`, [Setting patches](../../dm/games/README.md#setting-patches); `hle_cheats.c` `dm_setting_args`), chosen at launch before the game's code runs; none at all, as before, when there are neither. The log names them (`os::GetHostArgv: 1 program argument: …`).
+- **Check:** `t_cheats` (argument rows given in table order, with a word row of the same value, under a condition), `test_game_profile` (the rows compiled and refused). Star Fox: `DM_GAME_ARGS=-render_resolution_scale_console=0.75` rendered 1440x810 of a 1920x1080 output, where its data's 0.5 rendered 960x540.
+- **Found on:** [Star Fox](../../dm/games/0400E88025B1A000/README.md).
+
 ### The startup logo
 
 - **Symptom:** abort in `nn::sm::Initialize` under `nn::oe::FinishStartupLogo`, right after the first frames.
