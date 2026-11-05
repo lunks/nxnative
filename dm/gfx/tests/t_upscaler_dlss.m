@@ -1,7 +1,9 @@
 // One temporal upscale with a game's DLSS (DM_UPSCALER=metalfx-temporal; nvn_mtl.m dlss_eval's g_dlss_fwd, up_mfx_dlss): an evaluation whose output is its input's size copies its colour
 // and is kept; the game's upscaler dispatch of the same frame, 960x540 → 1920x1080 with encoded colour in and out (Star Fox's ddc729bcdb4c8df9), is drawn by MetalFX's temporal scaler
-// with the evaluation's depth and motion vectors, and the image holds the input's bytes (a uniform colour); without an evaluation in the frame the spatial scaler draws it. Runs under
-// Star Fox's profile (its upscaler shaders) or any with upscaler keys; expectations written by hand
+// with the evaluation's depth and motion vectors, and the image holds the input's bytes (a uniform colour); without an evaluation in the frame the spatial scaler draws it. Star Fox's
+// HDR variant (encoded in, decoded out into a float image) takes the evaluation too and its image holds the colour decoded; a dispatch that does not take its frame's evaluation makes
+// the next evaluations anti-alias at their own size until another upscaler shader runs. Runs under Star Fox's profile (its upscaler shaders) or any with upscaler keys; expectations
+// written by hand
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -26,6 +28,19 @@ static int rgba8_at(id<MTLTexture> t, NSUInteger x, NSUInteger y, uint8_t px[4])
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
     [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:b destinationOffset:0 destinationBytesPerRow:4 destinationBytesPerImage:4];
     [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; memcpy(px, b.contents, 4); return 1;
+}
+static int uniform_rgba16f(id<MTLTexture> t, const float want[4]) {   // an RGBA16F texture's corners and centre, within the scaler's rounding
+    const NSUInteger at[5][2] = {{0, 0}, {t.width - 1, 0}, {t.width / 2, t.height / 2}, {0, t.height - 1}, {t.width - 1, t.height - 1}};
+    id<MTLBuffer> b = [g_dev newBufferWithLength:8 options:MTLResourceStorageModeShared]; if (!b) return 0;
+    for (int i = 0; i < 5; i++) {
+        id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+        [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(at[i][0], at[i][1], 0) sourceSize:MTLSizeMake(1, 1, 1) toBuffer:b destinationOffset:0 destinationBytesPerRow:8 destinationBytesPerImage:8];
+        [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        const __fp16 *p = b.contents;
+        for (int c = 0; c < 4; c++) if (!(fabsf((float)p[c] - want[c]) <= fmaxf(0.01f, 0.03f * want[c]))) {
+            fprintf(stderr, "texel %lu,%lu channel %d: %g, expected %g\n", (unsigned long)at[i][0], (unsigned long)at[i][1], c, (float)p[c], want[c]); return 0; }
+    }
+    return 1;
 }
 static int uniform_bytes(id<MTLTexture> t, const uint8_t want[4]) {   // the corners and the centre
     const NSUInteger at[5][2] = {{0, 0}, {t.width - 1, 0}, {t.width / 2, t.height / 2}, {0, t.height - 1}, {t.width - 1, t.height - 1}};
@@ -67,6 +82,39 @@ int main(void) { @autoreleasepool {
     CHECK(up_mfx_encode(named) && g_umd.n == n0, "without an evaluation in the frame the spatial scaler draws the dispatch");
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the spatial submission completes");
     CHECK(uniform_bytes(written, want), "the spatial scaler's image holds the same bytes");
+    // Encoded in, decoded out (Star Fox's HDR variants, c1b8edc09e3313b1: linear colour into a float image): before, the dispatch did not take the evaluation, and the frame had no
+    // anti-aliasing at all (the evaluation only copied its colour)
+    tex_t fout = texture(82, 1920, 1080, NVN_FORMAT_RGBA16F); fout.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; mtl_reg_image(703, &fout, NULL);
+    S.img[5][1] = 703; named->up_color = UP_COLOR_SRGB;
+    const float decoded[4] = {0.2140f, 0.0509f, 0.5225f, 1.0f};   // sRGB 0.5, 0.25, 0.75
+    for (int frame = 0; frame < 3; frame++) {
+        mtl_sub_begin();
+        dlss_eval(&c);
+        CHECK(g_dlss_fwd.ok, "an evaluation is kept for the HDR variant");
+        uint64_t n1 = g_umd.n;
+        CHECK(up_mfx_encode(named) && g_umd.n == n1 + 1 && !g_dlss_fwd.ok && !g_dlss_fwd.refused[0], "the HDR variant's dispatch is drawn by the temporal scaler with the evaluation");
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the HDR variant's submission completes");
+    }
+    os_unfair_lock_lock(&g_rmu); id<MTLTexture> fwritten = tex_by_id(703); os_unfair_lock_unlock(&g_rmu);
+    CHECK(uniform_rgba16f(fwritten, decoded), "the float image holds the input decoded to linear at the output's size");
+    // A dispatch that does not take its frame's evaluation (here its input is another size): the frame was not anti-aliased, so the next evaluations anti-alias at their own size, until
+    // another upscaler shader runs
+    { const uint32_t rects[8] = {0, 0, 479, 269, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); }
+    mtl_sub_begin(); dlss_eval(&c); up_mfx_encode(named);
+    CHECK(!g_dlss_fwd.ok && !strcmp(g_dlss_fwd.refused, named->key), "a dispatch at another input size refuses the evaluation");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the refusing frame's submission completes");
+    fill(tex_mtl(&dout), MTLClearColorMake(0, 0, 0, 1));
+    mtl_sub_begin(); dlss_eval(&c);
+    CHECK(!g_dlss_fwd.ok, "after a refusal the evaluation is not kept");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the evaluation's own submission completes");
+    CHECK(uniform_rgba16f(tex_mtl(&dout), (const float[4]){0.5f, 0.25f, 0.75f, 1.0f}), "the evaluation draws its output itself");
+    NvShader *other = [NvShader new]; snprintf(other->key, sizeof other->key, "0123456789abcdef_b"); other->up_color = UP_COLOR_SRGB; other->rf = named->rf;
+    mtl_sub_begin(); up_mfx_encode(other);
+    CHECK(!g_dlss_fwd.refused[0], "another upscaler shader clears the refusal");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the other shader's submission completes");
+    mtl_sub_begin(); dlss_eval(&c);
+    CHECK(g_dlss_fwd.ok, "the next evaluation is kept again");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the last submission completes");
     printf("t_upscaler_dlss: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 }}

@@ -11893,31 +11893,33 @@ static int fmt_int_or_ds(MTLPixelFormat f) {
         default: return 0;
     }
 }
+// linear: COPY_LINEAR samples bilinearly (else nearest); COPY_SRGB_DECODE undoes the sRGB curve of colour clamped to 0-1 (an upscaler that reads encoded colour and writes it decoded)
+enum { COPY_LINEAR = 1, COPY_SRGB_DECODE = 2 };
 static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
-    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fdec, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
     if (failed || sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
     int depth = (s.pixelFormat == MTLPixelFormatDepth32Float || s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) && d.pixelFormat == s.pixelFormat, stencil = depth && d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
     if (!depth && (fmt_int_or_ds(s.pixelFormat) || fmt_int_or_ds(d.pixelFormat))) return 0;
     if (mtl_fmt_block(d.pixelFormat) || !(d.usage & MTLTextureUsageRenderTarget) || s.sampleCount > 1 || d.sampleCount > 1) return 0;
     if (!pso) {
         NSError *e = nil; id<MTLLibrary> lib = host_lib("copy", &e);
-        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
+        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fdec = [lib newFunctionWithName:@"fs_dec"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
         MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = YES; dss = [g_dev newDepthStencilStateWithDescriptor:dd];
         MTLStencilDescriptor *sd_ = [MTLStencilDescriptor new]; sd_.stencilCompareFunction = MTLCompareFunctionAlways; sd_.depthStencilPassOperation = MTLStencilOperationReplace;   // Replace writes the [[stencil]] output
         dd.frontFaceStencil = dd.backFaceStencil = sd_; dss_s = [g_dev newDepthStencilStateWithDescriptor:dd];
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1; at = rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]);
         for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
             sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
-        if (!vf || !ff || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
+        if (!vf || !ff || !fdec || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
         pso = [NSMutableDictionary dictionary];
     }
     // Stencil: read through a stencil-only view of the source (one per layer below); without one it is cleared to 0
     id<MTLTexture> stv0 = stencil && s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? [s newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8 textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset, 1)] : nil;
-    int scopy = stv0 != nil;
-    NSNumber *pk = @(d.pixelFormat * 2 + scopy);
+    int scopy = stv0 != nil, dec = !depth && (linear & COPY_SRGB_DECODE);
+    NSNumber *pk = @((d.pixelFormat * 2 + scopy) * 2 + dec);
     id<MTLRenderPipelineState> ps = pso[pk];
     if (!ps) {
-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : ff;
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : dec ? fdec : ff;
         if (depth) { pd.depthAttachmentPixelFormat = d.pixelFormat; if (stencil) pd.stencilAttachmentPixelFormat = d.pixelFormat; } else pd.colorAttachments[0].pixelFormat = d.pixelFormat;
         NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!ps) { RED_ONCE(83, "format-converting / scaling texture copy: cannot create the pipeline for destination format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
@@ -11944,7 +11946,7 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
         ser_gate(); id<MTL4RenderCommandEncoder> en = enc_r_begin(rp);
         if (depth) [en setDepthStencilState:scopy ? dss_s : dss];
         [en setArgumentTable:at atStages:MTLRenderStageFragment];
-        [at setTexture:sv.gpuResourceID atIndex:0]; if (stv) [at setTexture:stv.gpuResourceID atIndex:1]; [at setSamplerState:samp[!!linear && !depth].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress + po atIndex:0];
+        [at setTexture:sv.gpuResourceID atIndex:0]; if (stv) [at setTexture:stv.gpuResourceID atIndex:1]; [at setSamplerState:samp[(linear & COPY_LINEAR) && !depth].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress + po atIndex:0];
         [en setViewport:(MTLViewport){dr->xoffset, dr->yoffset, dr->width, dr->height, 0, 1}];
         [en setScissorRect:(MTLScissorRect){(NSUInteger)dr->xoffset, (NSUInteger)dr->yoffset, (NSUInteger)dr->width, (NSUInteger)dr->height}];
         [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; enc_r_end(en);
@@ -11952,7 +11954,7 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     }
     args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
     { static int once[2]; if (!once[depth]++) MLOG("format-converting / scaling texture copy: first case %dx%d format %lu → %dx%d format %lu%s%s", sr->width, sr->height, (unsigned long)s.pixelFormat, dr->width, dr->height, (unsigned long)d.pixelFormat,
-                                                    linear && !depth ? " (bilinear)" : "", stencil ? (scopy ? " (depth + stencil)" : " (no stencil view possible, cleared to 0)") : ""); }
+                                                    (linear & COPY_LINEAR) && !depth ? " (bilinear)" : "", stencil ? (scopy ? " (depth + stencil)" : " (no stencil view possible, cleared to 0)") : ""); }
     return 1;
 }
 // nvnCommandBufferDrawTexture: the source region of a texture (texels, through the handle's sampler) drawn into the destination region of each bound colour target (pixels in the window's
@@ -12169,9 +12171,11 @@ static dlss_scaler *dlss_scaler_for(const p_dlss *c, id<MTLTexture> col, id<MTLT
 // One temporal upscale where a game's DLSS only anti-aliases (its network's output its input's size) and its own upscaler then enlarges the frame (Star Fox: DLSS 1920x1080 → 1920x1080,
 // a few passes, its NDSR network → 3840x2160). With DM_UPSCALER=metalfx-temporal the evaluation is kept for the upscaler of the same frame and its colour copied to its output as it is;
 // at the upscaler's dispatch (up_mfx_dlss) MetalFX's temporal scaler takes the upscaler's input with the evaluation's depth, motion vectors, jitter and history reset, and writes the
-// output's size. A frame whose upscaler does not take it (another size, no upscaler) has its scene without the temporal pass
+// output's size. A frame whose upscaler does not take it (another size, no upscaler) has its scene without the temporal pass: after an upscaler refused one (refused, its key), the
+// evaluations run MetalFX's temporal scaler at their own size again, until another upscaler shader is dispatched (Star Fox's HDR variant, before up_mfx_dlss took its colour shape,
+// left its whole picture without anti-aliasing: the fur's dither and the panels' fine lines showed as grain and moiré)
 static int up_mfx_on(void);
-static struct { p_dlss c; uint64_t frame; int ok; } g_dlss_fwd;
+static struct { p_dlss c; uint64_t frame; int ok; char refused[24]; } g_dlss_fwd;
 static void dlss_eval(const p_dlss *c) {
     rp_flush();   // the passes before it land first: they write its inputs
     id<MTLTexture> col = c->tex[DLSS_COLOR] ? tex_mtl(c->tex[DLSS_COLOR]) : nil, dep = c->tex[DLSS_DEPTH] ? tex_mtl(c->tex[DLSS_DEPTH]) : nil, mot = c->tex[DLSS_MOTION] ? tex_mtl(c->tex[DLSS_MOTION]) : nil,
@@ -12180,7 +12184,7 @@ static void dlss_eval(const p_dlss *c) {
     zskip_del(c->tex[DLSS_OUTPUT]->serial); sparse_gpu_wrote(c->tex[DLSS_OUTPUT]);
     NSUInteger iw = c->iw > 0 ? (NSUInteger)c->iw : col.width, ih = c->ih > 0 ? (NSUInteger)c->ih : col.height;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
-    if (up_mfx_on() == 2 && DM_GAME_UPSCALER_N && dep && mot && iw == out.width && ih == out.height) {   // kept for the upscaler (above): the colour as it is meanwhile
+    if (up_mfx_on() == 2 && DM_GAME_UPSCALER_N && dep && mot && iw == out.width && ih == out.height && !g_dlss_fwd.refused[0]) {   // kept for the upscaler (above): the colour as it is meanwhile
         g_dlss_fwd.c = *c; g_dlss_fwd.frame = atomic_load(&g_cur_frame); g_dlss_fwd.ok = 1;
         NVNcopyRegion sr = {c->base[DLSS_COLOR][0], c->base[DLSS_COLOR][1], 0, (int)iw, (int)ih, 1}, dr = {c->base[DLSS_OUTPUT][0], c->base[DLSS_OUTPUT][1], 0, (int)iw, (int)ih, 1};
         if (!(out.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(out.pixelFormat) && !fmt_int_or_ds(out.pixelFormat)) out = tex_upgrade(c->tex[DLSS_OUTPUT], out, MTLTextureUsageRenderTarget, out.pixelFormat);
@@ -13395,25 +13399,39 @@ static int up_mfx_same(const mfx_io *io) {
 // The dispatch of upscaler cs as MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal, nvn_mfx.inc) or spatial scaler from its texture slot's rectangle to its image slot's (see above):
 // 1 when drawn, 0 to run the shader. The temporal one falls back to the spatial one for a frame it lacks the depth or the camera of, and a 1:1 dispatch to a copy (up_mfx_same); it takes
 // only a shader with linear input and output (up_mfx_color: it reads the scene as linear HDR), and a shader with sRGB input gets the spatial one in perceptual mode (a 1:1 one its own shader)
-// The upscaler's dispatch as MetalFX's temporal scaler with the frame's DLSS evaluation (see dlss_eval's g_dlss_fwd): its input at the evaluation's size, its colour linear in and out or
-// encoded in and out (stored raw through an 8-bit image's linear view, as up_mfx_encode stores it); 1 when drawn
+// The upscaler's dispatch as MetalFX's temporal scaler with the frame's DLSS evaluation (see dlss_eval's g_dlss_fwd): its input at the evaluation's size, its colour linear in and out,
+// encoded in and out (stored raw through an 8-bit image's linear view, as up_mfx_encode stores it), or encoded in and decoded out (UP_COLOR_SRGB: Star Fox's HDR variants, which write
+// linear colour into an R11G11B10F image; the scaler takes the encoded colour as for the encoded variants, and the copy into the image undoes the curve as the network's end does,
+// clamped to 0-1); 1 when drawn. A dispatch that does not take its frame's evaluation is a refusal (up_mfx_dlss_refuse): that frame has no anti-aliasing
 static struct { id<MTLTexture> in, out; uint64_t n; } g_umd;
+static int up_mfx_dlss_kept(void) { return g_dlss_fwd.ok && g_dlss_fwd.frame == atomic_load(&g_cur_frame); }
+static int up_mfx_dlss_refuse(NvShader *cs, const char *why) {
+    g_dlss_fwd.ok = 0;
+    if (strcmp(g_dlss_fwd.refused, cs->key)) MLOG("[RED] upscaler %s did not take the frame's DLSS evaluation (%s): that frame was not anti-aliased; DLSS anti-aliases at its own size "
+                                                 "again until another upscaler shader runs", cs->key, why);
+    snprintf(g_dlss_fwd.refused, sizeof g_dlss_fwd.refused, "%s", cs->key);
+    return 0;
+}
 static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
-    if (!g_dlss_fwd.ok || g_dlss_fwd.frame != atomic_load(&g_cur_frame)) return 0;
+    if (g_dlss_fwd.refused[0] && strcmp(g_dlss_fwd.refused, cs->key)) g_dlss_fwd.refused[0] = 0;   // another upscaler shader: the next evaluation is kept for it
+    if (!up_mfx_dlss_kept()) return 0;
     const p_dlss c = g_dlss_fwd.c; g_dlss_fwd.ok = 0;
     id<MTLTexture> dep = c.tex[DLSS_DEPTH] ? tex_mtl(c.tex[DLSS_DEPTH]) : nil, mot = c.tex[DLSS_MOTION] ? tex_mtl(c.tex[DLSS_MOTION]) : nil, out = io->out;
     NSUInteger iw = (NSUInteger)io->ir.width, ih = (NSUInteger)io->ir.height, ow = (NSUInteger)io->orr.width, oh = (NSUInteger)io->orr.height;
-    if (!dep || !mot || (c.iw > 0 && (NSUInteger)c.iw != iw) || (c.ih > 0 && (NSUInteger)c.ih != ih) || ow <= iw || oh <= ih) return 0;
-    int enc = cs->up_color == UP_COLOR_SRGB_ENC;
-    if (!enc && cs->up_color != UP_COLOR_LINEAR) return 0;
-    if (enc && (pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid || (out.pixelFormat != MTLPixelFormatRGBA8Unorm && out.pixelFormat != MTLPixelFormatBGRA8Unorm))) return 0;   // stored raw only
-    if (!(out.usage & MTLTextureUsageRenderTarget)) return 0;
+    if (!dep || !mot) return up_mfx_dlss_refuse(cs, "no depth or motion vectors");
+    if ((c.iw > 0 && (NSUInteger)c.iw != iw) || (c.ih > 0 && (NSUInteger)c.ih != ih) || ow <= iw || oh <= ih) return up_mfx_dlss_refuse(cs, "another input size, or no enlargement");
+    int enc = cs->up_color == UP_COLOR_SRGB_ENC, dec = cs->up_color == UP_COLOR_SRGB;
+    if (!enc && !dec && cs->up_color != UP_COLOR_LINEAR) return up_mfx_dlss_refuse(cs, "a colour shape MetalFX does not draw");
+    if (enc && (pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid || (out.pixelFormat != MTLPixelFormatRGBA8Unorm && out.pixelFormat != MTLPixelFormatBGRA8Unorm)))   // stored raw only
+        return up_mfx_dlss_refuse(cs, "encoded output into an image that is not 8-bit RGBA");
+    if (dec && pf_srgb_linear(out.pixelFormat) != MTLPixelFormatInvalid) return up_mfx_dlss_refuse(cs, "decoded output into an sRGB image");   // the network stores linear values raw
+    if (!(out.usage & MTLTextureUsageRenderTarget)) return up_mfx_dlss_refuse(cs, "an image the copy cannot draw into");
     if (!g_umd.in || g_umd.in.width != iw || g_umd.in.height != ih) { mfx_drop(&g_umd.in); g_umd.in = mfx_tex(MTLPixelFormatRGBA16Float, iw, ih, MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget, @"upscaler temporal input"); res_commit(); }
     if (!g_umd.out || g_umd.out.width != ow || g_umd.out.height != oh) { mfx_drop(&g_umd.out); g_umd.out = mfx_tex(MTLPixelFormatRGBA16Float, ow, oh, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget, @"upscaler temporal output"); res_commit(); }
-    if (!g_umd.in || !g_umd.out) return 0;
+    if (!g_umd.in || !g_umd.out) return up_mfx_dlss_refuse(cs, "no scratch textures");
     p_dlss k = c; k.net = c.net ^ 1;   // a scaler of its own, at the upscaler's sizes
     dlss_scaler *e = dlss_scaler_for(&k, g_umd.in, dep, mot, g_umd.out, iw, ih);
-    if (!e) return 0;
+    if (!e) return up_mfx_dlss_refuse(cs, "MetalFX made no temporal scaler");
     id<MTL4FXTemporalScaler> sc = e->sc;
     if ((dep.usage & sc.depthTextureUsage) != sc.depthTextureUsage) dep = tex_upgrade(c.tex[DLSS_DEPTH], dep, sc.depthTextureUsage, dep.pixelFormat);
     if ((mot.usage & sc.motionTextureUsage) != sc.motionTextureUsage) mot = tex_upgrade(c.tex[DLSS_MOTION], mot, sc.motionTextureUsage, mot.pixelFormat);
@@ -13421,7 +13439,7 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
     NVNcopyRegion at0 = {0, 0, 0, (int)iw, (int)ih, 1}, at0o = {0, 0, 0, (int)ow, (int)oh, 1};
-    if (!copy_t2t_draw(io->in, g_umd.in, 0, 0, 0, 0, &io->ir, &at0, 0, 0)) return 0;
+    if (!copy_t2t_draw(io->in, g_umd.in, 0, 0, 0, 0, &io->ir, &at0, 0, 0)) return up_mfx_dlss_refuse(cs, "its input could not be copied");
     id<MTL4ComputeCommandEncoder> ce = [g_cb computeCommandEncoder];   // as dlss_eval: MetalFX opens encoders of its own, which take no barrier
     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];
     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
@@ -13443,14 +13461,14 @@ static int up_mfx_dlss(NvShader *cs, const mfx_io *io) {
         sc.colorTexture = nil; sc.depthTexture = nil; sc.motionTexture = nil; sc.outputTexture = nil;
     });
     g_last_end_relaxed = 0;
-    if (!copy_t2t_draw(cout, out, 0, 0, 0, 0, &at0o, &io->orr, 0, 0)) { args_dirty_all(); return 0; }
+    if (!copy_t2t_draw(cout, out, 0, 0, 0, 0, &at0o, &io->orr, dec ? COPY_SRGB_DECODE : 0, 0)) { args_dirty_all(); return up_mfx_dlss_refuse(cs, "its result could not be drawn into the image"); }
     args_dirty_all();
     if (!g_umd.n++) MLOG("upscaler: first dispatch of %s drawn by MetalFX's temporal scaler with the frame's DLSS evaluation: %lux%lu → %lux%lu (format %lu, %s)", cs->key, (unsigned long)iw, (unsigned long)ih,
-                         (unsigned long)ow, (unsigned long)oh, (unsigned long)out.pixelFormat, enc ? "encoded in and out, stored raw" : "linear");
+                         (unsigned long)ow, (unsigned long)oh, (unsigned long)out.pixelFormat, enc ? "encoded in and out, stored raw" : dec ? "encoded in, decoded out" : "linear");
     return 1;
 }
 static int up_mfx_encode(NvShader *cs) {
-    mfx_io io; if (!up_mfx_resolve(cs, &io)) { g_up_mfx_kept++; return 0; }
+    mfx_io io; if (!up_mfx_resolve(cs, &io)) { if (up_mfx_dlss_kept()) up_mfx_dlss_refuse(cs, "its textures were not found"); g_up_mfx_kept++; return 0; }
     if (up_mfx_on() == 2 && up_mfx_dlss(cs, &io)) { mfx_after(&io); return 1; }
     if (up_mfx_on() == 2 && cs->up_color == UP_COLOR_LINEAR && mfx_temporal(&io)) { mfx_after(&io); return 1; }
     if (io.ir.width == io.orr.width && io.ir.height == io.orr.height) { if (cs->up_color != UP_COLOR_LINEAR) { g_up_mfx_kept++; return 0; } return up_mfx_same(&io); }
