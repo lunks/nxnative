@@ -3220,9 +3220,9 @@ static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-
     for (; i < n; i++) if (p[i]) return 1;
     return 0;
 }
-static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
+static int tex_init_content(const tex_t *t, MTLPixelFormat pf) {   // whether a new GPU texture of this description would take content from its storage
     if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->has_layout) return 0;
-    if (t->d.samples > 1 || ((int)mt.pixelFormat >= 250 && (int)mt.pixelFormat <= 262)) return 0;   // 250..262: Depth16Unorm … X24_Stencil8 (some names are macOS-only)
+    if (t->d.samples > 1 || ((int)pf >= 250 && (int)pf <= 262)) return 0;   // 250..262: Depth16Unorm … X24_Stencil8 (some names are macOS-only)
     int no_cpu = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) != 0, uncached = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED) != 0;
     // COMPRESSIBLE is a memory-compression hint, not a data format. In a CPU_NO_ACCESS pool the game never writes the storage, so the memory may mean nothing to the CPU (Rhythm Heaven Groove's render
     // targets). In a pool the CPU writes the texels are plain: SD GUNDAM G GENERATION CROSS RAYS (SDK 9.4.1) sets it on every texture it creates in 0xa2 pools and writes ordinary texels into them,
@@ -3230,9 +3230,11 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     if (no_cpu && (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE)) return 0;
     static int flush_fill = -1; if (flush_fill < 0) { const char *e = getenv("DM_NVN_FLUSH_FILL"); flush_fill = !e || atoi(e) != 0; }
     if (!no_cpu && !uncached && (!flush_fill || !nvn_flushed(t->mem, t->L.size))) return 0;
-    if (!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !mem_any(t->mem, t->L.size)) return 0;   // the upload batch belongs to the submit thread
-    if (pkg_upload(t, NULL, mt, 0) != mt) return 0;
-    int why = no_cpu ? 0 : uncached ? 1 : 2;
+    return atomic_load(&g_sub_thread_set) && on_sub_thread() && mem_any(t->mem, t->L.size);   // the upload batch belongs to the submit thread
+}
+static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
+    if (!tex_init_content(t, mt.pixelFormat) || pkg_upload(t, NULL, mt, 0) != mt) return 0;
+    int no_cpu = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) != 0, uncached = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED) != 0, why = no_cpu ? 0 : uncached ? 1 : 2;
     static uint64_t n[3]; if (n[why]++ < 4) MLOG("initial content: ser=%llu %ux%ux%u format %#x filled from its storage, %s (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format,
                                                  (const char *[]){"a CPU_NO_ACCESS pool's", "a CPU_UNCACHED pool's", "flushed by the CPU before its first use"}[why], (unsigned long long)n[why]);
     return 1;
@@ -3472,6 +3474,13 @@ static const uint8_t *srgb_twins(uint32_t f) {
     });
     return f < 256 ? tw[f] : tw[0];
 }
+// A pool walk (pool_entry) resolves every registered ID, and most of them no draw reads: a descriptor is free on the console, here a GPU texture of its own. A texture made for one holds nothing
+// (no GPU work has drawn into it and its storage gives it no content), so it reads what the table's dummy reads, 0, and the walk leaves the ID on the dummy until something real resolves that
+// storage. Made, it costs memory, and its takeover drops overlapping sharing entries (alias_take_over) with whatever the GPU drew into them, so their IDs resolve to an empty copy at the next walk.
+// Ocarina of Time keeps render targets of several sizes over the same storage and thousands of descriptors of finalized ones: 12.4 GB of textures at a GPU out-of-memory error against about 5 GB
+// that live objects hold, and up to 47 GB of them made and retired in 300 frames
+static __thread int g_tex_walk;   // 1 while pool_entry resolves an ID; tex_mtl_ makes it 2 when it leaves the ID empty
+static _Atomic uint64_t g_tex_walk_empty;   // IDs walks left empty, in total: while there are any, a new sharing entry starts a new epoch, as one may hold what they name
 static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     tex_t *t = (tex_t *)ct;
     if (!t || !t->serial) return nil;
@@ -3614,6 +3623,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     id<MTLTexture> mt = tex_linear(t);
     if (!mt && t->pool && nvn_sparse_pool(t->pool)) mt = sparse_gpu_make(t);   // a large one in a sparse pool: only the tiles the game maps take memory
     if (!mt) {
+        uint32_t wpf = 0; uint8_t wsw[4];
+        if (g_tex_walk && nvn_fmt_to_mtl(t->d.format, &wpf, wsw) && wpf && !tex_init_content(t, (MTLPixelFormat)wpf)) { g_tex_walk = 2; return nil; }
         MTLTextureDescriptor *d = tex_desc(t, 0);
         if (!d) return nil;
         mt = image_texture(t, d);
@@ -3631,6 +3642,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL);
     alias_take_over(&ak);
     hm_put_id(&g_alias, &ak, mt); CFSetAddValue(g_alias_set, (__bridge const void *)mt); nvn_hm_put(&g_alias_seen, &ak, (void *)(uintptr_t)(g_fence + 1));
+    if (atomic_load_explicit(&g_tex_walk_empty, memory_order_relaxed)) g_ser_gen++;
     pthread_mutex_unlock(&g_smu);
     tex_put(t->serial, mt);
     return mt;
@@ -5115,7 +5127,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty, view_stamp; const void *view_span; int view_pkg;   // view_pkg: CPU-written (packaged); only those depend on guest writes (view_dirty)
                  void *alt, *alt_of; uint64_t alt_rid; uint8_t alt_type;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
                  void *im, *im_of; uint64_t im_rid;                       // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from
-                 int prev, next, retired, gone; uint64_t transient_sub; } treg_t;   // prev / next: descriptor index + 1, by texture serial; gone: its memory pool was finalized (treg_drop_pool_views)
+                 int prev, next, retired, gone; uint64_t transient_sub, empty_ep; } treg_t;   // prev / next: descriptor index + 1, by texture serial; gone: its memory pool was finalized (treg_drop_pool_views)
 static treg_t *g_treg; static int g_ntreg;
 static nvn_hmap g_treg_serial = {.klen = 8};   // serial → first registered descriptor index + 1, under g_rmu
 // Texture ID views are valid for an epoch (view_ser), not for every serial table change: ser_sync takes the notes (ser_note) and sends only the IDs registered with a noted serial
@@ -5352,7 +5364,7 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
         reg_bump(id_, 0);
         treg_unlink(id_); treg_drop_views(rr);
         rr->ok = t != NULL; if (t) rr->t = *t; rr->has_v = v != NULL; if (v) rr->v = *v;
-        rr->retired = 0; rr->transient_sub = 0;
+        rr->retired = 0; rr->transient_sub = rr->empty_ep = 0;
         if (t && t->serial) {
             pthread_mutex_lock(&g_smu); rr->retired = !nvn_hm_get(&g_tex_live, &t->serial); pthread_mutex_unlock(&g_smu);
             rr->next = (int)(uintptr_t)nvn_hm_get(&g_treg_serial, &t->serial);
@@ -8188,8 +8200,10 @@ static uint64_t pool_entry(int samp, int dtt, int id_, int *gone, int *transient
     if (id_ <= 0) return 0;
     if (samp) return id_ < g_nsreg && g_sreg_ok[id_] && samp_fast(id_) ? g_srid[id_] : 0;
     if (id_ >= g_ntreg || !g_treg[id_].ok) return 0;
+    if (!g_treg[id_].view && !g_treg[id_].gone && g_treg[id_].empty_ep == treg_ep()) return 0;   // left empty in this epoch: nothing that could fill it has come
     if (g_treg[id_].gone || (!g_treg[id_].view && !tex_storage_live(&g_treg[id_].t))) { ++*gone; return 0; }
-    void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv);
+    void *tv = NULL; g_tex_walk = 1; uint64_t tr = tex_fast_rid(id_, &tv); int empty = g_tex_walk == 2; g_tex_walk = 0;
+    if (empty) { g_treg[id_].empty_ep = treg_ep(); atomic_fetch_add_explicit(&g_tex_walk_empty, 1, memory_order_relaxed); return 0; }
     if (!tv || ((__bridge id<MTLTexture>)tv).textureType != (MTLTextureType)dtt) return 0;
     *transient |= g_treg[id_].retired && g_treg[id_].transient_sub == g_sub_serial;
     return tr;

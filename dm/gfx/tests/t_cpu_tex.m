@@ -142,6 +142,58 @@ static void finalized_bindless_pool(void) {
     h_nvnMemoryPoolFinalize(&pool);
     defer_drain(); munmap(mem, len);
 }
+// A pool walk makes no texture for an ID whose texture would start empty, live or retired: the table reads the dummy, as it would read 0. A real use of that storage reaches the table, also for a
+// retired ID with another serial, and content in the storage still takes a texture
+static void walk_leaves_empty(void) {
+    enum { N = 64, LIVE = 8, FIRST = 256, STRIDE = 4096, CONTENT = N - 1 };
+    const size_t len = (N + 1) * STRIDE;
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (mem == MAP_FAILED) abort();
+    memset(mem + (size_t)CONTENT * STRIDE, 0x5a, 64);   // storage with data at creation, without COMPRESSIBLE below: tex_init_fill's content
+    NVNmemoryPool pool = {0};
+    pool_builder_t pb = {.mem = mem, .size = len, .flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    CHECK(h_nvnMemoryPoolInitialize(&pool, (const NVNmemoryPoolBuilder *)&pb), "render target storage initialized");
+    NVNtextureBuilder tb; h_nvnTextureBuilderSetDefaults(&tb);
+    h_nvnTextureBuilderSetWidth(&tb, 4); h_nvnTextureBuilderSetHeight(&tb, 4); h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA8);
+    NVNtexture live[LIVE]; memset(live, 0, sizeof live); int initialized = 1;
+    for (int i = 0; i < N; i++) {
+        NVNtexture tex = {0}, *o = i >= 1 && i <= LIVE ? &live[i - 1] : &tex;
+        h_nvnTextureBuilderSetFlags(&tb, i == CONTENT ? 0 : NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+        h_nvnTextureBuilderSetStorage(&tb, &pool, (ptrdiff_t)i * STRIDE);
+        initialized &= h_nvnTextureInitialize(o, &tb);
+        mtl_reg_tex(FIRST + i, (const tex_t *)o, NULL);
+        if (o == &tex) h_nvnTextureFinalize(&tex);
+    }
+    CHECK(initialized, "descriptors over render target storage have valid storage");
+    mtl_sub_begin();
+    unsigned shared = g_alias.n; uint64_t left = atomic_load(&g_tex_walk_empty);
+    __unsafe_unretained id<MTLBuffer> a = nil, b = nil, c = nil;
+    os_unfair_lock_lock(&g_rmu);
+    pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &a);
+    uint32_t n = *(const uint32_t *)a.contents; const uint64_t *e = (const uint64_t *)((const char *)a.contents + DMSH_POOL_HEAD);
+    int dummies = 0; for (int i = 0; i < N - 1; i++) dummies += e[FIRST + i] == e[n];
+    CHECK(dummies == N - 1 && atomic_load(&g_tex_walk_empty) == left + N - 1, "a walk leaves live and retired IDs of empty textures on the dummy");
+    CHECK(g_alias.n == shared + 1 && e[FIRST + CONTENT] != e[n], "a walk makes only the texture with content in its storage");
+    g_ser_gen++; pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &b);
+    CHECK(g_alias.n == shared + 1, "a walk in a new epoch still makes none");
+    os_unfair_lock_unlock(&g_rmu);
+    // the storage's first real use: a live object over retired ID 0's storage, and a live ID's own object
+    NVNtexture real = {0};
+    h_nvnTextureBuilderSetFlags(&tb, NVN_TEXTURE_FLAGS_COMPRESSIBLE); h_nvnTextureBuilderSetStorage(&tb, &pool, 0);
+    CHECK(h_nvnTextureInitialize(&real, &tb), "a new object over the retired descriptor's storage");
+    id<MTLTexture> used = tex_mtl((const tex_t *)&real), own = tex_mtl((const tex_t *)&live[0]);
+    os_unfair_lock_lock(&g_rmu);
+    pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &c);
+    e = (const uint64_t *)((const char *)c.contents + DMSH_POOL_HEAD);
+    CHECK(used && e[FIRST] == used.gpuResourceID._impl, "a retired ID reaches the texture a real use made over its storage");
+    CHECK(own && e[FIRST + 1] == own.gpuResourceID._impl, "a live ID reaches its object's texture once it is used");
+    os_unfair_lock_unlock(&g_rmu);
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the walks' submission completed");
+    h_nvnTextureFinalize(&real); for (int i = 0; i < LIVE; i++) h_nvnTextureFinalize(&live[i]);
+    for (int i = 0; i < N; i++) mtl_reg_tex(FIRST + i, NULL, NULL);
+    h_nvnMemoryPoolFinalize(&pool);
+    defer_drain(); munmap(mem, len);
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     enum { N = 6442, BASE = 1000 };
     static tex_t t[N];
@@ -167,6 +219,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     CHECK(mtl_cpu_tex_count() == N - 2, "a texture with no serial is not recorded");
     for (int i=0;i<N;i++) mtl_tex_release(&t[i]);
     retired_classification(); descriptor_replacement();
-    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); }
+    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); walk_leaves_empty(); }
     printf("t_cpu_tex: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
