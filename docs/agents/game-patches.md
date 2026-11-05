@@ -93,7 +93,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 79 | `build` → `game` |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 81 | `build` → `game` |
 | [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 
@@ -884,6 +884,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`build` → `game`**, rendering, gap, judgement: setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch. Fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function
 
 - **v0 `main`** `e0f3ccfa…`
+  - setting patch `main+0x14e3a48` (`DM_UPSCALER=metalfx-temporal`, No game anti-aliasing: SMAA's edge detection): `D63F0160` → `D503201F` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0x14e3a90` (`DM_UPSCALER=metalfx-temporal`, No game anti-aliasing: SMAA's blend weights): `D63F0120` → `D503201F` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=1.0`, Native (1.0), fixed): `1E260109` → `52A7F009` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x8065c4` (`DM_UPSCALE_RATIO=1.0`, Native (1.0), dynamic: the sharpest): `00000000` → `B9417A68` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x8065cc` (`DM_UPSCALE_RATIO=1.0`, Native (1.0), dynamic: the sharpest): `00000000` → `1E270120` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
