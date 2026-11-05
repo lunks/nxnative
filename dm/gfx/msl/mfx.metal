@@ -8,14 +8,15 @@ using namespace metal;
 // frame's clip space. ylow: the window origin is the lower left (row 0 holds y = -1), else the upper left. With dyn, a pixel whose distance at its previous place does not match the previous
 // frame's depth there (within 2 % at one of the nine texels around it) moved by itself (Donkey Kong, an enemy): it gets no motion instead of the camera's, the better guess when the camera
 // follows the thing that moves. Past the content, up to `fill`, the outputs repeat its last row and column: the temporal scaler's content can be larger than the input (mfx_content in
-// nvn_mfx.inc). psize: the previous frame's content size. A dynamic rate moves it from frame to frame, and the temporal scaler keeps its own scale, so a pixel of a still scene moves with
-// the rate, by uv * (psize - size): that is the least motion a pixel has, and the previous frame's depth has that size
+// nvn_mfx.inc). psize, pfill: the previous frame's. The temporal scaler takes its content over its whole output, so the previous picture is psize * fill / pfill of this frame's content
+// pixels. A rate that moves the input with the output rectangle, whose fill stays, moves a pixel of a still scene: that is the least motion a pixel has (rate). One that moves only the input
+// moves no pixel, the fill moving with it. The previous frame's depth has the size psize
 struct MvParams {
     float4x4 reproj;
     float4 prevz;        // the previous projection's z row and w row terms: P22, P23, P32 (clip w = P32 * z), and 1 when the previous frame's depth is in pdep
     uint2 org, size;     // content origin in the depth texture, content size (also the motion / depth outputs' rectangle at their origin)
     uint ylow, glz, dyn, pad;
-    uint2 fill, psize;
+    uint2 fill, psize, pfill;
 };
 static float clip_w_of(float d, float4 pz, uint glz) {   // the previous frame's clip w at a depth value
     float nz = glz ? d * 2.0 - 1.0 : d;
@@ -28,14 +29,14 @@ kernel void mfx_mv(depth2d<float, access::read> dep [[texture(0)]], texture2d<fl
     uint2 at = min(g, p.size - 1);
     float d = dep.read(at + p.org);
     dout.write(float4(d, 0, 0, 0), g);
-    float2 sz = float2(p.size), ps = float2(p.psize), uv = (float2(at) + 0.5) / sz, rate = uv * (ps - sz);
+    float2 sz = float2(p.size), ps = float2(p.psize) * float2(p.fill) / float2(p.pfill), uv = (float2(at) + 0.5) / sz, rate = uv * (ps - sz);
     float ny = p.ylow ? uv.y * 2.0 - 1.0 : 1.0 - uv.y * 2.0;
     float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, ny, p.glz ? d * 2.0 - 1.0 : d, 1.0);
     float2 m = rate;
     if (c.w > 1e-6) {
         float2 n = c.xy / c.w, pv = float2(n.x * 0.5 + 0.5, p.ylow ? n.y * 0.5 + 0.5 : 0.5 - n.y * 0.5);
         m = pv * ps - uv * sz;
-        int2 q = int2(floor(pv * ps));
+        int2 q = int2(floor(pv * float2(p.psize)));
         if (p.dyn && p.prevz.w > 0.5 && all(q >= 1) && all(q < int2(p.psize) - 1)) {
             bool still = false;
             for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {

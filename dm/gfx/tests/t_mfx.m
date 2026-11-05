@@ -323,11 +323,13 @@ static int win_edge(id<MTLTexture> t, int y) {   // the window's edge, as the fi
 // picture does not repeat (7 pixels), and with the rate moving every frame scattered pixels near the top, about 250 of the 3.2 million from frame 56 on and no more by frame 200. So the
 // pictures may differ in a few hundred pixels: a stretched or stale edge is a row or column of the window's, 1350 or more. Then an edge of the picture, as a game draws it: at 0.9 of the
 // rectangle at both rates, moving between them every frame and every third frame. Without the rate's motion the scaler's history holds it at the larger rate's place, 3 pixels off (2 is the
-// scaler's own, with no history). wide: the output texture's size, so the scaler writes it straight; else its output is copied, the rectangles inside a larger texture
-static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, int hdr, int wide, id<MTLTexture> depth, const mfx_cam *cam, int temporal, int interp, int *frame) {
+// scaler's own, with no history). kind 0: the output rectangle moves with the input, in the output texture's size, so the scaler writes it straight; 1: the same inside a larger texture, its
+// output copied; 2: only the input moves, the usual dynamic resolution, where a still pixel does not move and the rate's motion must be none
+static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, int hdr, int kind, id<MTLTexture> depth, const mfx_cam *cam, int temporal, int interp, int *frame) {
     const uint32_t r0[8] = {0, 0, 639, 359, 0, 0, 1919, 1079}, r1[8] = {0, 0, 638, 358, 0, 0, 1915, 1076}, r2[8] = {0, 0, 637, 357, 0, 0, 1911, 1073};
-    const uint32_t *full = wide ? r0 : r1, *less = wide ? r1 : r2;
-    const char *name = hdr ? "HDR" : wide ? "SDR" : "SDR, inside a larger texture";
+    const uint32_t r3[8] = {0, 0, 719, 404, 0, 0, 1919, 1079}, r4[8] = {0, 0, 679, 381, 0, 0, 1919, 1079};
+    const uint32_t *full = kind == 0 ? r0 : kind == 1 ? r1 : r3, *less = kind == 0 ? r1 : kind == 1 ? r2 : r4;
+    const char *name = hdr ? "HDR" : kind == 0 ? "SDR" : kind == 1 ? "SDR, inside a larger texture" : "SDR, only the input moving";
     id<MTLTexture> bright = small_tex(MTLClearColorMake(1.0, 0.9, 0.1, 1));
     const double expect = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.75; const int limit = hdr ? 4 : 2;
     fill(tex_mtl(in), MTLClearColorMake(0.5, 0.25, 0.75, 1), 0); fill(tex_mtl(out), MTLClearColorMake(0, 0, 0, 1), 0);
@@ -365,7 +367,7 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, in
         int place = 0, sharp = 1, moved = 0, along = 0;
         for (int f = 0; f < 24; f++) @autoreleasepool {
             const uint32_t *r = (f / period) & 1 ? less : full; unsigned ow = r[6] + 1, oh = r[7] + 1;
-            int col = input_edge(in, dark, r[2] + 1), want = col * 3;   // the scale of the content: the scaler's output over it, 3 here
+            int col = input_edge(in, dark, r[2] + 1), want = (int)(col * g_mm.w / mfx_content(g_mm.w, ow, r[2] + 1));   // the content's scale: the scaler's output over it
             drawn_all &= dyn_frame(named, r, depth, cam, frame);
             int slot = dyn_present(out, win, ow, oh, (uint32_t)hdr, interp);
             if (f < 8) continue;
@@ -384,7 +386,7 @@ static void dynamic_rates(NvShader *named, tex_t *in, tex_t *out, tex_t *win, in
     // What the scaler is given past a smaller rate's input: its edge repeated, not what the larger rate left there. The rates' scenes differ, so a stale texel shows
     int colour = 1, dep_edge = 1, mv_edge = 1;
     for (int f = 0; f < 8; f++) @autoreleasepool {
-        const uint32_t *r = f & 1 ? less : full; unsigned iw = r[2] + 1, ih = r[3] + 1, vw = full[2] + 1, vh = full[3] + 1;
+        const uint32_t *r = f & 1 ? less : full; unsigned iw = r[2] + 1, ih = r[3] + 1, vw = (unsigned)mfx_content(g_mm.w, r[6] + 1, iw), vh = (unsigned)mfx_content(g_mm.h, r[7] + 1, ih);
         float dv = f & 1 ? 0.98f : 0.99f;
         fill(tex_mtl(in), f & 1 ? MTLClearColorMake(1, 1, 1, 1) : MTLClearColorMake(0, 0, 0, 1), 0); fill(depth, MTLClearColorMake(0, 0, 0, 0), dv);
         dyn_frame(named, r, depth, cam, frame);
@@ -606,9 +608,10 @@ int main(void) { @autoreleasepool {
         free(o);
         g_mfx_jit_sign = 1; g_jit.on = 0; g_mfi_on = keep;
     }
-    dynamic_rates(named, &in, &out, &win8, 0, 1, depth, &cam, temporal, interp, &frame);
     dynamic_rates(named, &in, &out, &win8, 0, 0, depth, &cam, temporal, interp, &frame);
-    if (interp) dynamic_rates(named, &in, &out, &win10, 1, 1, depth, &cam, temporal, interp, &frame);
+    dynamic_rates(named, &in, &out, &win8, 0, 1, depth, &cam, temporal, interp, &frame);
+    dynamic_rates(named, &in, &out, &win8, 0, 2, depth, &cam, temporal, interp, &frame);
+    if (interp) dynamic_rates(named, &in, &out, &win10, 1, 0, depth, &cam, temporal, interp, &frame);
     printf("t_mfx (%s%s): %d checks, %d failed\n", temporal ? "temporal" : "spatial / game", interp ? ", interpolation in SDR and HDR" : "", checks, failed);
     return failed != 0;
 }}

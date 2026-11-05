@@ -332,9 +332,9 @@ static struct {
 // MetalFX takes its content (vw x vh at the origin of its inputs) over its whole output, and the game wants its input over its output rectangle, so the content is what fills the scaler's
 // output at the game's own scale: the rectangle is then the output's top left part, cropped as it is, with no second resample. full: the scaler's output; out: the game's output
 // rectangle; in: its input rectangle, all in one dimension. The content past the input repeats the input's edge. 1279 of 3836 at an output of 3840 is 1280: the device's largest
-// scale, 3.0, where stretching the 1279 over the 3840 would be past it. The scene's scale in the content moves with the rate, so a rate's move is motion to the scaler (mfx_mv's rate): without
-// it the scaler's history keeps the old picture, 3.6 output pixels off at 0.9 of 1916. The same motion texture goes to the interpolator, whose pictures are stretched over the window, where
-// the move is none: the one picture after a move is off by the half of that
+// scale, 3.0, where stretching the 1279 over the 3840 would be past it. With the content's size kept the scene's scale in it moves with the rate, so that move is motion to the scaler (mfx_mv's
+// rate): without it the scaler's history keeps the old picture, 3 output pixels off at 0.9 of 1916. The same motion texture goes to the interpolator, whose pictures are stretched over the
+// window, where the move is none: the one picture after such a move is off by the half of that
 static NSUInteger mfx_content(NSUInteger full, NSUInteger out, NSUInteger in) { NSUInteger v = (full * in + out / 2) / out; return v < in ? in : v > full ? full : v; }
 static int mfx_mv_dyn(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_MFX_MV_DYN"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("[mfx] DM_MFX_MV_DYN=0: every pixel gets the camera's motion"); } return v; }
 // The depth pass of the upscaler's input: a candidate whose depth has the input texture's size and a camera, the one with the most passes (the scene's), the latest on a tie
@@ -408,10 +408,10 @@ static int mfx_motion(const mfx_io *io) {
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) pf[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     pf[16] = (float)g_mm.prev.p[10]; pf[17] = (float)g_mm.prev.p[11]; pf[18] = (float)g_mm.prev.p[14]; pf[19] = reset ? 0.0f : 1.0f;
     NSUInteger cw = io->ir.width, ch = io->ir.height, vw = mfx_content(w, io->orr.width, cw), vh = mfx_content(h, io->orr.height, ch);
-    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112 (the frame before's content: g_mm.cw and ch are still its; a reset has none)
+    // layout (MvParams): reproj 64 bytes, prevz 16, org / size at +80, ylow / glz / dyn at +96, fill / psize at +112, pfill at +128 (the frame before's: g_mm's are still its; a reset has none)
     uint32_t *po = (uint32_t *)(pb + 80); po[0] = (uint32_t)io->ir.xoffset; po[1] = (uint32_t)io->ir.yoffset; po[2] = (uint32_t)io->ir.width; po[3] = (uint32_t)io->ir.height;
     pu[0] = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll; pu[1] = !atomic_load(&g_depth_zero); pu[2] = (uint32_t)mfx_mv_dyn(); pu[3] = 0;
-    pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)(reset ? cw : g_mm.cw); pu[7] = (uint32_t)(reset ? ch : g_mm.ch);
+    pu[4] = (uint32_t)vw; pu[5] = (uint32_t)vh; pu[6] = (uint32_t)(reset ? cw : g_mm.cw); pu[7] = (uint32_t)(reset ? ch : g_mm.ch); pu[8] = (uint32_t)(reset ? vw : g_mm.vw); pu[9] = (uint32_t)(reset ? vh : g_mm.vh);
     id<MTLComputePipelineState> ps = g_mm.ps; id<MTL4ArgumentTable> at = g_mm.at; id<MTLTexture> mv = g_mm.mv[k], dout = g_mm.dep[k], pdep = g_mm.dep[pk];
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
