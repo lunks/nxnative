@@ -40,8 +40,8 @@ def sph(pos=0xf0, generics=b''):
     return bytes(s)
 
 
-def control(stage, threads=32, payload=256, task=0, max_v=0, max_p=0, prim_at=0):
-    c = bytearray(0x80); c[0x56] = stage; struct.pack_into('<2H', c, 0x58, threads, payload); c[0x5e] = task; struct.pack_into('<2H', c, 0x60, max_v, max_p)
+def control(stage, threads=32, payload=256, task=0, max_v=0, max_p=0, prim_at=0, topology=3):
+    c = bytearray(0x80); c[0x56] = stage; struct.pack_into('<2H', c, 0x58, threads, payload); c[0x5e] = task; c[0x5f] = topology; struct.pack_into('<2H', c, 0x60, max_v, max_p)
     if prim_at: struct.pack_into('<I', c, 0x64, prim_at); c[0x68] = 0x80
     return bytes(c)
 
@@ -53,6 +53,14 @@ class Facts(unittest.TestCase):
     def test_outputs_follow_the_omap(self):   # 0x36: a nibble an attribute, low first. ddc034e8e009ebfc's 0x30: generic 1's x and y
         self.assertEqual(ms.sph_outputs(sph(0xf0, b'\x30')), [(None, 0), (None, 1), (None, 2), (None, 3), (1, 0), (1, 1)])
         self.assertEqual(ms.sph_outputs(sph(0x30, b'\x01')), [(None, 0), (None, 1), (0, 0)])
+
+    def test_point_size_comes_before_the_position(self):   # bit 3 of byte 0x35, below the position's: Ocarina of Time's a203347bb7bdbd03 stores the size at +0 and clip x at +0x80
+        self.assertEqual(ms.sph_outputs(sph(0xf8)), [('psiz', 0), (None, 0), (None, 1), (None, 2), (None, 3)])
+
+    def test_point_memory(self):   # five components, then the primitive bytes past them, one index a point
+        i = ms.info(control(7, payload=128, max_v=32, max_p=32, topology=1), sph(0xf8))
+        lay, size = ms.memory(i)
+        self.assertTrue(i['points']); self.assertEqual(lay[3], lay[2] + 5 * 0x80); self.assertEqual(size, lay[3] + 4 + 32)
 
     def test_per_primitive_sph(self):   # after the instructions, at control +0x64 where +0x68 bit 7 is set; the position is not a primitive's
         area = sph(0xf0, b'\x30') + bytes(0x100) + sph(0x00, b'\x01')
@@ -86,6 +94,10 @@ class Stage(unittest.TestCase):
     def mesh(self, task=False, primitive=False, vertices=128, primitives=64):
         area = sph(0xf0, b'\x30') + (sph(0, b'\x01') if primitive else b'')
         i = ms.info(control(7, payload=128, task=int(task), max_v=vertices, max_p=primitives, prim_at=0x80 if primitive else 0), area)
+        return ms.to_stage(KERNEL % (ms.memory(i)[1] // 4, ms.memory(i)[0][3] // 4), i), i
+
+    def points(self):
+        i = ms.info(control(7, payload=128, max_v=32, max_p=32, topology=1), sph(0xf8))
         return ms.to_stage(KERNEL % (ms.memory(i)[1] // 4, ms.memory(i)[0][3] // 4), i), i
 
     def test_task_launches_what_it_wrote(self):
@@ -133,6 +145,15 @@ class Stage(unittest.TestCase):
         self.assertIn('metal::mesh<dm_vertex_t, dm_prim_t,', src)
         self.assertRegex(src, r'p\.p0 = float4\(as_type<float>\(_23\[b \+ 192u\]\), 0\.0, 0\.0, 1\.0\);')   # after the six vertex components
 
+    def test_points(self):   # the wrapper reads what the kernel stored: size in the first component, clip x, y, z and w in the next four
+        src, i = self.points(); prim = ms.memory(i)[0][3]
+        self.assertIn('float point_size [[point_size]];', src)
+        self.assertIn('metal::mesh<dm_vertex_t, void, 32, 32, metal::topology::point>', src)
+        self.assertIn('v.point_size = as_type<float>(_23[b + 0u]);', src)
+        self.assertRegex(src, r'v\.position = float4\(as_type<float>\(_23\[b \+ 32u\]\), as_type<float>\(_23\[b \+ 64u\]\), as_type<float>\(_23\[b \+ 96u\]\), as_type<float>\(_23\[b \+ 128u\]\)\);')
+        self.assertIn(f'uint at = {prim + 4}u + n;', src)
+        self.assertRegex(src, r'for \(uint n = [\w.]+; n < np; n \+= 32u\)\n    \{\n        uint at')
+
     def test_past_metal_refused(self):
         with self.assertRaises(ValueError): self.mesh(vertices=300)
 
@@ -146,7 +167,7 @@ class Stage(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('xcrun') and subprocess.run(['xcrun', '-sdk', 'macosx', '-f', 'metal'], capture_output=True).returncode == 0, 'no Metal compiler')
     def test_compiles(self):
-        cases = [self.task()[0], self.mesh()[0], self.mesh(task=True)[0], self.mesh(primitive=True)[0]]
+        cases = [self.task()[0], self.mesh()[0], self.mesh(task=True)[0], self.mesh(primitive=True)[0], self.points()[0]]
         with tempfile.TemporaryDirectory() as d:
             for n, src in enumerate(cases):
                 f = Path(d, f's{n}.metal'); f.write_text(src)

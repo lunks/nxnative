@@ -51,6 +51,30 @@ vertex main0_out main0(main0_in in [[stage_in]], uint vid [[vertex_id]])
 '''
 
 
+MESH = '''struct dm_vertex_t {
+    float4 position [[position]];
+    float4 a0 [[user(locn0)]];
+};
+struct dm_prim_t {
+    float4 p6 [[user(locn6)]];
+};
+[[mesh]] void main0()
+{
+    {
+        dm_vertex_t v;
+        dm_out.set_vertex(n, v);
+    }
+}
+[[mesh]] void main0_z()
+{
+    {
+        dm_vertex_t v;
+        dm_out.set_vertex(n, v);
+    }
+}
+'''
+
+
 def pixel(loc):
     return f'''#include <metal_stdlib>
 using namespace metal;
@@ -89,6 +113,16 @@ class Pairing(unittest.TestCase):
             self.assertIn(f'out.dm_pad{loc} = float4(0.0, 0.0, 0.0, 1.0);', src)
         self.assertEqual(src.count('float4 v0 [[user(locn0)]];'), 1)
         self.assertEqual(self.ns['vs_pad']('v', src), (src, []))
+
+    def test_mesh_table_pairs_mesh_and_pixel(self):   # a row is task or -, mesh, pixel; what the mesh shader writes per primitive is written
+        (self.package.parent / 'mesh_pipelines.tsv').write_text('# task\tmesh\tpixel\n-\tm\tf1\nt\tm\tf6\n')
+        self.ns.update(PAIRS=self.ns['load_pairs'](self.g, self.package))
+        self.assertEqual(self.ns['PAIRS']['m'], {'f1', 'f6'}); self.assertNotIn('t', self.ns['PAIRS'])
+        src, pad = self.ns['vs_pad']('m', MESH)
+        self.assertEqual(pad, [1])
+        i, j = src.find('struct dm_vertex_t'), src.find('struct dm_prim_t')
+        self.assertIn('float4 dm_pad1 [[user(locn1)]];', src[i:j])
+        self.assertEqual(src.count('v.dm_pad1 = float4(0.0, 0.0, 0.0, 1.0);'), 2)   # both depth conventions
 
     def test_profile_table_wins_and_optional_table(self):
         self.g.table('pso_pairs.tsv').write_text('v\tf6\n')

@@ -1197,17 +1197,17 @@ def int_inputs(src):
         if not bad and nint: out[str(loc_)] = 'uint'
     return out
 
-# Both pair tables feed pipelines, so both must feed padding, build order and shader cache keys.
+# All the pair tables feed pipelines, so all must feed padding, build order and shader cache keys. A row of the mesh table (task or -, mesh, pixel) pairs its last two.
 def load_pairs(game, package):
     pairs = collections.defaultdict(set)
-    for table in ('shader_pairs.tsv', 'pso_pairs.tsv'):
+    for table in ('shader_pairs.tsv', 'pso_pairs.tsv', 'mesh_pipelines.tsv'):
         path = str(game.table(table))
-        if table == 'pso_pairs.tsv' and not os.path.isfile(path):
-            path = os.path.join(os.path.dirname(os.path.abspath(package)), table)   # the split's copy for profiles predating this table
-        if table == 'pso_pairs.tsv' and not os.path.isfile(path): continue
+        if table != 'shader_pairs.tsv' and not os.path.isfile(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(package)), table)   # the split's copy for profiles without this table
+        if table != 'shader_pairs.tsv' and not os.path.isfile(path): continue
         with open(path) as f:
             for ln in f:
-                if ln.strip() and not ln.startswith('#'): v, p = ln.split(); pairs[v].add(p)
+                if ln.strip() and not ln.startswith('#'): v, p = ln.split()[-2:]; pairs[v].add(p)
     return pairs
 
 PAIRS = load_pairs(GAME, dm_dir)

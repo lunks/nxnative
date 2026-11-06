@@ -29,9 +29,10 @@ def is_stage(ctl):
 
 
 def sph_outputs(sph):
-    """The components an SPH's OMAP enables, in the order of the attribute area: [(None, c)] for the position's (byte 0x35, bits 4..7), [('psiz', 0)] for the point size's
-    (byte 0x35, bit 3), then [(n, c)] for generic attribute n's (bytes 0x36 on, a nibble an attribute, bit c its component)."""
-    out = [(None, c) for c in range(4) if sph[0x35] >> (4 + c) & 1] + ([('psiz', 0)] if sph[0x35] & 8 else [])
+    """The components an SPH's OMAP enables, in the order of the attribute area: [('psiz', 0)] for the point size's (byte 0x35, bit 3), [(None, c)] for the position's (bits 4..7), then
+    [(n, c)] for generic attribute n's (bytes 0x36 on, a nibble an attribute, bit c its component). The size comes first as in the SPH's bits: Ocarina of Time's a203347bb7bdbd03
+    stores a scaled constant at attribute +0, and the view-projection product's x, y, z and w at +0x80 to +0x200."""
+    out = ([('psiz', 0)] if sph[0x35] & 8 else []) + [(None, c) for c in range(4) if sph[0x35] >> (4 + c) & 1]
     for n in range(32):
         out += [(n, c) for c in range(4) if sph[0x36 + n // 2] >> (4 * (n % 2) + c) & 1]
     return out
