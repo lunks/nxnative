@@ -73,6 +73,8 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- The first entry into Hyrule Market asks for over 400 pipelines not built yet at once, and it ran at 12 fps for over a minute: [a full table of background builds asks the archives on every draw](../../../docs/reference/shaders.md#a-full-table-of-background-builds-asks-the-archives-on-every-draw). The stand-ins hold 60 fps while the bases build, about 10 per 5 s; the seed list of PR #1488 holds 1 of the 274 render pipelines one session recorded there.
+- There the device's allocated size swung around the guard's eviction level with 8 GB in the residency set, and kept packaged textures went and came back: [GPU memory past Metal's working set freezes the Mac](../../../docs/reference/memory.md#gpu-memory-past-metals-working-set-freezes-the-mac).
 - Its foliage and emitters search the raw pool table at every word they read: [a raw lookup that searches for the range the last one found](../../../docs/reference/shaders.md#a-raw-lookup-that-searches-for-the-range-the-last-one-found).
 - Its indirect mesh draws split the scene's largest passes 6 times a frame: [conversions of indirect draws made ahead of their pass](../../../docs/reference/rendering.md#conversions-of-indirect-draws-made-ahead-of-their-pass).
 - Its frame-start compute block runs 124 dispatches one at a time: [dispatches that touch different memory keep no barrier between them](../../../docs/reference/rendering.md#dispatches-that-touch-different-memory-keep-no-barrier-between-them).
