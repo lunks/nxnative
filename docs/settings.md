@@ -201,16 +201,16 @@ The game's shadow cheats, if you have them, are turned off while one of these se
 
 ### Ocarina of Time's shadows and ambient occlusion
 
-Mac only, for The Legend of Zelda: Ocarina of Time, in Advanced settings. Every row keeps the game's own value as **Game default** and raises quality above it; none switches a shadow off. They change the game's parameter files as the game reads them, not its code: the app's files stay as they are, and a different version of a file refuses the setting (a red line in the log).
+Mac only, for The Legend of Zelda: Ocarina of Time, in Advanced settings. Every row keeps the game's own value as **Game default** and raises quality above it; none switches a shadow off. The shadow map size is a word of the game's code; the others change the game's parameter files as the game reads them (the app's files stay as they are, and a different version of a file refuses the setting, with a red line in the log).
 
-- **Shadow distance** (`DM_SHADOW_DISTANCE`): **Far (1.5x)** and **Farther (2x)** move the cascade splits (32, 64 and 200 units in the game) and the distance where shadows fade out (80 to 200) outwards. The same shadow maps cover more ground, so far shadows get softer unless **Shadow map size** is raised too.
-- **Shadow map size** (`DM_SHADOW_CASCADE_SIZE`): the cascades' texture size, 1024 in the game's file; **1536** and **2048**. Cost: GPU time for the cascades (about 0.4 to 0.9 ms of a 7 to 14 ms frame at the game's size, mostly draws) and memory (a 32-bit depth map per cascade).
+- **Shadow distance** (`DM_SHADOW_DISTANCE`): **Far (1.5x)** and **Farther (2x)** move the distance where the screen-space shadow pass fades dynamic shadows out (80 to 200 in the game) to 120 to 300 and 160 to 400. The same shadow maps cover more ground, so far shadows get softer unless **Shadow map size** is raised too. Its effect on the picture is not checked yet.
+- **Shadow map size** (`DM_SHADOW_CASCADE_SIZE`): the three cascades' texture size, 1600 in the game; **2048** and **3072**. Cost: 2048 adds about 80 us to the 765 us the shadow passes take (a 16.5 ms frame) and 6.6 MB of depth a cascade; 3072 was not run.
 - **Shadow filtering** (`DM_SHADOW_FILTER`): **Smooth** takes more filter taps in the screen-space shadow pass; **Smoother** also widens the filter.
 - **Character shadow** (`DM_LOCAL_SHADOW`): **Sharp** draws the soft shadow under Link and other characters at double resolution with less blur.
 - **Ambient occlusion quality** (`DM_SSAO_QUALITY`): **High** and **Higher** take more samples (and **Higher** one more blur pass).
 - **Ambient occlusion resolution** (`DM_SSAO_RES`): **Full-resolution depth** computes it from the full-size depth instead of the reduced one.
 
-The values, the files they live in and what was and was not run are in [the game's note](../dm/games/0400486024DEC000/README.md#shadow-settings-static-analysis-not-played-yet).
+The values, the files they live in and what was and was not run are in [the game's note](../dm/games/0400486024DEC000/README.md#shadow-settings-measured-headless-pictures-not-compared).
 
 ### Graphics memory
 

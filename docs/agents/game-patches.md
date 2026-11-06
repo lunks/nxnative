@@ -94,7 +94,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 112 | `build` → `game` |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 106 | `build` → `game` |
 | [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 
@@ -980,18 +980,10 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `main+0x8065d8` (`DM_UPSCALE_SOFTEST=3.0`, Ultra performance (3.0)): `00000000` → `3E4CCB8B` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x8065dc` (`DM_UPSCALE_SOFTEST=3.0`, Ultra performance (3.0)): `00000000` → `3ECCCDA4` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x31c3cb0` (`DM_UPSCALE_SOFTEST=3.0`, Ultra performance (3.0)): `B940001A` → `17590A45` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
-- **RomFS file** `gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml` (any build): 11 setting patches ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
-  - setting patch `+0x1f74` (`DM_SHADOW_DISTANCE=1.5`, Far (1.5x)): `42000000` → `42400000`
-  - setting patch `+0x1f7c` (`DM_SHADOW_DISTANCE=1.5`, Far (1.5x)): `42800000` → `42C00000`
-  - setting patch `+0x1f84` (`DM_SHADOW_DISTANCE=1.5`, Far (1.5x)): `43480000` → `43960000`
-  - setting patch `+0x1f74` (`DM_SHADOW_DISTANCE=2`, Farther (2x)): `42000000` → `42800000`
-  - setting patch `+0x1f7c` (`DM_SHADOW_DISTANCE=2`, Farther (2x)): `42800000` → `43000000`
-  - setting patch `+0x1f84` (`DM_SHADOW_DISTANCE=2`, Farther (2x)): `43480000` → `43C80000`
-  - setting patch `+0x1fe4` (`DM_SHADOW_CASCADE_SIZE=1536`, 1536): `00000400` → `00000600`
-  - setting patch `+0x1fdc` (`DM_SHADOW_CASCADE_SIZE=1536`, 1536): `00000400` → `00000600`
-  - setting patch `+0x1fe4` (`DM_SHADOW_CASCADE_SIZE=2048`, 2048): `00000400` → `00000800`
-  - setting patch `+0x1fdc` (`DM_SHADOW_CASCADE_SIZE=2048`, 2048): `00000400` → `00000800`
-  - setting patch `+0x2484` (`DM_SSAO_RES=full`, Full-resolution depth): `00000000` → `00000001`
+  - setting patch `main+0xe824f4` (`DM_SHADOW_CASCADE_SIZE=2048`, 2048): `D280C808` → `D2810008` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0xe824f8` (`DM_SHADOW_CASCADE_SIZE=2048`, 2048): `F2A0C808` → `F2A10008` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0xe824f4` (`DM_SHADOW_CASCADE_SIZE=3072`, 3072): `D280C808` → `D2818008` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `main+0xe824f8` (`DM_SHADOW_CASCADE_SIZE=3072`, 3072): `F2A0C808` → `F2A18008` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
 - **RomFS file** `agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml` (any build): 7 setting patches ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `+0x2d8` (`DM_SHADOW_DISTANCE=1.5`, Far (1.5x)): `42A00000` → `42F00000`
   - setting patch `+0x2d0` (`DM_SHADOW_DISTANCE=1.5`, Far (1.5x)): `43480000` → `43960000`
@@ -1009,6 +1001,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - setting patch `+0x4e8` (`DM_SSAO_QUALITY=higher`, Higher (most samples, extra blur pass)): `00000003` → `00000008`
   - setting patch `+0x4a0` (`DM_SSAO_QUALITY=higher`, Higher (most samples, extra blur pass)): `00000005` → `0000000C`
   - setting patch `+0x4b0` (`DM_SSAO_QUALITY=higher`, Higher (most samples, extra blur pass)): `00000002` → `00000003`
+- **RomFS file** `gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml` (any build): 1 setting patch ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
+  - setting patch `+0x2484` (`DM_SSAO_RES=full`, Full-resolution depth): `00000000` → `00000001`
 
 ### The Legend of Zelda: Tears of the Kingdom
 
