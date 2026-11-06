@@ -609,9 +609,15 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     uint64_t elapsed = bp_now() - start;
     g_bp_pso_n++; g_bp_pso_ns += elapsed;
     const char *task = ts ? ts->key : "-";
-    if (!ps) {
-        MLOG("[RED] task / mesh pipeline failed: task %s mesh %s fragment %s: %s", task, ms->key, fs ? fs->key : "-",
-             error ? error.localizedDescription.UTF8String : "invalid depth/stencil formats");
+    if (!ps) {   // cached as failed: every draw of the triple is dropped from here on, each pass's key without a word, so the one line says which draw it was
+        static NSMutableSet *failed; if (!failed) failed = [NSMutableSet new];
+        NSString *triple = [NSString stringWithFormat:@"%s %s %s", task, ms->key, fs ? fs->key : "-"];
+        if (![failed containsObject:triple]) {
+            [failed addObject:triple];
+            MLOG("[RED] task / mesh pipeline failed: task %s mesh %s fragment %s: %s; its draws are dropped from frame %llu on (the first: %s, first %u, count %u, colour 0 format %u, depth format %u)",
+                 task, ms->key, fs ? fs->key : "-", error ? error.localizedDescription.UTF8String : "invalid depth/stencil formats", (unsigned long long)atomic_load(&g_cur_frame),
+                 g_mtk.ind ? "indirect" : "direct", g_mtk.first, g_mtk.count, g_pass.cfmt[0], g_pass.dfmt);
+        }
         hm_put_id(&g_pso_mtk, &k, NSNull.null); return nil;
     }
     hm_put_id(&g_pso_mtk, &k, ps);

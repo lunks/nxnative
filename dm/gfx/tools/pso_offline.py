@@ -24,7 +24,7 @@
 # <key>_b `entry`, the threads and payload of their reflection's mesh_stage, which the lookup must name alike. Left out as the host would not find them: a reflection of another chain version or none,
 # a task shader beside a mesh shader that takes none (or none where it takes one), a pixel shader that reads the primitive ID, a missing library or entry point, a function with function constants.
 # metal-tt refuses a pipeline whose pixel shader reads an output the mesh shader does not write, as the device does, and stops there, so mesh groups that fail so are halved until that pipeline is
-# alone and left out (23 of Ocarina of Time's 1,312). A draw the archive does not have (integer, alpha test or border entry points too) is built on the device, as before
+# alone and left out (none of Ocarina of Time's 1,312: dmsh_build.py pads mesh shaders from the same table). A draw the archive does not have (integer, alpha test or border entry points too) is built on the device, as before
 # Output folder (what the app bundles as pso/, the host's DM_PSO_BUNDLE):
 #   <arch>.mtl4a     one archive per GPU architecture (applegpu_g18p = A19 / A19 Pro); the host opens the one named after its device's architecture
 #   prebuilt.tsv     what the archives cover, in the host's stamp format (pso_prebuild): chain version, depth mode, the pair lists' size and SHA-256. The host skips its prebuild when
