@@ -130,6 +130,7 @@ static void drain(cv_dec *d, int took) {
     while (d->pcount && (d->nheld || d->eos_pending)) {
         uint32_t i = d->pend[d->phead]; d->phead = (d->phead + 1) % CV_BUFS; d->pcount--;
         typeof(d->buf[0]) *b = &d->buf[i];
+        int own = 0;   // the end of stream came as a buffer of its own, not on a picture
         if (d->nheld && d->codec == CV_AV1 && cv_late_on()) cv_skip_late(d);
         if (d->nheld) {
             vpx_image_t *im = d->held[0]; int64_t ts = d->held_ts[0]; uint8_t eos = d->held_eos[0];
@@ -138,8 +139,9 @@ static void drain(cv_dec *d, int took) {
             b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos; d->clk_last = ts;
             if (b->pool && b->pidx < b->pool->count) { pool_native_write(b->pool, b->pidx, im); if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
             if (!d->pictures++) LOG("[codec] %s decoder %u: first picture %ux%u into buffer %u", k_cv_name[d->codec], d->id, b->w, b->h, i);
-        } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; }
-        if (b->eos) LOG("[codec] %s decoder %u: end of stream after %llu pictures", k_cv_name[d->codec], d->id, (unsigned long long)d->pictures);
+        } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; own = 1; }
+        if (b->eos) LOG("[codec] %s decoder %u: end of stream after %llu pictures, %s; %d pictures still held, %d released buffers still queued, %llu late pictures skipped", k_cv_name[d->codec], d->id,
+                        (unsigned long long)d->pictures, own ? "as a buffer of its own (0x0)" : "on the last picture", d->nheld, d->pcount, (unsigned long long)d->skipped);
         b->filled = 1; b->filled_gen = b->gen;
         spt_fire(d, i);
     }
