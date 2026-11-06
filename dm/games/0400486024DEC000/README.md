@@ -179,6 +179,7 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 
 ## Found on this game
 
+- [A damaged file in a NUP or a dump has no hash to fail](../../../docs/reference/packing.md#a-damaged-file-in-a-nup-or-a-dump-has-no-hash-to-fail): the NUP at hand holds three `.zs` textures beginning with zeros, and the background loader reloaded the fairy fountain model for ever (412% CPU): it builds with `--allow-damaged`, and `romfs_substitute` serves the three.
 - [A control section's words read as a BAHS entry](../../../docs/reference/shaders.md#a-control-sections-words-read-as-a-bahs-entry): six map rows that were no shaders, one of them failing the build; `tera_common` gave its variation pairs once its row was gone.
 - [Freeing a memory pool during a texture ID walk](../../../docs/reference/nvn-objects.md#freeing-a-memory-pool-during-a-texture-id-walk): the `-[NvPkg buffer]: unrecognized selector` crash after a save or a scene change.
 - [HMMA chains keep their matrices in the SIMD-group](../../../docs/reference/shaders.md#hmma-chains-keep-their-matrices-in-the-simd-group): the NDVE movie networks behind the title and the opening, 14.8 → 11.4 ms of compute a frame on this M6.
@@ -217,6 +218,7 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - [Stage memory byte stores through a compare-and-swap loop](../../../docs/reference/shaders.md#stage-memory-byte-stores-through-a-compare-and-swap-loop): the foliage mesh shaders, 8.5 ms a frame on an M3 Pro.
 - [The GPU idles with the next command buffer already committed](../../../docs/reference/frame-rate.md#the-gpu-idles-with-the-next-command-buffer-already-committed): the 25-40 ms frames.
 - [Pool tables and readback buffers made anew each frame](../../../docs/reference/memory.md#pool-tables-and-readback-buffers-made-anew-each-frame): about 1,500 residency changes per 300 frames.
+- [Pool tables patched instead of built whole](../../../docs/reference/nvn-objects.md#pool-tables-patched-instead-of-built-whole): the game registers something between most of its draws, its streamed textures map and unmap virtual pool runs dozens of times a second, finalized descriptors stay registered and textures take over each other's storage; each of these walked the 33,025-entry texture table again, about 53 s of a seven-minute walk.
 - [Pool shaders taken as depth readers](../../../docs/reference/rendering.md#pool-shaders-taken-as-depth-readers): about 80 extra passes a frame, and half the frames over budget.
 - [A pipeline archive on an external drive is read into memory](../../../docs/reference/memory.md#a-pipeline-archive-on-an-external-drive-is-read-into-memory): 3.5 GB of swapped memory, now mapped.
 - [A texture in a sparse pool came out CPU-written at its first use](../../../docs/reference/memory.md#a-texture-in-a-sparse-pool-came-out-cpu-written-at-its-first-use): found by the unit test, on main's `tex_dirty_upload` for this game.

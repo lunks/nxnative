@@ -2059,6 +2059,7 @@ static void cbn_failed(const cbn_entry *me, NSError *err) {
     }
 }
 static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
+static void rt_preserve_bound(void);
 uint64_t mtl_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
@@ -2070,6 +2071,7 @@ uint64_t mtl_sub_commit(void) {
     g_cut_copy = 0;
     treg_finish_submission();   // Late descriptor views retire behind this submission's fence.
     ghost_finish_submission();
+    rt_preserve_bound();   // The game may reuse completed command memory; queue bindings must not point into its texture snapshots.
     uint64_t fence = ++g_fence;
     gw_commit(fence);
     if (g_vis_ring_i >= 0) g_vis_ring[g_vis_ring_i].fence = fence;
@@ -6199,7 +6201,8 @@ void mtl_tb2_stats(uint64_t *binds, uint64_t *made, uint64_t *fail, uint64_t *co
 // object's magic this holds when a new pool takes the old object's address, and it cannot race nvnMemoryPoolFinalize: that sets it under g_rmu before it tears anything down and before
 // the game can free the object, so for a reader holding g_rmu an ID not marked names a pool object that still exists. Under g_rmu
 static void treg_gone(treg_t *r) {
-    r->gone = 1; reg_bump((int)(r - g_treg), 0);
+    if (!r->gone) reg_bump((int)(r - g_treg), 0);   // its pool table entries become the dummy: the tables take the ID again (pool_gpu)
+    r->gone = 1;
     if (r->view) { defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; r->view_id = r->view_rid = 0; treg_drop_im(r); }
 }
 // IDs a walk found without storage (pool_entry): a memory pool added later may hold it, which is the only thing a new pool changes in a table. Past the list a new pool builds tables whole. Under g_rmu
@@ -7005,8 +7008,29 @@ static void state_reset(void) {
 
 // GPU bindings belong to a queue, including across submissions. FFX/X-2 destroys its launcher's queue before creating a game's: a global S kept freed launcher programs in S.bst,
 // and X-2's first fragment-only bind dereferenced that stale vertex program in keys_hash. Separate queues also retain their own bindings when submissions alternate (Three Houses).
-typedef struct queue_state { uint64_t serial; typeof(S) s; typeof(R) r; struct queue_state *next; } queue_state;
+typedef struct queue_state { uint64_t serial; typeof(S) s; typeof(R) r; tex_t rt_tex[9]; struct queue_state *next; } queue_state;
 static queue_state *g_queue_states, *g_active_queue;
+// Recording snapshots belong to command memory, not to the queue. Keep only the
+// bound target descriptions after CPU replay, before this submission can finish
+// and let the game overwrite those bytes. Metal objects keep their existing
+// fence-based lifetimes; no texel data is copied here.
+static void rt_preserve_bound(void) {
+    if (!R.has_rt) return;
+    static tex_t replay_tex[9];   // The standalone replay tool has no NVN queue.
+    tex_t *owned = g_active_queue ? g_active_queue->rt_tex : replay_tex;
+    const tex_t *source[9]; unsigned pending = 0;
+    for (int k = 0; k < 9; k++) {
+        source[k] = k == 8 ? R.rt.depth : k < R.rt.n ? R.rt.color[k] : NULL;
+        if (source[k] && source[k] != &owned[k]) pending |= 1u << k;
+    }
+    if (!pending) return;
+    tex_t next[9];   // Read every source first: retained targets can be reordered or aliased.
+    for (int k = 0; k < 9; k++) if (pending & (1u << k)) next[k] = *source[k];
+    for (int k = 0; k < 9; k++) if (pending & (1u << k)) {
+        owned[k] = next[k];
+        if (k == 8) R.rt.depth = &owned[k]; else R.rt.color[k] = &owned[k];
+    }
+}
 void mtl_queue_activate(uint64_t serial) {   // caller holds the submission lock
     if (g_active_queue && g_active_queue->serial == serial) return;
     if (g_active_queue) { g_active_queue->s = S; g_active_queue->r = R; }
@@ -9196,7 +9220,7 @@ enum { POOL_IDS_MAX = 1024 };
 typedef struct { int *v, n, cap; } pool_ids;
 typedef struct { __strong id<MTLBuffer> buf; uint64_t gpu, reg, ser, sub; int samp, dtt, dpf, base; pool_ids trans; } pool_snap;
 static pool_snap g_psnap[POOL_SNAPS]; static unsigned g_psnap_next;
-static uint64_t g_psnap_gen = 1;   // bumped by each rebuild: an argument block holding a pool address is not reused past it (encode_args_)
+static uint64_t g_psnap_gen = 1;   // bumped by each rebuild or patch: an argument block holding a pool address is not reused past it (encode_args_)
 static uint64_t g_stat_pool_builds; static double g_stat_pool_ms;
 static uint64_t g_stat_pool_why[4];   // why a pool table was built: no snapshot of its kind, a registration changed (g_reg_gen), a texture's storage changed (g_ser_gen), retired IDs of an earlier submission
 static uint64_t g_stat_pool_tt_skip;   // IDs of another type passed over by their registration's type (treg_t.tt1)
@@ -9300,7 +9324,7 @@ static uint64_t g_stat_pool_patched, g_stat_pool_kept, g_stat_pool_nopatch[5], g
 void mtl_pool_stats(uint64_t s[5]) { s[0] = g_stat_pool_builds; s[1] = (uint64_t)(g_stat_pool_ms * 1000); s[2] = g_stat_pool_patched; s[3] = g_stat_pool_kept; s[4] = g_stat_pool_schg; }   // the power line's pool table counts (hle_nvn.c)
 static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretained id<MTLBuffer> *out) {
     pool_seen_scan();
-    uint64_t rg = atomic_load(&g_reg_gen), sg = atomic_load(&g_ser_gen);
+    uint64_t rg = atomic_load(&g_reg_gen), sg = samp ? 0 : atomic_load(&g_ser_gen);   // a sampler table follows registrations alone
     pool_snap *p = NULL, *free_ = NULL;
     for (int i = 0; i < POOL_SNAPS && !p; i++) { pool_snap *q = &g_psnap[i];
         if (!q->buf) { if (!free_) free_ = q; }
