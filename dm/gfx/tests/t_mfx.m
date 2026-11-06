@@ -5,8 +5,9 @@
 // 359ddaa5bb1e298e: BT.2020, paper white 203 nits, ST 2084 PQ into RGB10A2). The scene is static, so every interpolated picture must be the window texture itself within a code,
 // in SDR and in HDR (hdr_vi_stub.c answers as hle_vi.c does with DM_HDR=1). With the temporal scaler, the camera jitter (DM_MFX_JITTER): its phases and units, the jittered copies of
 // the blocks holding the camera (the profile's camera_jitter) with the game's memory untouched, and a static scene with edges and a thin line drawn as a jittered projection draws
-// it, through the temporal scaler without jitter, with it and with the other sign, against the scene supersampled at the output. Built for Bananza's profile (GAME=040074A01BF12000:
-// its upscaler keys, camera_mats and camera_jitter). Without the switches the dispatches are left to the shader
+// it, through the temporal scaler without jitter, with it and with the other sign, against the scene supersampled at the output; the same with the viewport form (camera_jitter viewport),
+// its moves in jitter_viewport. Built for Bananza's profile (GAME=040074A01BF12000: its upscaler keys, camera_mats and camera_jitter); other profiles run the camera and jitter_viewport.
+// Without the switches the dispatches are left to the shader
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -214,17 +215,37 @@ static void jitter_blocks(id<MTLTexture> depth, const float *view, const float *
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the submission completes");
     mtl_drain(); mtl_pool_del(mem); free(orig);
 }
-// A static scene through the temporal scaler for 48 frames, drawn with the frames' jitter as a jittered projection would (with=0: none), MetalFX told the offset with the given
-// sign; the mean absolute difference of the last 4 outputs from the scene supersampled at the output's pixels, over the picture less a margin. one: a 1:1 dispatch (Bananza's
-// Native (MetalFX AA): the game's network path at rate 1.0), 480x270 into 480x270, where the jitter is the only source of anti-aliasing
+// camera_jitter viewport: which draws move, how far, in pixels of the target; y down the rows, as MetalFX is told (upper-left window origin)
+static void jitter_viewport(void) {
+    g_jit_vp = 1; g_jit.act = 1; g_jit.px = 0.25; g_jit.py = -0.125; g_jit.vw = 1280; g_jit.vh = 720; mtl_set_frame(7000); g_mfx_jit_frame = 7001;
+    memset(&S, 0, sizeof S); S.ds.dt = 1; S.ds.df = NVN_DEPTH_FUNC_LEQUAL;
+    MTLViewport v = {0, 0, 1280, 720, 0, 1}; mfx_jit_viewport(&v);
+    CHECK(v.originX == 0.25 && v.originY == 0.125 && v.width == 1280 && v.height == 720, "a depth-tested draw of the scene's size moves by the offset");
+    v = (MTLViewport){0, 0, 640, 360, 0, 1}; mfx_jit_viewport(&v);
+    CHECK(v.originX == 0.125 && v.originY == 0.0625, "a target of half the size moves half as far, in its own pixels");
+    v = (MTLViewport){0, 720, 1280, -720, 0, 1}; mfx_jit_viewport(&v);
+    CHECK(v.originX == 0.25 && v.originY == 720 - 0.125, "a viewport flipped by the lower-left window origin: the same move of the clip space");
+    v = (MTLViewport){0, 0, 2560, 1440, 0, 1}; mfx_jit_viewport(&v); CHECK(v.originX == 0 && v.originY == 0, "the upscaler's output, larger than the scene, stays");
+    v = (MTLViewport){0, 0, 1024, 1024, 0, 1}; mfx_jit_viewport(&v); CHECK(v.originX == 0 && v.originY == 0, "a target of another shape (a shadow map) stays");
+    S.ds.df = NVN_DEPTH_FUNC_ALWAYS; v = (MTLViewport){0, 0, 1280, 720, 0, 1}; mfx_jit_viewport(&v); CHECK(v.originX == 0 && v.originY == 0, "a full-screen pass testing ALWAYS stays");
+    S.ds.dt = 0; S.ds.df = NVN_DEPTH_FUNC_LEQUAL; mfx_jit_viewport(&v); CHECK(v.originX == 0 && v.originY == 0, "a draw without a depth test stays");
+    g_jit_vp = DM_GAME_CAM_JITTER_VP; g_jit.act = 0; g_mfx_jit_frame = 0; memset(&S, 0, sizeof S);
+}
+// A static scene through the temporal scaler for 48 frames, drawn with the frames' jitter as a jittered projection would, or as the moved viewport (mfx_jit_viewport) puts it with
+// g_jit_vp (with=0: none), MetalFX told the offset with the given sign; the mean absolute difference of the last 4 outputs from the scene supersampled at the output's pixels, over the
+// picture less a margin, and in g_jit_still their change from frame to frame. Each frame's main camera is first bound in a pass smaller than the scene, which the jitter must not go by
+// (Ocarina of Time's occlusion pass). one: a 1:1 dispatch (Bananza's Native (MetalFX AA): the game's network path at rate 1.0), 480x270 into 480x270, where the jitter is the only source
+// of anti-aliasing
+static double g_jit_still;
 static double jitter_run(NvShader *named, int with, double sign, const float *view, const float *vp, uint64_t f0, double *mv_max, int one) {
     const int IW = 480, IH = 270, OW = one ? 480 : 960, OH = one ? 270 : 540, tin = one ? 713 : 711, tout = one ? 714 : 712;
-    static tex_t ins[2], outs[2]; static id<MTLTexture> depth; static float *truths[2]; static uint8_t *mem;
+    static tex_t ins[2], outs[2]; static id<MTLTexture> depth, small; static float *truths[2]; static uint8_t *mem;
     tex_t *pin = &ins[one], *pout = &outs[one];
     if (!mem) {
         MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:IW height:IH mipmapped:NO];
         dd.storageMode = MTLStorageModePrivate; dd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         depth = [g_dev newTextureWithDescriptor:dd]; res_add(depth); res_commit(); fill(depth, MTLClearColorMake(0, 0, 0, 0), 0.99);
+        dd.width = 256; dd.height = 144; small = [g_dev newTextureWithDescriptor:dd]; res_add(small); res_commit();
         if (posix_memalign((void **)&mem, getpagesize(), 16384)) abort(); memset(mem, 0, 16384); mtl_pool_add(mem, 16384);
         memcpy(mem, view, 48); memcpy(mem + 0x30, vp, 64); memcpy(mem + 0x70, k_proj, 64);
     }
@@ -235,18 +256,24 @@ static double jitter_run(NvShader *named, int with, double sign, const float *vi
         for (int y = 0; y < OH; y++) for (int x = 0; x < OW; x++) { double s = 0; for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) s += scene_at((x + (i + 0.5) / 8) * IW / OW, (y + (j + 0.5) / 8) * IH / OH, IW, IH); truth[y * OW + x] = (float)(s / 64); }
     }
     float *truth = truths[one]; tex_t in = *pin, out = *pout;
-    g_jit.on = with; g_mfx_jit_sign = sign; g_jit.last_ok = 0; g_jit.idx = 0; g_mts.fresh = 1; g_mm.prev_ok = 0;   // the scaler's history starts again
+    g_jit.on = with; g_mfx_jit_sign = sign; g_jit.last_ok = 0; g_jit.idx = 0; g_jit.act = 0; g_mts.fresh = 1; g_mm.prev_ok = 0;   // the scaler's history starts again
     g_mm.w = g_mm.h = 0;   // another output: the sizes keep the largest so far (mfx_motion)
-    double err = 0; int n = 0; *mv_max = 0;
+    double err = 0; int n = 0; *mv_max = 0; g_jit_still = 0; float *last = NULL;
     for (int f = 0; f < 48; f++) {
         mtl_set_frame(f0 + f);
         memset(&S, 0, sizeof S); S.tex[5][0] = tin; S.img[5][1] = tout; S.has_vp = 1; S.vp[0][2] = IW; S.vp[0][3] = IH;
         { const uint32_t rects[8] = {0, 0, IW - 1, IH - 1, 0, 0, OW - 1, OH - 1}; memcpy(S.push[1], rects, sizeof rects); }
-        mfx_cand_clear(); mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++;
-        S.ubo[0][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)mem, .size = 2432};   // the scene pass: its depth and camera, and the frame's jitter
+        mfx_cand_clear(); S.vp[0][2] = 256; S.vp[0][3] = 144; mfx_pass_begin(small, 0); g_pass.serial += 10; g_stat_pass++;
+        S.ubo[0][0] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)mem, .size = 2432};   // a small pass with the main camera
+        mfx_note_pass(); if (mfx_jit_on()) mfx_jit_note();
+        if (with) CHECK(!g_jit.act, "a pass smaller than the scaler's input is not the frame's main pass");
+        S.vp[0][2] = IW; S.vp[0][3] = IH; mfx_pass_begin(depth, 0); g_pass.serial += 10; g_stat_pass++;   // the scene pass: its depth and camera, and the frame's jitter
         mfx_note_pass(); if (mfx_jit_on()) mfx_jit_note();
         double ox = 0, oy = 0; if (with) CHECK(f == 0 || g_jit.act, "every frame after the first is jittered");
-        if (g_jit.act) { ox = g_jit.jx * IW / 2; oy = -g_jit.jy * IH / 2; }   // the picture's move in pixels, y down the rows (upper-left window origin)
+        if (g_jit.act) {   // the picture's move in pixels, y down the rows (upper-left window origin)
+            CHECK(g_jit.vw == IW && g_jit.vh == IH, "the offset is in pixels of the scene, not of the smaller pass before it");
+            if (g_jit_vp) { MTLViewport v = {0, 0, IW, IH, 0, 1}; S.ds.dt = 1; S.ds.df = NVN_DEPTH_FUNC_LEQUAL; mfx_jit_viewport(&v); S.ds.dt = 0; ox = v.originX; oy = v.originY; }
+            else { ox = g_jit.jx * IW / 2; oy = -g_jit.jy * IH / 2; } }
         draw_scene(tex_mtl(&in), ox, oy);
         mtl_sub_begin();
         int drawn = up_mfx_wanted(named) && up_mfx_encode(named);
@@ -270,9 +297,11 @@ static double jitter_run(NvShader *named, int with, double sign, const float *vi
                     int k = fabs(y - OH * 0.55) < 25 && x < OW * 0.75 ? 0 : fabs(x - OW * 0.8) < 25 ? 1 : y < OH * 0.5 ? 2 : -1; if (k >= 0) { r[k] += d; rc[k]++; } }
                 fprintf(stderr, "%s%s: mean difference at the near-horizontal edge %.5f, the near-vertical edge %.5f, the thin line %.5f\n", one ? "1:1, " : "",
                         !with ? "no jitter" : sign > 0 ? "jitter" : "jitter, the other sign", r[0] / rc[0], r[1] / rc[1], r[2] / rc[2]); }
-            free(o); err += s / c; n++;
+            if (last) { double d = 0; for (int y = 8; y < OH - 8; y++) for (int x = 8; x < OW - 8; x++) d += fabs(o[y * OW + x] - last[y * OW + x]); g_jit_still += d / c / 3; free(last); }
+            last = o; err += s / c; n++;
         }
     }
+    free(last);
     return err / n;
 }
 // One frame of the game with these rectangles: the upscale (or the game's network, not here), and the camera and depth of its scene pass. Returns whether MetalFX drew it
@@ -425,6 +454,7 @@ int main(void) { @autoreleasepool {
     CHECK(mfx_check_class(0, 0.30, 0.003, 0.25, 0.003) == 2, "a whole-pixel jitter's black frame: dark");
     CHECK(mfx_check_class(3, 0.30, 0.29, 0.25, 0.25) == 2, "non-finite output: dark");
     CHECK(mfx_check_class(0, 0.30, 0.29, 0.25, 0.25) == 0 && mfx_check_class(0, 0.01, 0.001, 0.01, 0.001) == 0, "a matching output, or a black scene: neither");
+    jitter_viewport();
     if ((!temporal && !interp) || !DM_GAME_CAM_MATS || !strstr(DM_GAME_UPSCALER_KEYS, "7629d857a0a93833")) {   // the rest needs Bananza's profile
         printf("t_mfx (camera only): %d checks, %d failed\n", checks, failed); return failed != 0; }
     // The game's textures: its scene (input), its upscaler output (an image), its window textures: RGBA8 (drawn through an sRGB view) and, with HDR output, RGB10A2
@@ -590,11 +620,18 @@ int main(void) { @autoreleasepool {
     if (temporal && DM_GAME_CAM_JITTER_N) {   // the camera jitter (DM_MFX_JITTER): its blocks, then a static scene through the temporal scaler without it, with it, and with the other sign
         int keep = g_mfi_on; g_mfi_on = 0;
         jitter_blocks(depth, view, vp, &cam);
-        double mv[3], e[3] = {jitter_run(named, 0, 1, view, vp, 10000, &mv[0], 0), jitter_run(named, 1, 1, view, vp, 20000, &mv[1], 0), jitter_run(named, 1, -1, view, vp, 30000, &mv[2], 0)};
-        fprintf(stderr, "a static scene through the temporal scaler, mean difference from the supersampled scene: no jitter %.5f, jitter %.5f, jitter with the other sign %.5f; largest motion vector with jitter %g px\n", e[0], e[1], e[2], mv[1]);
+        double mv[3], st[3], e[3]; for (int i = 0; i < 3; i++) { e[i] = jitter_run(named, i > 0, i == 2 ? -1 : 1, view, vp, 10000 * (i + 1), &mv[i], 0); st[i] = g_jit_still; }
+        fprintf(stderr, "a static scene through the temporal scaler, mean difference from the supersampled scene: no jitter %.5f, jitter %.5f, jitter with the other sign %.5f; largest motion vector with jitter %g px; frame-to-frame change %.5f, %.5f, %.5f\n", e[0], e[1], e[2], mv[1], st[0], st[1], st[2]);
         CHECK(e[1] < 0.8 * e[0], "with the jitter the edges converge toward the supersampled scene (a fifth closer than without)");
         CHECK(e[2] > e[1] * 1.2, "the other sign is further off: MetalFX takes the picture's move (in pixels, y down the rows)");
         CHECK(mv[1] < 1e-3, "the static camera's motion vectors are zero with the jitter (they come from the unjittered matrices)");
+        // camera_jitter viewport: the same scene and MetalFX told the same, the picture moved by the viewport
+        g_jit_vp = 1; double vmv[2], vst[2], ve[2]; for (int i = 0; i < 2; i++) { ve[i] = jitter_run(named, 1, i ? -1 : 1, view, vp, 70000 + 10000 * i, &vmv[i], 0); vst[i] = g_jit_still; } g_jit_vp = DM_GAME_CAM_JITTER_VP;
+        fprintf(stderr, "the same with the viewport moved: jitter %.5f, jitter with the other sign %.5f; largest motion vector %g px; frame-to-frame change %.5f, %.5f\n", ve[0], ve[1], vmv[0], vst[0], vst[1]);
+        CHECK(ve[0] < 0.8 * e[0], "the viewport form: the edges converge toward the supersampled scene");
+        CHECK(ve[1] > ve[0] * 1.2, "the viewport form: the other sign is further off");
+        CHECK(vst[0] < 0.5 * vst[1], "the viewport form: a still scene stays still with the right sign");
+        CHECK(vmv[0] < 1e-3, "the viewport form: the static camera's motion vectors are zero");
         // A 1:1 dispatch (Bananza's Native (MetalFX AA), DM_UPSCALE_RATIO=native-mfx): the temporal scaler at scale 1, anti-aliasing the output's size. Without the jitter the
         // output keeps the scene's stair steps; with it the edges converge toward the scene supersampled at the same pixels
         double m1[2], e1[2] = {jitter_run(named, 0, 1, view, vp, 40000, &m1[0], 1), jitter_run(named, 1, 1, view, vp, 50000, &m1[1], 1)};

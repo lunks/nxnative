@@ -180,7 +180,8 @@ static void mfx_note_pass(void) {   // every draw: only a pass's first one reads
 // scene-sized 32-bit depth (as mfx_note_pass takes it), with the lens of the camera the temporal scaler took in the frame before (aspect, near plane, field of view); every block of
 // the frame whose view-projection equals it gets the same offset, at any stage and in any pass after it (a shadow, cube map or other camera's block differs and is left as is). The
 // offset: a Halton (2, 3) sequence, 8 x (output / input)^2 phases (FSR 2's count, from the last temporal frame's sizes), in pixels of the viewport of that first pass, so a pass at half
-// the size gets the same picture offset. No temporal frame just before (another upscaler, a menu, a frame without depth or camera) or no matching camera: no jitter that frame
+// the size gets the same picture offset. A pass whose depth is smaller than the scaler's input can hold the same camera (an occlusion pass) and is not that first pass: its viewport would
+// scale the offset up by as much. No temporal frame just before (another upscaler, a menu, a frame without depth or camera) or no matching camera: no jitter that frame
 typedef struct { uint32_t size, n, off[4]; } mfx_jit_kind;   // a block of size bytes whose 4x4 at off[0] is the main view-projection: off[0..n) are offset
 #if DM_GAME_CAM_JITTER_N
 static const mfx_jit_kind k_mfx_jit[DM_GAME_CAM_JITTER_N] = DM_GAME_CAM_JITTER;
@@ -191,6 +192,7 @@ static const mfx_jit_kind k_mfx_jit[1] = {{0, 0, {0}}};
 // input). t_mfx, a static scene with edges and a thin line through the scaler: with this sign the edges come about twice as close to the supersampled scene as without jitter, with the
 // other one twice as far. A variable so that the test can try the other one
 static double g_mfx_jit_sign = 1;
+static int g_jit_vp = DM_GAME_CAM_JITTER_VP;   // camera_jitter viewport (mfx_jit_viewport). A variable so that t_mfx can run that form on a profile with blocks
 enum { MFX_JIT_CACHE = 16 };
 static struct {
     int on;   // -1: not decided yet
@@ -200,7 +202,7 @@ static struct {
     uint64_t seen_addr, seen_pass;   // the camera_mats binding last looked at
     struct { uint64_t addr, size, pass, fence, frame, gpu; __unsafe_unretained id<MTLBuffer> buf; } c[MFX_JIT_CACHE]; int nc;   // this pass's bindings looked at: their copy (gpu 0: not the camera)
     // across frames
-    mfx_cam last; uint64_t last_frame; int last_ok; double ratio;   // the camera the temporal scaler took last (unjittered), its frame, and its output / input width
+    mfx_cam last; uint64_t last_frame; int last_ok; double ratio; NSUInteger cw, ch;   // the camera the temporal scaler took last (unjittered), its frame, its output / input width, its input's size
     uint64_t idx, frames, copies, lens_miss; int state, said, probe;
 } g_jit = {.on = -1, .state = -1};
 static double mfx_halton(uint32_t i, uint32_t b) { double f = 1, r = 0; while (i) { f /= b; r += f * (i % b); i /= b; } return r; }
@@ -218,8 +220,8 @@ static int mfx_jit_on(void) {
     const char *e = getenv("DM_MFX_JITTER"); int v = e && (!strcmp(e, "1") || !strcmp(e, "on"));
     if (e && *e && !v && strcmp(e, "0") && strcmp(e, "off")) MLOG("[RED] DM_MFX_JITTER=%s: 1 or 0; off", e);
     if (v && up_mfx_on() != 2) { MLOG("[mfx] DM_MFX_JITTER: the camera jitter is for MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal); off"); v = 0; }
-    if (v && !DM_GAME_CAM_JITTER_N && !DM_GAME_CAM_JITTER_VP) { MLOG("[mfx] DM_MFX_JITTER: this game's profile has no camera_jitter key (the uniform blocks holding its camera); off"); v = 0; }
-    if (v && DM_GAME_CAM_JITTER_VP) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the depth-tested draws of the scene's targets are offset by a sub-pixel Halton (2, 3) sequence in their viewports; MetalFX is given the offset");
+    if (v && !DM_GAME_CAM_JITTER_N && !g_jit_vp) { MLOG("[mfx] DM_MFX_JITTER: this game's profile has no camera_jitter key (the uniform blocks holding its camera); off"); v = 0; }
+    if (v && g_jit_vp) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the depth-tested draws of the scene's targets are offset by a sub-pixel Halton (2, 3) sequence in their viewports; MetalFX is given the offset");
     else if (v) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the frame's main camera is offset by a sub-pixel Halton (2, 3) sequence in %d kind(s) of uniform block, on the GPU only; MetalFX is given the offset", DM_GAME_CAM_JITTER_N);
     return g_jit.on = v;
 }
@@ -244,7 +246,7 @@ static void mfx_jit_note(void) {
     if (!u->addr || (u->addr == g_jit.seen_addr && g_pass.serial == g_jit.seen_pass)) return;
     g_jit.seen_addr = u->addr; g_jit.seen_pass = g_pass.serial;
     id<MTLTexture> d = g_mc.pass_depth;
-    if (!mfx_depth_ok(d)) return;
+    if (!mfx_depth_ok(d) || d.width < g_jit.cw || d.height < g_jit.ch) return;   // smaller than the scaler's input (mfx_pick's rule): the main camera, but not the scene's size (Ocarina of Time's occlusion pass, 320x180 at 720p and first in the frame)
     mfx_cam c; char why[160];
     if (!mfx_cam_read(DM_GAME_CAM_MATS_STAGE, DM_GAME_CAM_MATS_SLOT, &c, why, sizeof why)) return;
     if (!mfx_jit_lens(&c, &g_jit.last)) { g_jit.lens_miss++; return; }
@@ -269,7 +271,7 @@ static void mfx_jit_note(void) {
 // that tests depth is a scene draw; the full-screen passes between them test nothing or test ALWAYS and stay, as does a target of another shape (a shadow or cube map camera's). In pixels of the
 // target: a half-sized target moves half as far; a viewport's height may be negative (the window's origin), which the sign of the y term follows
 static void mfx_jit_viewport(MTLViewport *v) {
-    if (!DM_GAME_CAM_JITTER_VP || !g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || !S.ds.dt || S.ds.df == NVN_DEPTH_FUNC_ALWAYS) return;
+    if (!g_jit_vp || !g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || !S.ds.dt || S.ds.df == NVN_DEPTH_FUNC_ALWAYS) return;
     double sx = fabs(v->width) / g_jit.vw, sy = fabs(v->height) / g_jit.vh;
     if (sx > 1.001 || fabs(sx - sy) > 0.01 * sx) return;
     v->originX += g_jit.px * sx; v->originY -= g_jit.py * v->height / g_jit.vh;
@@ -278,7 +280,7 @@ static void mfx_jit_viewport(MTLViewport *v) {
 static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf) {
     *buf = nil;
     uint64_t fr = atomic_load(&g_cur_frame) + 1;
-    if (DM_GAME_CAM_JITTER_VP || !g_jit.act || g_mfx_jit_frame != fr || !u->addr) return 0;
+    if (g_jit_vp || !g_jit.act || g_mfx_jit_frame != fr || !u->addr) return 0;
     const mfx_jit_kind *k = NULL;
     for (int i = 0; i < DM_GAME_CAM_JITTER_N; i++) if (u->size == k_mfx_jit[i].size) { k = &k_mfx_jit[i]; break; }
     if (!k) return 0;
@@ -305,7 +307,7 @@ static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong i
 // The jitter of this frame's main camera, when cam is it (the camera the upscaler's depth pass had): in normalized device units
 static int mfx_jit_used(const mfx_cam *cam, double *jx, double *jy) {
     *jx = *jy = 0;
-    if (!g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || (!DM_GAME_CAM_JITTER_VP && !mfx_jit_same(cam->vpr, g_jit.vp))) return 0;
+    if (!g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || (!g_jit_vp && !mfx_jit_same(cam->vpr, g_jit.vp))) return 0;
     *jx = g_jit.jx; *jy = g_jit.jy; return 1;
 }
 
@@ -570,6 +572,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
     // device units; to MetalFX in pixels of the content, y down the rows, as MetalFX takes them (g_mfx_jit_sign: the picture's move, checked by t_mfx)
     double ojx, ojy; int jit = mfx_jit_used(&g_mm.cam, &ojx, &ojy);
     if (g_jit.act && g_mfx_jit_frame == atomic_load(&g_cur_frame) + 1 && !jit) { static int said; if (!said++) MLOG("[RED] [mfx] camera jitter: the frame was jittered but the upscaler's depth pass has another camera: MetalFX is given no offset for it (logged once)"); }
+    if (jit && (fabs(ojx) * cw > 1.2 || fabs(ojy) * ch > 1.2)) { static int said; if (!said++) MLOG("[RED] [mfx] camera jitter: an offset of %.3f, %.3f px of the %lux%lu content, over half a pixel: it went by a viewport of %.0fx%.0f (logged once)", ojx * cw / 2, ojy * ch / 2, (unsigned long)cw, (unsigned long)ch, g_jit.vw, g_jit.vh); }
     double ox = g_mm.cam.jx + ojx, oy = g_mm.cam.jy + ojy;
     float jx = (float)(g_mfx_jit_sign * ox * cw / 2), jy = (float)(g_mfx_jit_sign * oy * ch / 2 * (atomic_load_explicit(&g_origin_ll, memory_order_relaxed) || g_queue_origin_ll ? 1 : -1));
     int reset = g_mm.reset || g_mts.fresh, rev = g_mm.cam.rev; g_mts.fresh = 0; g_mts.jx = jx; g_mts.jy = jy;
@@ -593,7 +596,7 @@ static int mfx_temporal(const mfx_io *io, int cm) {
         else if (!copy_t2t_draw(res, out, 0, 0, 0, 0, &at0o, &io->orr, cm == MFX_COL_DEC ? COPY_SRGB_DECODE : 0, 0)) { MLOG("[RED] [mfx] the temporal scaler's result could not be drawn into format %lu", (unsigned long)out.pixelFormat); }
     }
     args_dirty_all();
-    g_jit.last = g_mm.cam; g_jit.last_ok = 1; g_jit.last_frame = atomic_load(&g_cur_frame); g_jit.ratio = (double)io->orr.width / cw;   // the camera and sizes the next frames' jitter goes by
+    g_jit.last = g_mm.cam; g_jit.last_ok = 1; g_jit.last_frame = atomic_load(&g_cur_frame); g_jit.ratio = (double)io->orr.width / cw; g_jit.cw = cw; g_jit.ch = ch;   // the camera and sizes the next frames' jitter goes by
     if (jit && !g_mts.jit++) MLOG("[mfx] first jittered frame drawn by the temporal scaler: offset %.4f, %.4f px of the %lux%lu content (jitterOffset %.4f, %.4f)", ojx * cw / 2, ojy * ch / 2,
                                   (unsigned long)cw, (unsigned long)ch, jx, jy);
     if (!g_mts.n++) MLOG("upscaler: first dispatch drawn by MetalFX's temporal scaler, %ux%u at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", (unsigned)cw, (unsigned)ch, io->ir.xoffset, io->ir.yoffset,
