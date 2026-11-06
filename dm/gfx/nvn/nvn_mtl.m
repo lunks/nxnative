@@ -1301,11 +1301,12 @@ static uint64_t g_blit_splits;   // copies / buffer updates / fills that ended a
 uint64_t mtl_blit_splits(void) { return g_blit_splits; }
 static int enc_open(void);
 static int g_blit_ct;   // the open copy encoder has the compute argument table set (dispatches share it, dispatch_enc)
-static id<MTL4ComputeCommandEncoder> blit_open(void) { if (!g_blit) { ser_gate(); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:blit_vis()]; gp_begin(g_blit, 'C', nil); g_bw_n = g_br_n = 0; g_blit_ops = 0; g_blit_ct = 0; } return g_blit; }
+static int g_csp_open, g_csp_free;   // the copy encoder's last op was a dispatch of dispatch(); the next dispatch needs no barrier before it (csp_join)
+static id<MTL4ComputeCommandEncoder> blit_open(void) { if (!g_blit) { g_csp_open = 0; ser_gate(); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:blit_vis()]; gp_begin(g_blit, 'C', nil); g_bw_n = g_br_n = 0; g_blit_ops = 0; g_blit_ct = 0; } return g_blit; }
 static void ubd_flush(void); static int g_nubd;   // the inline updates deferred (see mtl_sub_update)
 static int g_ubd_landing;
 static id<MTL4ComputeCommandEncoder> blit_raw(void) {
-    blit_note(); if (enc_open()) g_blit_splits++; rp_end(); id<MTL4ComputeCommandEncoder> e = blit_open();
+    blit_note(); if (enc_open()) g_blit_splits++; rp_end(); g_csp_open = 0; id<MTL4ComputeCommandEncoder> e = blit_open();
     if (g_nubd && !g_ubd_landing) { g_ubd_landing = 1; ubd_flush(); g_ubd_landing = 0; }   // deferred inline updates come before this copy or dispatch in command order
     return e;
 }
@@ -4019,6 +4020,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced, %u sRGB / linear views of one live; evicted with pools %llu, on storage takeover %llu, idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, ntwin, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail);
+    { void mtl_csp_stats(uint64_t *, uint64_t *); uint64_t cut, kept; mtl_csp_stats(&cut, &kept);
+      if (cut || kept) MLOG("dispatches right after a dispatch: %llu with no barrier between them, %llu with one (csp_join)", (unsigned long long)cut, (unsigned long long)kept); }
     { void mtl_gmem_words(uint64_t *, uint64_t *, uint64_t *); uint64_t gw, go, gb; mtl_gmem_words(&gw, &go, &gb);
       if (gw) MLOG("raw pool table words at commit: %llu, of them %llu held an older table than the current one and %llu the current one behind the pools", (unsigned long long)gw, (unsigned long long)go, (unsigned long long)gb); }
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
@@ -12695,10 +12698,47 @@ static int dispatch_own(void) {
     if (v < 0) { const char *e = getenv("DM_NVN_DISPATCH_OWN"); v = (e && !strcmp(e, "1")) || pg_on(); if (v) MLOG("compute dispatches: each in an encoder of its own (DM_NVN_DISPATCH_OWN=1 or DM_NVN_PASSGPU)"); }
     return v;
 }
+// Consecutive dispatches of one copy encoder with no game barrier between them need no barrier either when what each reads and writes shows they cannot affect one another. Every dispatch since the
+// last barrier forms a run: a dispatch joins it when its bindings list all it can touch (csp_list: storage buffers by their bound range, uniform buffers, textures in slots; no image, no
+// pool or raw memory access) and none of it meets what the run wrote, and nothing it writes meets what the run read. NVN orders nothing between dispatches without a barrier, but this does not rest
+// on that: it holds whatever the game meant. DM_NVN_CS_PAIRS=0 keeps a barrier before every dispatch; ab alternates with DM_AB.
+// DM_NVN_CS_GAME=1 (off, not a proof): no barrier wherever the game set none, whatever the dispatches touch, so raw and pool shaders overlap too: it trusts the game's barriers to be complete
+enum { CSP_NW = 128, CSP_NR = 512 };
+static csh_rng g_csp_w[CSP_NW], g_csp_r[CSP_NR]; static int g_csp_nw, g_csp_nr, g_csp_known, g_csp_m = -1, g_csb_m = -1; static uint64_t g_csp_bar, g_csp_cut, g_csp_kept;
+void mtl_csp_stats(uint64_t *cut, uint64_t *kept) { *cut = g_csp_cut; *kept = g_csp_kept; }
+// What this dispatch can touch, by guest address; 0 when its bindings do not say all of it
+static int csp_list(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw, csh_rng *r, int *nr) {
+    if (!cs || cs->builtin || dp->ind || cs->rf.bindless || cs->rf.dyn || cs->rf.nfirst) return 0;
+    for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
+        switch (b->kind) {
+            case NVN_RB_SBUFP: { if (b->reg >= 16) return 0; const p_bind_buf *u = &S.ssbo[5][b->reg]; if (!u->addr) break;
+                int wr = b->rw && !(cs->sb_ro >> b->reg & 1); if (!csh_add(wr ? w : r, wr ? nw : nr, u->addr, u->size)) return 0; break; }
+            case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16 || !csh_add(r, nr, S.ubo[5][b->reg].addr, S.ubo[5][b->reg].size)) return 0; break;
+            case NVN_RB_TEX: case NVN_RB_TBUF: { uint64_t h = tex_slot_h(S.tex[5], S.img[5], b->reg); int tid = (int)(h & 0xfffff); if (!tid) break;
+                os_unfair_lock_lock(&g_rmu); tex_t t = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t : (tex_t){0}; os_unfair_lock_unlock(&g_rmu);
+                if (!t.serial || !csh_add(r, nr, (uint64_t)t.mem, t.L.size)) return 0;
+                break; }
+            case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SAMPI: case NVN_RB_C1: case NVN_RB_SUPPORT: case NVN_RB_DRV0: case NVN_RB_DRV2: case NVN_RB_PUSH: case NVN_RB_BORDER: break;
+            default: return 0; } }   // an image, a handle only the GPU resolves, raw memory
+    return 1;
+}
+// Before dispatch_enc: whether this dispatch can go without a barrier, and the run it leaves
+static int csp_join(NvShader *cs, const p_dispatch *dp) {
+    if (g_csp_m < 0) g_csp_m = sw_mode("DM_NVN_CS_PAIRS", 1);
+    if (g_csb_m < 0) g_csb_m = sw_mode("DM_NVN_CS_GAME", 0);
+    int open = g_blit && g_csp_open && g_csp_bar == g_fb_bar, game = open && sw_on(g_csb_m);
+    csh_rng w[32], r[128]; int nw = 0, nr = 0, known = sw_on(g_csp_m) && csp_list(cs, dp, w, &nw, r, &nr) && nw < 32 && nr < 128;
+    int join = open && known && g_csp_known && g_csp_nw + nw <= CSP_NW && g_csp_nr + nr <= CSP_NR && !csh_hit(w, nw, g_csp_w, g_csp_nw) && !csh_hit(w, nw, g_csp_r, g_csp_nr) && !csh_hit(r, nr, g_csp_w, g_csp_nw);
+    if (!join) g_csp_nw = g_csp_nr = 0;
+    if (known) { memcpy(g_csp_w + g_csp_nw, w, sizeof *w * (size_t)nw); memcpy(g_csp_r + g_csp_nr, r, sizeof *r * (size_t)nr); g_csp_nw += nw; g_csp_nr += nr; }
+    g_csp_known = known; g_csp_bar = g_fb_bar;
+    if (open) { if (join || game) g_csp_cut++; else g_csp_kept++; }
+    return join || game;
+}
 static id<MTL4ComputeCommandEncoder> dispatch_enc(void) {
     id<MTL4ComputeCommandEncoder> e = blit_open(); g_gp_disp++;
-    if (g_blit_ops) blit_barrier();
-    g_bw_lo[0] = 0; g_bw_hi[0] = ~0ull; g_bw_n = 1; g_br_n = 0; g_blit_ops = 1;   // recorded as "everything written": the next copy or dispatch gets a barrier
+    if (g_blit_ops && !g_csp_free) blit_barrier();
+    g_bw_lo[0] = 0; g_bw_hi[0] = ~0ull; g_bw_n = 1; g_br_n = 0; g_blit_ops = 1; g_csp_free = g_csp_open = 0;   // recorded as "everything written": the next copy or dispatch gets a barrier
     if (!g_blit_ct) { [e setArgumentTable:g_ct]; g_blit_ct = 1; }
     args_dirty_all();
     return e;
@@ -12753,7 +12793,9 @@ static void dispatch(const p_dispatch *dp) {
     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx, metalfx-temporal)
     int own = dispatch_own();
     if (own && g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    if (!own) g_csp_free = csp_join(cs, dp);
     id<MTLComputeCommandEncoder> ce = own ? pg_compute() : (id<MTLComputeCommandEncoder>)dispatch_enc();
+    g_csp_open = !own;
     enc_c_pso(ce, ps);
     g_dispatch_dim[0] = (uint32_t)dp->x; g_dispatch_dim[1] = (uint32_t)dp->y; g_dispatch_dim[2] = (uint32_t)dp->z;   // read back by the driver segment c0 (encode_args_)
     g_c0_dim_buf = nil;

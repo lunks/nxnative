@@ -155,6 +155,29 @@ static void hoists(id<MTLLibrary> lib) {
         CHECK(hazard?"explicit game barrier prevents hoist":"independent dispatch hoisted once",g_csh_moved-before==(cshoist_on() && !hazard));
         CHECK("compute writes expected shared memory",*(uint32_t *)mem==73);
     }
+    // Dispatches with no game barrier between them keep none when their bindings show they touch different memory (csp_join)
+    for(int k=0;k<6;k++) {   // 0 apart, 1 the same range, 2 the second reads what the first wrote, 3 a game barrier between, 4 a copy between, 5 switched off
+        memset(mem,0,256);
+        chain c={0}; bind(&c,&cp,32); p_dispatch d={.x=1,.y=1,.z=1};
+        p_bind_buf a={.stage=5,.index=0,.addr=(uint64_t)mem,.size=4}, b={.stage=5,.index=0,.addr=(uint64_t)mem+(k==1?0:16),.size=4}, u={.stage=5,.index=1,.addr=(uint64_t)mem,.size=4};
+        cs->sh[5]->rf.nb=k==2?2:1; cs->sh[5]->rf.b[1]=(nvn_rbind){.kind=NVN_RB_CBUF,.reg=1,.aid=1};
+        emit(&c,OP_BIND_SSBO,&a,sizeof a); emit(&c,OP_DISPATCH,&d,sizeof d);
+        if(k==2) emit(&c,OP_BIND_UBO,&u,sizeof u);
+        if(k==3) { uint32_t bits=~0u; emit(&c,OP_BARRIER,&bits,sizeof bits); }
+        if(k==4) { uint64_t up[3]={(uint64_t)mem+128,8,0}; emit(&c,OP_UPDATE_UB,up,sizeof up); }
+        emit(&c,OP_BIND_SSBO,&b,sizeof b); emit(&c,OP_DISPATCH,&d,sizeof d);
+        g_csp_m=k==5?0:1; uint64_t cut=g_csp_cut; execute(&c); g_csp_m=1;
+        static const char *const name[6]={"dispatches on different memory keep no barrier","dispatches on one range keep it","a dispatch reading what the one before wrote keeps it","a game barrier keeps it","a copy between keeps it","DM_NVN_CS_PAIRS=0 keeps it"};
+        CHECK(name[k],g_csp_cut-cut==(k==0));
+        CHECK("both dispatches wrote",*(uint32_t *)mem==73 && (k==1 || ((uint32_t *)mem)[4]==73));
+    }
+    { csh_rng w[8],r[8]; int nw=0,nr=0; p_dispatch d={.x=1,.y=1,.z=1}; cs->sh[5]->rf.nb=1;
+      reset(); S.ssbo[5][0]=(typeof(S.ssbo[5][0])){.addr=(uint64_t)mem,.size=4};
+      CHECK("a storage buffer lists its range",csp_list(cs->sh[5],&d,w,&nw,r,&nr) && nw==1 && w[0].lo==(uint64_t)mem && w[0].hi==(uint64_t)mem+4);
+      nw=nr=0; S.ssbo[5][0].size=0; CHECK("a storage buffer of no known size proves nothing",!csp_list(cs->sh[5],&d,w,&nw,r,&nr)); S.ssbo[5][0].size=4;
+      static const int unknown[]={NVN_RB_GMEM,NVN_RB_IMG,NVN_RB_TEXP,NVN_RB_SBUFU,NVN_RB_TEXU}; nvn_rbind keep=cs->sh[5]->rf.b[0];
+      for(int i=0;i<5;i++) { cs->sh[5]->rf.b[0].kind=(uint8_t)unknown[i]; nw=nr=0; CHECK("raw memory, images and handles prove nothing",!csp_list(cs->sh[5],&d,w,&nw,r,&nr)); }
+      cs->sh[5]->rf.b[0]=keep; p_dispatch ind=d; ind.ind=(uint64_t)mem; nw=nr=0; CHECK("an indirect dispatch proves nothing",!csp_list(cs->sh[5],&ind,w,&nw,r,&nr)); }
     // Drive the production scanner with stencil writes and a stencil-only read.
     tex_t ds=texture(NVN_TEXTURE_TARGET_2D,NVN_FORMAT_DEPTH32F_STENCIL8,1);
     view_t view={.set_dsmode=1,.dsmode=NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL}; mtl_reg_tex(502,&ds,&view);
