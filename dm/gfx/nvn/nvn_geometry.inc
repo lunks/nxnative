@@ -655,7 +655,6 @@ static void mesh_tasks_draw(const p_draw *dw) {
     }
     NvProg *raster = pr->geo_lean_raster;   // the pixel stage alone
     if (!raster || raster->sh[1] != pr->sh[1] || raster->sh[0]) { raster = [NvProg new]; raster->sh[1] = pr->sh[1]; pr->geo_lean_raster = raster; }
-    hl_draw(g_stat_pass + !g_enc, (__bridge const void *)pr, "mesh ", ts ? ts->key : NULL, ms->key, pr->sh[1] ? pr->sh[1]->key : NULL);
     g_mtk.on = 1; g_mtk.miss = 0; g_mtk.ts = ts; g_mtk.ms = ms; g_mtk.first = (uint32_t)dw->first; g_mtk.count = (uint32_t)dw->count;
     g_mtk.ind = indirect;
     g_geo_program = raster;
@@ -927,6 +926,7 @@ static void geo_capture_one(id<MTL4RenderCommandEncoder> re, const geo_job *j) {
     else enc_r_draw_instanced(re, MTLPrimitiveTypePoint, j->dw.first, j->dw.count, j->dw.instances, j->first_instance);
 }
 static void geo_gs_one(id<MTL4ComputeCommandEncoder> ce, const geo_job *j) {
+    cbn_prog(j->pr);   // the draw's own stages: a run is encoded after its draws, and its raster draw has only the output reader and the pixel stage
     g_draw_binst = j->first_instance;
     g_geo_bind[0] = j->input; g_geo_bind[1] = j->output; g_geo_bind[2] = j->raw; g_geo_bind[3] = j->info; g_geo_bind[4] = j->map;
     args_dirty_all(); encode_args(ce, j->gs, 2, 0); enc_c_pso(ce, j->gs->geo_pso);
