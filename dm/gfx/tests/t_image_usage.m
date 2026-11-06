@@ -102,7 +102,9 @@ static void atomic_alias_case(void) { @autoreleasepool {
     id<MTLCommandBuffer> cb = q_cb(); id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:pipeline]; [enc setTexture:atomic atIndex:0];
     [enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)]; [enc endEncoding];
-    id<MTLBlitCommandEncoder> copy = [cb blitCommandEncoder];
+    [cb commit]; [cb waitUntilCompleted];   // the atomic and the read go through two views of one texture, which hazard tracking does not always order: one read in 12 saw the clear without the OR. The host orders them with its own barriers
+    CHECK(cb.status == MTLCommandBufferStatusCompleted, "the atomic ran");
+    cb = q_cb(); id<MTLBlitCommandEncoder> copy = [cb blitCommandEncoder];
     [copy copyFromTexture:rgba sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(1,1,1)
                   toBuffer:result destinationOffset:0 destinationBytesPerRow:4 destinationBytesPerImage:4];
     [copy endEncoding]; [cb commit]; [cb waitUntilCompleted];
