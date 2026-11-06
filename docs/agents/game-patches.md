@@ -56,6 +56,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
 | `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
+| `build` → `game` | frame step in whole vsyncs | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) | the framework's interval controller and frame-rate tick |
 | `build` → `game` | match display: the window size from the state page (+0x3c / +0x40) at its physical uses | rendering | blocked: frame-step stubs have no function-matched form yet | checked: static: every call of the getters main+0x5bf770 / 0x5bf780 (six pairs) and every 2880 / 1620 constant in main; the framework's use of its argument (main+0x5c6038) | 1 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) | the game's fixed window size (sead's framework argument and gsys's display argument) in this build |
 | `build` → `game` | mip bias log: the controller's bias call reports its rate and bias in the state page (+0xa0..+0xa8) | rendering | blocked: frame-step stubs have no function-matched form yet | checked: static: main+0x38e280 has this one caller (main+0x749824, the reset, applies 0 through its own loop); an emulated run of the controller with the setting patches (README.md, Texture mip bias) | 1 | [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) | the game's dynamic-resolution controller (main+0x38db98) in this build |
 | `build` → `game` | screen shape: the sizes, the view, the layouts' projection and their edge widgets (DM_SCREEN_ASPECT) | rendering | blocked: the stubs have no function-matched form yet | judgement | 1 | [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) | the output size is the host's, but where the game takes its sizes, its cameras and its layouts are this build's code |
@@ -94,7 +95,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 0 | 0 | 0 | 106 | `build` → `game` |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 4 | 0 | 0 | 106 | `build` → `game` ×2 |
 | [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | 0 | `build` → `game` |
 
@@ -888,11 +889,16 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 ### The Legend of Zelda: Ocarina of Time
 
-[The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), `0400486024DEC000`.
+[The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), `0400486024DEC000`, [patches.py](../../dm/games/0400486024DEC000/patches.py).
 
+- **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: frame step in whole vsyncs. The framework's interval controller and frame-rate tick
 - **`build` → `game`**, rendering, gap, judgement: setting patches (`setting_patches.tsv`): code words a launcher setting changes at launch. Fixed offsets found by static analysis of one build; a function fingerprint (nso_match, as MATCH_CUTS uses) could carry them to the game's updates that keep the function
 
-- **v0 `main`** `e0f3ccfa…`
+- **v0 `main`** `e0f3ccfa…` ([patches.py:67](../../dm/games/0400486024DEC000/patches.py#L67))
+  - frame step `+0x4dbd6c`: frame-rate tick: with a target fps the frame-rate mode check is skipped and the interval controller runs
+  - frame step `+0x3b4ef90`: interval controller: its paused flag (+0x60) is ignored with a target fps
+  - frame step `+0x3b4ef9c`: interval controller: runs before the first frame time too with a target fps
+  - frame step `+0x3b4f054`: interval controller output: the host's step in whole vsyncs (state page target fps; 0 = the controller's own)
   - setting patch `main+0x14e3a48` (`DM_UPSCALER=metalfx-temporal`, No game anti-aliasing: SMAA's edge detection): `D63F0160` → `D503201F` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x14e3a90` (`DM_UPSCALER=metalfx-temporal`, No game anti-aliasing: SMAA's blend weights): `D63F0120` → `D503201F` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))
   - setting patch `main+0x805ff0` (`DM_UPSCALE_RATIO=1.0`, Native (1.0), fixed): `1E260109` → `52A7F009` ([setting_patches.tsv](../../dm/games/0400486024DEC000/setting_patches.tsv))

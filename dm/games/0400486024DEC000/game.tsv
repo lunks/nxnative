@@ -73,3 +73,8 @@ camera_jitter	viewport
 res_chain	2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334
 # Texture sharpness (DM_LOD_BIAS, README.md): the game biases every model material sampler -0.5 at every upscale rate; the host can build them sharper for the rate
 lod_bias	on
+
+# ---- Frame rate ----
+# Off here (0): the game keeps its fixed interval 1 as shipped (slow motion below 60 fps). PR #1584 sets 60, with 30 when 60 does not hold: with a target the host decides each frame's step
+# in whole vsyncs and holds the frame that long (patches.py FRAME_STEP: stubs at the framework's frame-rate tick and interval controller), game time = real time. DM_FPS_TARGET=60 or 30 turns it on
+fps_target	0
