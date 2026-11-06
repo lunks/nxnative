@@ -24,13 +24,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSError *error = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithURL:[NSURL fileURLWithPath:@(argv[1])] error:&error]; if (!lib) { fprintf(stderr, "library: %s\n", error.description.UTF8String); return 1; }
     id<MTLComputePipelineState> pso = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"main0"] error:&error]; if (!pso) { fprintf(stderr, "pipeline: %s\n", error.description.UTF8String); return 1; }
-    id<MTLBuffer> slot = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared], args = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
-    uint64_t *a = args.contents; a[0] = slot.gpuAddress; a[1] = map.gpuAddress;   // the argument buffer: storage slot 0 [[id(0)]], the pool table [[id(1)]]
+    id<MTLBuffer> slot = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared], args = [g_dev newBufferWithLength:24 options:MTLResourceStorageModeShared], sites = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    memset(sites.contents, 0, 256);   // the bind-time pointer site entries (DMSH_KIND_GPTR): all empty, so every load searches the table
+    uint64_t *a = args.contents; a[0] = slot.gpuAddress; a[1] = map.gpuAddress; a[2] = sites.gpuAddress;   // the argument buffer: storage slot 0 [[id(0)]], the pool table [[id(1)]], the site entries [[id(2)]]
     uint32_t (^probe)(uint64_t) = ^uint32_t(uint64_t addr) {
         uint32_t *w = slot.contents; memcpy(w, &addr, 8); w[2] = 0xdeadbeefu;
         id<MTLCommandBuffer> cb = q_cb(); id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
         [ce setComputePipelineState:pso]; [ce setBuffer:args offset:0 atIndex:0];
-        [ce useResource:slot usage:MTLResourceUsageRead | MTLResourceUsageWrite]; [ce useResource:map usage:MTLResourceUsageRead];
+        [ce useResource:slot usage:MTLResourceUsageRead | MTLResourceUsageWrite]; [ce useResource:map usage:MTLResourceUsageRead]; [ce useResource:sites usage:MTLResourceUsageRead];
         [ce dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
         [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
         CHECK("the dispatch completes", cb.status == MTLCommandBufferStatusCompleted);

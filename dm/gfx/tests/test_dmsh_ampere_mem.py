@@ -450,12 +450,12 @@ class RawStore(Translated):
 WALK_LOAD = '''
 kernel void walk(device MAP& map [[buffer(0)]], device const ulong* addrs [[buffer(1)]], device uint* out [[buffer(2)]], constant uint& n [[buffer(3)]], uint tid [[thread_position_in_grid]])
 {
-    uint dm_gc = 0;
+    uint dm_gc = 0; const int site = -1;   // no bind-time pointer site: the second table is the site entries, not read
     for (uint k = 0; k < n; k++) {
         if ((tid & 3) == 2 && k % 3 == 1) continue;
         uint step = tid & 1 ? n - 1 - k : k;
         ulong a = addrs[step]; int lo = int(uint(a)), hi = int(uint(a >> 32));
-        out[tid * n + k] = uint(LOOKUP(lo, hi, map, dm_gc));
+        out[tid * n + k] = uint(LOOKUP(lo, hi, site, map, map, dm_gc));
     }
 }
 '''

@@ -239,8 +239,9 @@ int main(void) { @autoreleasepool {
     put([tables stringByAppendingPathComponent:@"more.tsv"], @"v1\tf2\nv1\tfc\n"); setenv("DM_PSO_PAIRS", [tables stringByAppendingPathComponent:@"more.tsv"].UTF8String, 1);
     reset_counts();
     EXPECT("other pairs: every pair", 3, pso_prebuild(1, 1, QOS_CLASS_USER_INITIATED));
-    EXPECT("other pairs: two bases from the bundle", 2, g_pre_archived);
-    EXPECT("other pairs: one compiled", 1, g_pre_built);
+    // the base the "covered" step compiled is in a p<seq> file of the device's own by now (a pulling-only period's file is searched as soon as it is written), so that pair is found too
+    EXPECT("other pairs: at least the two bundled bases found", 1, g_pre_archived >= 2);
+    EXPECT("other pairs: every pair found or compiled", 3, g_pre_archived + g_pre_built);
     unsetenv("DM_PSO_PAIRS");
     // a matching stamp but an archive without the bases (here: one of the device's own files): the probe finds none, so it is not trusted
     @autoreleasepool {
