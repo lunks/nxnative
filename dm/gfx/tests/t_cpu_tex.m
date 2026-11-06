@@ -226,6 +226,18 @@ static void kept_past_object(void) {
 }
 // A pool walk makes no texture for an ID whose texture would start empty, live or retired: the table reads the dummy, as it would read 0. A real use of that storage reaches the table, also for a
 // retired ID with another serial, and content in the storage still takes a texture
+// A block-compressed texture drawn through a shadow (bcrt_attach) has no render-target usage to say the GPU owns it: a copy from it must not read the storage instead
+static void bc_target_owned(void) {
+    tex_t t = {.magic = MAGIC('T', 'E', 'X', 0), .serial = 99810};
+    t.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = 0x42, .width = 16, .height = 16, .depth = 1, .levels = 1, .samples = 1}; nvn_tex_layout(&t.d, &t.L);
+    mtl_tex_init(&t);
+    mtl_sub_begin(); id<MTLTexture> bc = tex_mtl(&t);
+    CHECK(bc && mtl_fmt_block(bc.pixelFormat) && !mtl_tex_gpu_owned(t.serial) && !tex_gpu_touched(t.serial), "a compressed texture nothing drew into is not the GPU's");
+    objc_setAssociatedObject(bc, &g_bcrt_gpu_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CHECK(mtl_tex_gpu_owned(t.serial) && tex_gpu_touched(t.serial), "one drawn through a shadow is");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "compressed target submission completed");
+    mtl_tex_release(&t);
+}
 static void walk_leaves_empty(void) {
     enum { N = 64, LIVE = 8, FIRST = 256, STRIDE = 4096, CONTENT = N - 1 };
     const size_t len = (N + 1) * STRIDE;
@@ -332,6 +344,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     CHECK(mtl_cpu_tex_count() == N - 2, "a texture with no serial is not recorded");
     for (int i=0;i<N;i++) mtl_tex_release(&t[i]);
     retired_classification(); descriptor_replacement(); gpu_written_ranges();
-    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); kept_past_object(); walk_leaves_empty(); packaged_entry_outside_the_set(); }
+    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); kept_past_object(); bc_target_owned(); walk_leaves_empty(); packaged_entry_outside_the_set(); }
     printf("t_cpu_tex: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
