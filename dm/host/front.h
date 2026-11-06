@@ -80,6 +80,12 @@ void front_save_failed(int err);
 // used_mb, limit_mb: what is allocated, and the working set. Any thread; the front end switches to its main thread and must not block
 void front_gpu_memory_stop(unsigned long long used_mb, unsigned long long limit_mb);
 
+// GPU lost (called by the graphics backend's nvn_mtl.m gpu_lost_check, once): the first command buffer came back MTL4CommandQueueErrorAccessRevoked, so macOS runs none of the process's GPU work
+// any more and nothing is drawn again. By then presents have stopped and the game's waits for the GPU are released, so the game runs on with nothing on screen until the front end ends it.
+// The Mac front end leaves full screen, says why in an alert and quits as ⌘Q does; without a window it ends the run as the default weak implementation (nvn_mtl.m) does, which the iOS
+// front end keeps: a FATAL line and an abort. Called on Metal's feedback queue; the front end switches to the main thread itself and must not block
+void front_gpu_lost(void);
+
 // Offline HTML pages (the web applet's offline pages; hle_web.c): a web view over the game picture (web_apple.m, Mac and iPhone). Called from guest threads; the front end works on its main
 // thread. front_web_open: dir = the folder the document path is relative to (an HtmlDocument's html-document), path = the document path with its query, callback = the URL prefix whose
 // loading ends the page (exit reason 3, the URL as the last URL), hidden = loaded without being shown until front_web_show. 0 = opened; -1 = no web view (no window): the caller's

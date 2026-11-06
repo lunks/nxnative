@@ -1600,3 +1600,11 @@ void front_gpu_memory_stop(unsigned long long used_mb, unsigned long long limit_
                      [NSString stringWithFormat:@"The game reached %llu MB of the %llu MB macOS can keep in GPU memory. Going on could freeze this Mac, so the game stops here; progress since your last save is lost. The log has the details. "
                                                  "Please report it on GitHub with python3 scripts/bug_report.py %@, which collects the log.", used_mb, limit_mb, @(DM_GAME_ID)]);
 }
+// GPU lost (front.h): macOS runs none of the game's GPU work any more and nothing is drawn again
+void front_gpu_lost(void) {
+    if (!g_layer) die("GPU access revoked: macOS runs none of this process's GPU work any more");
+    LOG("front end: the GPU no longer runs the game's work; telling the player and quitting");
+    front_stop_alert([@"The GPU stopped running " stringByAppendingString:@(DM_GAME_NAME)],   // @(): the name is UTF-8, which %s would not read as such
+                     [NSString stringWithFormat:@"After a GPU error, macOS stopped running the game's GPU work, so nothing more can be drawn and the game quits. The log has the details. "
+                                                 "Please report it on GitHub with python3 scripts/bug_report.py %@, which collects the log.", @(DM_GAME_ID)]);
+}
