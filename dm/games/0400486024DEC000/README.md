@@ -283,6 +283,7 @@ The output does not shake with the offset: between frames it stays within 0.03 p
 - [Shaders report which textures they read through a pool](../../../docs/reference/memory.md#shaders-report-which-textures-they-read-through-a-pool)
 - [Repeated GPU out-of-memory failures end the game](../../../docs/reference/memory.md#repeated-gpu-out-of-memory-failures-end-the-game)
 - [Pools that hold shader code made resident to key the shaders](../../../docs/reference/memory.md#pools-that-hold-shader-code-made-resident-to-key-the-shaders): 222 pools, 334 MB the GPU never reads.
+- [Render targets dead by overwrite (`DM_NVN_RT_RECLAIM`)](../../../docs/reference/rendering.md#render-targets-dead-by-overwrite-dm_nvn_rt_reclaim): the Kokiri Forest load's 3.2 GB of render targets over 74 MB of pool storage, 1.1-1.2 GB with it on.
 - [Texture IDs of one storage share one packaged texture](../../../docs/reference/nvn-objects.md#texture-ids-of-one-storage-share-one-packaged-texture)
 - [Finalizing a copy of a texture object](../../../docs/reference/nvn-objects.md#finalizing-a-copy-of-a-texture-object)
 - [Dynamic resolution that never moves, and draw passes that wait for each other](../../../docs/reference/frame-rate.md#dynamic-resolution-that-never-moves-and-draw-passes-that-wait-for-each-other)
