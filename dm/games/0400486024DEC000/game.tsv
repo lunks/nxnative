@@ -33,6 +33,8 @@ mem_map_limit	on
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
+# The pool less the heap leaves 2.80 GiB for the alias region. The game's heap there (NinVirtualAddressHeap, main+0x7ed440) gives pages back at once and does not retry a refused map, and its free size is the OS's total - used (main+0x7ef010):
+# with this key used counts the mapped pages, as on Horizon. Without it free never falls, whatever is mapped: 4.50 GB in our 49-minute run, 5.25 GB in #1445.
 
 # ---- Shader split ----
 shader_groups	/Shader/=shader /Lib/=lib /Effect/=effect /Layout2Shader/=layout /Movie/=movie

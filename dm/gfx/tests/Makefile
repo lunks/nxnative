@@ -188,7 +188,7 @@ t_gmem_raw: t_gmem_raw.m $(MTL_T_DEP)
 .PHONY: check_t_gmem_raw
 check_t_gmem_raw: t_gmem_raw
 	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; rc=0; DMSH_TEST_XLATE=$${DMSH_TEST_XLATE:-$(CURDIR)/../tools/dmsh_xlate_bin/dmsh_xlate} python3 test_dmsh_ampere_mem.py --fixture "$$work" || rc=$$?; \
-	if [ $$rc = 77 ]; then echo "t_gmem_raw: skipped, the translator does not run"; elif [ $$rc != 0 ]; then exit $$rc; else MTL_DEBUG_LAYER=1 ./t_gmem_raw "$$work/raw.metallib"; fi
+	if [ $$rc = 77 ]; then echo "t_gmem_raw: skipped, the translator does not run"; elif [ $$rc != 0 ]; then exit $$rc; else MTL_DEBUG_LAYER=1 ./t_gmem_raw "$$work/raw.metallib" "$$work/raw_walk.metallib" "$$work/raw_store.metallib"; fi
 t_pool_table: t_pool_table.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_table.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_pool_table: RUN_ENV = MTL_DEBUG_LAYER=1

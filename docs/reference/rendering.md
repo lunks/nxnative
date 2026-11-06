@@ -921,6 +921,15 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) (its GPU-driven effects are indirect quads).
 - **Check:** `DM_NVN_IXCLOG=<n>` logs the first n conversions (record → arguments) once the GPU has run them.
 
+
+### Conversions of indirect draws made ahead of their pass
+
+- **Symptom:** `indirect draw conversion: … times, render pass split … times` with the two counts nearly equal, and a pass dump (`DM_NVN_PASSDUMP`) showing `M … indirect draw conversion: render pass split here` in the middle of the largest passes, each followed by a pass on the same targets.
+- **Cause:** a compute pass cannot run inside a render pass, and [`ixc_run`](#indirect-draws-and-dispatches-read-by-the-gpu) ran at the first such draw, inside the pass. Its scan of later draws stopped at any uniform update, and a task / mesh draw with shader writes dropped the table, so each later indirect draw with such neighbours split the pass again.
+- **Fix:** in `nvn_mtl.m`, for every game. `ixc_ahead` scans the pass a draw is about to open and, when a later draw wants a conversion, runs it before the pass opens. `ixc_next` keeps both scans going past what cannot change a record: a uniform update or a draw's storage buffer writes count only where they cover one. An update or draw over a record already converted stops the scan and drops the table when replay reaches it (`g_ixc_stop`); one over a record further on stops the scan before that draw. A dispatch, copy, fill, texture → buffer copy, transform feedback, an image or raw memory write in a draw, or a program bound for only some stages stops it as before. `DM_NVN_IXC_AHEAD=0` converts as before; `ab` alternates with `DM_AB`.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_mesh_indirect`: an update elsewhere is crossed, an update over a later record or a converted one and a dispatch are not, and a pass converts once, ahead of its later draw.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): its foliage and terrain are indirect mesh draws in the middle of the scene's passes. On an M5 Pro at 720p with MetalFX temporal, A/B in one boot: Hyrule Field over 11 rounds, passes 109.5 to 102.5, attachments 241 / 285 to 192 / 250 MB, GPU p50 15.80 to 15.15 ms; Kokiri Forest over 28 rounds, passes 112 to 106, attachments 241 / 267 to 199 / 239 MB, GPU p50 16.46 to 16.45 ms alone and with the dispatch pairs below 16.07 ms.
+
 ### Indirect-count multi-draws
 
 - **Symptom:** an empty G-buffer pass (the title screen showed only the UI); later, the submitting thread waiting for the GPU before each such draw (36–54 fps in Kamura Village on an iPhone). MIO also reported missing level geometry with maxima of 4,594 and 8,192 draws.
@@ -1268,6 +1277,16 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** dispatches now go into the open copy encoder, each after a barrier inside it (as texture copies are, `blit`), with the compute argument table set once per encoder (`dispatch_enc`): about 1.3 µs each.
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md): after its first cutscene the first battle runs about 900–1,500 small dispatches a frame on the Mac (an iPhone log's call counts suggest more), each after a game barrier, at the same draws and passes; GPU 7.3 → 8.1 ms across the cutscene with the change.
 - **Note:** `DM_NVN_DISPATCH_OWN=1` (and `DM_NVN_PASSGPU`, which times each dispatch) gives each dispatch its own encoder again.
+
+
+### Dispatches that touch different memory keep no barrier between them
+
+- **Symptom:** a compute block of many small dispatches takes far longer than their work (`DM_NVN_GPUPROF`: `compute / copy after pass … dispatches 124`, 37 µs a dispatch), the GPU mostly idle in it.
+- **Cause:** [`dispatch_enc`](#compute-dispatches-share-the-copy-encoder) puts a barrier before every dispatch, so they run one at a time, whether the game ordered them or not.
+- **Fix:** `csp_join` in `nvn_mtl.m`, for every game. The dispatches since the last barrier form a run. A dispatch joins it, with no barrier, when no game barrier, copy or update came between, its bindings list all it can touch (`csp_list`: storage buffers by their bound range, uniform buffers, textures in slots), none of that meets what the run wrote, and nothing it writes meets what the run read. An image, a pool or dynamic handle, raw memory, an indirect dispatch, a storage buffer of no known size or a store the host makes for it proves nothing, and the next dispatch gets its barrier. This is a proof from what the dispatches touch: it does not rest on the game's barriers. `DM_NVN_CS_PAIRS=0` keeps a barrier before every dispatch; `ab` alternates with `DM_AB`.
+- **Off by default:** `DM_NVN_CS_GAME=1` leaves out the barrier wherever the game set none, whatever the dispatches touch, so raw and pool shaders overlap too. It trusts the game's barriers to be complete, which nothing here proves. For a comparison, or for a player to try.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_perf_order`: dispatches on different memory keep no barrier and both write; the same range, a read of what the one before wrote, a game barrier, a copy between and the switch off keep it; raw memory, images, handles, a size of 0 and indirect dispatches prove nothing.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): 86 of 138 dispatch pairs a frame have no game barrier; the bindings prove 71 of them, tiny agl and NintendoWare dispatches. The other 15 are the leaf emitters, which read through pointers loaded from memory, and they hold most of the time. In the same A/B: GPU p50 -0.19 ms in Hyrule Field (11 of 11 rounds) and -0.22 ms in Kokiri Forest (18 of 27 rounds); with the conversions above -0.81 and -0.54 ms. About 40% of the dispatches that follow a dispatch keep no barrier.
 
 ### Fragment-ordering barriers between draws that write images
 

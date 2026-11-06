@@ -583,6 +583,12 @@ static id<MTLRenderPipelineState> mtk_bundled(MTLRenderPipelineDescriptor *d, Nv
     return ps;
 }
 static id<MTLRenderPipelineState> mtk_build(const pso_key *k, NvShader *ts, NvShader *ms, NvShader *fs, NSError **error) {
+    // Metal aborts on a function of the wrong type rather than return an error: the draw is left out with a red line
+    if (ms->fn.functionType != MTLFunctionTypeMesh || (ts && ts->fn.functionType != MTLFunctionTypeObject)) {
+        if (error) *error = [NSError errorWithDomain:@"nxnative.NVN.Pipeline" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"not an object / mesh function pair (function types %lu, %lu)",
+            (unsigned long)(ts ? ts->fn.functionType : 0), (unsigned long)ms->fn.functionType]}];
+        return nil;
+    }
     MTLRenderPipelineDescriptor *d = pso_desc(k, nil, fs, nil, 0);
     if (!pso_ds_valid((uint32_t)d.depthAttachmentPixelFormat, (uint32_t)d.stencilAttachmentPixelFormat)) return nil;
     id<MTLRenderPipelineState> bundled = mtk_bundled(d, ts, ms);

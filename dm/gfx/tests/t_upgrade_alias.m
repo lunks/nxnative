@@ -24,6 +24,17 @@ int main(void) { @autoreleasepool {
     old = tex_mtl(&image);
     CHECK(old.usage & MTLTextureUsageShaderWrite, "IMAGE descriptor adds shader-write usage");
     CHECK(tex_mtl(&a) == old && tex_mtl(&b) == old && tex_mtl(&ghost) == old, "IMAGE usage does not split storage across existing descriptors");
+    // An integer read of a texture of another class has its format view before the draw, not from the next pass (img_fit), and the ID keeps the image flag
+    tex_t ints = a; ints.serial = 99700; ints.d.width = 8; nvn_tex_layout(&ints.d, &ints.L); mtl_tex_init(&ints);
+    id<MTLTexture> plain = tex_mtl(&ints);
+    CHECK(plain && !(plain.usage & MTLTextureUsagePixelFormatView), "a texture starts without format views");
+    mtl_reg_tex(951, &ints, NULL); S.img[5][1] = 951;
+    NvShader *reader = [NvShader new]; reader->rf.nb = 1; reader->rf.b[0] = (nvn_rbind){.kind=NVN_RB_IMG, .reg=1, .dpf=NVN_DPF_UINT};
+    NvProg *read_only = [NvProg new]; read_only->sh[5] = reader; image_prepare(read_only, 1u << 5);
+    id<MTLTexture> viewable = tex_mtl(&ints);
+    CHECK(viewable != plain && (viewable.usage & MTLTextureUsagePixelFormatView), "an integer image read upgrades before the draw");
+    CHECK(g_treg[951].t.d.flags & NVN_TEXTURE_FLAGS_IMAGE, "the ID keeps the image flag");
+    S.img[5][1] = 0;
     // Exercise replacement at the hash table's growth threshold: reinserting while iterating would resize and reshuffle it.
     uint64_t extra = 99400;
     while ((g_by_serial.n + 1) * 4 <= g_by_serial.cap * 3) { hm_put_id(&g_by_serial, &extra, old); extra++; }
@@ -37,6 +48,9 @@ int main(void) { @autoreleasepool {
     // A finalized serial over a shared texture takes no ghost entry (tex_mtl_): it resolves through the sharing table, which the upgrade has updated
     CHECK(tex_get(ghost.serial) == nil && tex_mtl(&ghost) == upgraded, "finalized serial sees the replacement");
     CHECK(!alias_has(old) && alias_has(upgraded), "sharing membership follows the replacement");
+    tex_t bare = a; bare.d.width = 16; bare.serial = 99701; nvn_tex_layout(&bare.d, &bare.L); mtl_tex_init(&bare);
+    id<MTLTexture> unwritable = tex_mtl(&bare); bare.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+    CHECK(tex_upgrade_pfv(&bare, unwritable, MTLPixelFormatR32Uint).usage & MTLTextureUsageShaderWrite, "a format view of an image keeps it writable");
     uint32_t pixels[16]; for (int i = 0; i < 16; i++) pixels[i] = 0x44332211u;
     id<MTLBuffer> src = [g_dev newBufferWithBytes:pixels length:sizeof pixels options:MTLResourceStorageModeShared]; res_add(src);
     id<MTL4ComputeCommandEncoder> encoder = blit();

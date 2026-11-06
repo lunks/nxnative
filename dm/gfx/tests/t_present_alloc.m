@@ -72,7 +72,9 @@ static int bad_pixels(id<MTLTexture> t, uint8_t left, uint8_t right) {
     if (bad) { printf("first row:"); for (int i = 0; i < 8; i++) printf(" %u", p[4 * i]); printf(" (want %u x4, %u x4)\n", left, right); }
     return bad;
 }
+void mtl_present_layer(uint32_t w, uint32_t h);
 int main(void) { @autoreleasepool {
+    mtl_present_layer(1, 1);   // square fixtures: a sized square layer, or the 16:9 display shape letterboxes them
     alarm(30); setbuf(stdout, NULL);
     setenv("DM_PRESENT_HZ", "0", 1);
     mtl_init();

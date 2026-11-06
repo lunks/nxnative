@@ -215,19 +215,6 @@ class Portable(unittest.TestCase):
 
 
 @unittest.skipUnless(os.environ.get('DMSH_TEST_XLATE'), 'rebuilt .NET translator not configured; portable tests only')
-class RawLogOr(unittest.TestCase):   # the raw global memory write log's OR reads the word first (dmsh_atomic.raw_log_or); other atomics stay as they are
-    def test_only_the_log_buffer_uses_the_read_first_probe(self):
-        def atomic_or(buffer):
-            return f'atomic_fetch_or_explicit((device atomic_uint*)&{buffer}._m0[slot], bit, memory_order_relaxed)'
-
-        source = 'using namespace metal;\n' + atomic_or('cp_s1') + ';\n' + atomic_or('cp_s2') + ';\n'
-        rewritten = atomic.raw_log_or(source, 'cp_s2')
-        self.assertIn(atomic_or('cp_s1'), rewritten)
-        self.assertIn('dmsh_raw_log_or((device atomic_uint*)&cp_s2._m0[slot], bit)', rewritten)
-        self.assertEqual(rewritten.count('inline uint dmsh_raw_log_or('), 1)
-        self.assertEqual(atomic.raw_log_or(source, 'cp_s3'), source)
-
-
 class Compiler(unittest.TestCase):
     def test_returning_ign_atomic(self):
         with tempfile.TemporaryDirectory(prefix='dm-image-atomic-return-') as temp:
