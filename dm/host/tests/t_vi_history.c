@@ -14,6 +14,8 @@ uint64_t guest_ns(void) { return g_gns; }
 uint64_t now_ns(void) { return g_hns; }
 int dm_sdk_ounce(void) { return 0; }
 int dm_opmode(void) { return 0; }
+void front_screen_edr(float *potential, float *current) { *potential = *current = 1; }   // HDR output (hle_vi.c): these checks do not reach it
+float front_launch_edr_potential(void) { return 1; }
 
 static void present(void) { g_in++; g_count++; dm_vi_frame_queued(g_count); }
 static uint64_t ticks(uint64_t ns) { return ns * 12 / 625; }
