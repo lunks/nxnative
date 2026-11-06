@@ -2149,6 +2149,7 @@ static void ser_note(uint64_t serial) {
 // and when the serial table replaces / deletes them it only drops its reference (defer_obj_unref), never removing them from the residency set. Entries go when their pool is finalized (mtl_alias_drop_pool)
 // or another texture takes over their storage (alias_take_over).
 typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } alias_key;
+static inline void tex_alias_key(const tex_t *t, alias_key *k) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~NVN_TEXTURE_FLAGS_IMAGE; }
 static nvn_hmap g_alias = {.klen = sizeof(alias_key)};
 // How many entries of g_by_serial hold each object (key: its address), kept by every writer of g_by_serial (serial_put, serial_del, tex_put, the upgrade's in-place
 // replacement), so alias_take_over asks whether a live texture object still resolves to a shared texture in one lookup. It walked the serial table's whole capacity for
@@ -2191,6 +2192,7 @@ static int alias_has(id o) { return g_alias_set && o && CFSetContainsValue(g_ali
 // Also, when a pool object's address is reused, old entries would hand a texture on the old storage to the new pool's texture at the same offset and description. Evicted textures go through deferred release; if the serial table still holds one, that is just one more reference
 static void treg_drop_pool_views(const void *pool);
 static void cpu_tex_drop_pool(const void *pool);
+static void pkg_alias_drop_pool(const void *pool);
 void mtl_alias_drop_pool(const void *pool) {
     if (!pool) return;
     pthread_mutex_lock(&g_smu);
@@ -2215,6 +2217,7 @@ void mtl_alias_drop_pool(const void *pool) {
         if (k.pool != (uint64_t)(uintptr_t)pool) continue;
         alias_key *nk = realloc(ks, (n + 1) * sizeof *ks); if (!nk) break; ks = nk; ks[n++] = k; }
     for (uint32_t j = 0; j < n; j++) free(nvn_hm_del(&g_walk_empty, &ks[j]));
+    pkg_alias_drop_pool(pool);
     pthread_mutex_unlock(&g_smu);
     free(ks);
     cpu_tex_drop_pool(pool);
@@ -2353,7 +2356,8 @@ static void ghost_finish_submission(void) {
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub; const void *span; int sparse, vbase; uint8_t *edge[2]; uint32_t edge_n[2], copies; id ps; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+enum { PKG_READERS = 4 };
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, kept, readers[PKG_READERS]; const void *span; int sparse, vbase, nreaders; uint8_t *edge[2]; uint32_t edge_n[2], copies; id ps; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
 // ps: its placement sparse texture (NvSparse, sparse_make), which tex is: mapped and uploaded tile by tile (sparse_sync)
 // edge: the uploaded bytes of the storage's first and last host pages where other data shares them (pkg_edges_take)
@@ -2361,6 +2365,73 @@ static void ghost_finish_submission(void) {
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); if (spare) res_remove(spare); free(edge[0]); free(edge[1]); }
 @end
+// Packaged textures past their objects, by pool, offset and description. An NVN texture is plain data: a finalized object's descriptor stays registered, and a new object over the same
+// storage is the same texture. Each had an upload and a ghost entry of its own, and past the ghost ring's 512 every eviction noted a serial, so the next pool table patch resolved it again:
+// PR #1444 measured 965,532 ghost puts and 32 generation bumps a frame in Ocarina of Time's Market and Kakariko Village. Here a finalized serial's texture stays, and no ghost entry is made for it.
+// Unlike that PR's table this one is bounded, as each entry is a private copy of guest memory: the oldest go past g_dev's working set / 16, and all that no live object holds at the GPU memory
+// guard. An entry that goes names its finalized readers, whose IDs hold views of it. Dirty pages are checked as for any packaged texture, so an old entry is re-uploaded, never read stale. Under g_smu
+static nvn_hmap g_pkg_alias = {.klen = sizeof(alias_key)};
+static alias_key *g_pkg_order; static uint32_t g_pkg_first, g_pkg_end, g_pkg_cap;   // keys oldest first; one that left the table is passed over
+static uint64_t g_pkg_kept_bytes, g_pkg_kept_hits, g_pkg_kept_gone, g_pkg_kept_limit;   // limit: for a test, else the working set / 16
+static int pkg_alias_ok(const tex_t *t) { return t->pool && t->mem && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL); }
+static void pkg_alias_reader(NvPkg *pk, uint64_t serial) {
+    for (int i = 0; i < pk->nreaders && i < PKG_READERS; i++) if (pk->readers[i] == serial) return;
+    if (pk->nreaders < PKG_READERS) pk->readers[pk->nreaders] = serial;
+    if (pk->nreaders <= PKG_READERS) pk->nreaders++;   // PKG_READERS + 1: more than it can name
+}
+static void pkg_alias_evict(const alias_key *k) {
+    void *v = nvn_hm_del(&g_pkg_alias, k); if (!v) return;
+    NvPkg *pk = CFBridgingRelease(v);
+    g_pkg_kept_bytes -= pk->kept; pk->kept = 0; g_pkg_kept_gone++;
+    if (pk->nreaders > PKG_READERS) g_ser_gen++; else for (int i = 0; i < pk->nreaders; i++) ser_note(pk->readers[i]);
+    pk->nreaders = 0;
+    defer_obj_release(pk);
+}
+static void pkg_alias_put(const alias_key *k, NvPkg *pk) {
+    id old = hm_get_id(&g_pkg_alias, k);
+    if (old == pk) return;
+    if (old) pkg_alias_evict(k);
+    pk->kept = pk->tex.allocatedSize; g_pkg_kept_bytes += pk->kept;
+    hm_put_id(&g_pkg_alias, k, pk);
+    if (g_pkg_end == g_pkg_cap) {
+        if (g_pkg_first > g_pkg_cap / 2) { memmove(g_pkg_order, g_pkg_order + g_pkg_first, (g_pkg_end - g_pkg_first) * sizeof *g_pkg_order); g_pkg_end -= g_pkg_first; g_pkg_first = 0; }
+        else { g_pkg_cap = g_pkg_cap ? g_pkg_cap * 2 : 1024; g_pkg_order = realloc_or_die(g_pkg_order, g_pkg_cap * sizeof *g_pkg_order, "the kept packaged textures"); }
+    }
+    g_pkg_order[g_pkg_end++] = *k;
+    uint64_t limit = g_pkg_kept_limit ? g_pkg_kept_limit : g_dev.recommendedMaxWorkingSetSize / 16;
+    while (g_pkg_kept_bytes > limit && g_pkg_first + 1 < g_pkg_end) pkg_alias_evict(&g_pkg_order[g_pkg_first++]);
+}
+static void pkg_alias_drop_pool(const void *pool) {
+    int any = 0; for (uint32_t i = g_pkg_first; i < g_pkg_end && !any; i++) any = g_pkg_order[i].pool == (uint64_t)(uintptr_t)pool;
+    if (!any) return;
+    uint32_t w = g_pkg_first;   // and the keys that left in other ways
+    for (uint32_t i = g_pkg_first; i < g_pkg_end; i++) {
+        if (g_pkg_order[i].pool == (uint64_t)(uintptr_t)pool) pkg_alias_evict(&g_pkg_order[i]);
+        else if (nvn_hm_get(&g_pkg_alias, &g_pkg_order[i])) g_pkg_order[w++] = g_pkg_order[i];
+    }
+    g_pkg_end = w;
+}
+// The texture a finalized serial reads, which no table of serials holds
+static __unsafe_unretained NvPkg *pkg_alias_of(const tex_t *t) {
+    if (!pkg_alias_ok(t)) return nil;
+    alias_key k; tex_alias_key(t, &k);
+    pthread_mutex_lock(&g_smu); __unsafe_unretained NvPkg *pk = hm_get_id(&g_pkg_alias, &k); pthread_mutex_unlock(&g_smu);
+    return pk;
+}
+// A live serial's packaged texture when its object is finalized: from the serial table into this one, with the table's count (held_add). Caller holds g_smu
+static int pkg_alias_keep(const tex_t *t) {
+    if (!pkg_alias_ok(t)) return 0;
+    id cur = hm_get_id(&g_by_serial, &t->serial);
+    if (![cur isKindOfClass:[NvPkg class]]) return 0;
+    NvPkg *pk = cur; if (pk->sparse || pk->ps) return 0;
+    alias_key k; tex_alias_key(t, &k);
+    pkg_alias_put(&k, pk); pkg_alias_reader(pk, t->serial);
+    held_add((__bridge void *)cur, -1);
+    defer_obj_unref(pk);
+    hm_del_id(&g_by_serial, &t->serial);
+    ser_note(t->serial);
+    return 1;
+}
 // A sparse texture's CPU-write check walks its page table (nvn_sparse_since). A submission sees the CPU writes and the mappings made before it (as NVN's: a map is a CPU call,
 // not a command), so the replay checks each one once a submission (sub: the submission, g_sub_serial, of its last check). Games remap streamed pages all the time, so the
 // mapping generation alone rarely let the check be skipped: Mario Kart World's terrain targets walked theirs at nearly every lookup
@@ -2570,6 +2641,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
 // The same upgrade adds render-target usage for a whole-level clear (clear_tex) of a texture made without it: Monster Hunter Rise clears a 32x80 packaged one
 static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> asked, MTLTextureUsage add, MTLPixelFormat view_pf) {
     id holder = tex_get(t->serial);
+    if (!holder) holder = pkg_alias_of(t);   // a finalized serial's packaged texture: retired whole, it would stay in the table out of the residency set
     // The serial holds an sRGB / linear view (tex_mtl_) of the asked texture, or the asked texture is that view: the parent is upgraded and the view made again on it, so the pair keeps sharing its bytes
     id<MTLTexture> view = ![holder isKindOfClass:[NvPkg class]] && [holder conformsToProtocol:@protocol(MTLTexture)] && ((id<MTLTexture>)holder).parentTexture
         && (holder == asked || ((id<MTLTexture>)holder).parentTexture == asked) ? holder : nil;
@@ -3777,7 +3849,6 @@ static _Atomic uint64_t g_tex_walk_empty;   // IDs walks left empty, in total
 // IDs walks left empty, by the key they would resolve to: the serials a new sharing entry over that key, or its other sRGB / linear format, has to send through their tables again. Before, every
 // new entry started a new epoch once any walk had left an ID empty, and with it a whole table build: 2,000 to 4,000 builds against 1,000 in Ocarina of Time's first minutes outdoors. Under g_smu
 typedef struct { uint32_t n; uint64_t serial[WALK_EMPTY_N]; } walk_empty_t;
-static inline void tex_alias_key(const tex_t *t, alias_key *k) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~NVN_TEXTURE_FLAGS_IMAGE; }
 static void walk_empty_put(const tex_t *t) {
     alias_key k; tex_alias_key(t, &k);
     pthread_mutex_lock(&g_smu);
@@ -3839,6 +3910,17 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (pk && pk->ps) { sparse_look(pk->ps, t); return pk->tex; }   // a placement sparse texture: its tiles follow the game's mappings
         if (!pk) { id<MTLTexture> made = nil; NvSparse *ps = sparse_make(t, 0, &made);
             if (ps) { pk = [NvPkg new]; pk->ps = ps; pk->tex = made; pk->sparse = 1; sparse_sync(ps, t, 1); tex_put(t->serial, pk); return pk->tex; } }
+        int live = 1;
+        if (!pk && !have && pkg_alias_ok(t)) {   // the same texture past an object over this storage: only a texture already taken from its storage, as a target over it is another thing
+            alias_key ak; tex_alias_key(t, &ak);
+            pthread_mutex_lock(&g_smu);
+            live = t->serial >= (1ull << 62) || nvn_hm_get(&g_tex_live, &t->serial);
+            pk = hm_get_id(&g_pkg_alias, &ak);
+            if (pk) { g_pkg_kept_hits++; if (!live) pkg_alias_reader(pk, t->serial); }
+            pthread_mutex_unlock(&g_smu);
+            if (pk && live) tex_put(t->serial, pk);
+            g_stat_ghost_skip += pk && !live;
+        }
         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
             if (g_nabs) pkg_absorb_take(pk, t);
             if (g_nabsp && pkg_absorb_waits(t->serial)) return pk->view ? pk->view : pk->tex;
@@ -3878,6 +3960,12 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         pkg_edges_take(pk, t);
         if (pk->sparse) sparse_view(pk, t);
         zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "upload");
+        if (!live && !pk->sparse) {   // a finalized serial: kept by storage, with no ghost entry to churn
+            alias_key ak; tex_alias_key(t, &ak);
+            pthread_mutex_lock(&g_smu); pkg_alias_put(&ak, pk); pkg_alias_reader(pk, t->serial); pthread_mutex_unlock(&g_smu);
+            g_stat_ghost_skip++;
+            return pk->view ? pk->view : pk->tex;
+        }
         tex_put(t->serial, pk);
         return pk->view ? pk->view : pk->tex;
     }
@@ -3999,6 +4087,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
     MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB, deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u (%u of them unreferenced, %u sRGB / linear views of one live; evicted with pools %llu, on storage takeover %llu, idle %llu in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total, finalized textures still referenced %u (small table, %llu put in total); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, peak, cap, dead_n, dead_mb, ashared, aorph, ntwin, (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)g_alias_idle, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, nghost, (unsigned long long)ghost_puts, avail);
+    if (g_pkg_alias.n) MLOG("packaged textures kept past their objects: %u, %llu MB (found again %llu times, let go %llu)", g_pkg_alias.n, (unsigned long long)(g_pkg_kept_bytes >> 20), (unsigned long long)g_pkg_kept_hits, (unsigned long long)g_pkg_kept_gone);
     { void mtl_gmem_words(uint64_t *, uint64_t *, uint64_t *); uint64_t gw, go, gb; mtl_gmem_words(&gw, &go, &gb);
       if (gw) MLOG("raw pool table words at commit: %llu, of them %llu held an older table than the current one and %llu the current one behind the pools", (unsigned long long)gw, (unsigned long long)go, (unsigned long long)gb); }
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
@@ -4026,8 +4115,9 @@ void mtl_tex_release(tex_t *t) {
     void *pool = nvn_hm_del(&g_cpu_tex, &t->serial);
     if (pool && t->pool && t->mem) nvn_hm_put(&g_cpu_tex_retired, &t->serial, pool);
     pthread_mutex_unlock(&g_cpu_tex_mu);
+    int kept = was_live && pkg_alias_keep(t);
     pthread_mutex_unlock(&g_smu);
-    serial_del(t->serial);
+    if (!kept) serial_del(t->serial);
     mtl_vc_drop(t->serial);
     // Only the first release of a serial retires its descriptors. NVNtexture is plain data: Breath of the Wild copies texture objects and finalizes each copy
     // (about 100 a frame), so the same serial came back here again and again while its descriptor list grew (5,900 IDs registered with one serial); each walk
@@ -5649,10 +5739,18 @@ static unsigned up_trim(void) {
 // A re-uploaded texture's spare (NvPkg), which the next upload would write: only the submit thread uploads
 static unsigned pkg_trim(void) {
     unsigned n = 0; if (!on_sub_thread()) return 0;
-    uint64_t done = atomic_load(&g_done); nvn_hmap *hs[2] = {&g_by_serial, &g_ghost};
+    uint64_t done = atomic_load(&g_done); nvn_hmap *hs[3] = {&g_by_serial, &g_ghost, &g_pkg_alias};
     pthread_mutex_lock(&g_smu);
-    for (int h = 0; h < 2; h++) for (uint32_t i = 0; i < hs[h]->cap; i++) { id o = (__bridge id)hs[h]->vals[i];
+    for (int h = 0; h < 3; h++) for (uint32_t i = 0; i < hs[h]->cap; i++) { id o = (__bridge id)hs[h]->vals[i];
         if ([o isKindOfClass:[NvPkg class]]) { NvPkg *pk = o; if (pk->spare && pk->spare_fence <= done) { defer_obj_release(pk->spare); pk->spare = nil; n++; } } }
+    pthread_mutex_unlock(&g_smu);
+    return n;
+}
+// Kept packaged textures no live object holds: they cost an upload if read again
+static unsigned pkg_alias_trim(void) {
+    unsigned n = 0;
+    pthread_mutex_lock(&g_smu);
+    for (uint32_t i = g_pkg_first; i < g_pkg_end; i++) { id o = hm_get_id(&g_pkg_alias, &g_pkg_order[i]); if (o && !serial_table_holds((__bridge void *)o)) { pkg_alias_evict(&g_pkg_order[i]); n++; } }
     pthread_mutex_unlock(&g_smu);
     return n;
 }
@@ -5661,8 +5759,9 @@ static void guard_evict(int force) { @autoreleasepool {
     static uint64_t last; uint64_t f = atomic_load(&g_cur_frame) + 1;
     if (!force && last && f - last < GUARD_EVERY) return;
     last = f;
-    unsigned entries = alias_age(1), spares = pkg_trim(), staging = up_trim();
+    unsigned entries = alias_age(1), spares = pkg_trim(), staging = up_trim(), kept = pkg_alias_trim();
     defer_drain(); res_commit();
+    if (kept) MLOG("GPU memory guard: %u kept packaged textures let go", kept);
     static uint64_t lines; if (entries + spares + staging && lines++ < 16)
         MLOG("GPU memory guard: %llu MB (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks let go", (unsigned long long)(guard_used() >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging);
 } }
