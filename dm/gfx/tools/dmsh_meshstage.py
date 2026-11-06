@@ -21,6 +21,7 @@ BLOCK = 32   # vertices and primitives of an attribute block
 METAL_MAX_VERTICES, METAL_MAX_PRIMITIVES = 256, 512   # a Metal mesh's limits
 METAL_MAX_GRID = 1024   # mesh threadgroups an object threadgroup may launch
 METAL_MAX_SHARED = 0x8000   # threadgroup memory of a Metal function
+METAL_MAX_MESH = 0x8000   # a Metal mesh's size: "Total mesh size (35840) exceeds the maximum mesh size allowed (32768)" for 160 vertices of 14 float4 (macOS 27, M5 Pro)
 
 
 def is_stage(ctl):
@@ -50,6 +51,18 @@ def info(ctl, area):
         prim = sph_outputs(area[at:at + 0x80]) if at else []
         out.update(task=bool(ctl[0x5e]), points=ctl[0x5f] == 1, max_v=max_v, max_p=max_p, vertex=sph_outputs(area[:0x80]), primitive=[c for c in prim if isinstance(c[0], int)])
     return out
+
+
+def written(i):
+    """The locations a mesh shader writes, per vertex or per primitive."""
+    return {n for n, _ in i['vertex'] + i['primitive'] if isinstance(n, int)}
+
+
+def mesh_bytes(i, pad=0):
+    """A mesh's size as Metal counts it, with pad more vertex outputs: a float4 for the position and for each location, the point size padded to one. Its indices do not count (35840 above, 128
+    triangles); that a primitive's outputs count as a vertex's do is taken, no shader here is near the limit with any."""
+    vertex = 1 + len({n for n, _ in i['vertex'] if n is not None}) + pad
+    return 16 * (i['max_v'] * vertex + i['max_p'] * len({n for n, _ in i['primitive']}))
 
 
 def memory(i):

@@ -68,6 +68,11 @@ class Facts(unittest.TestCase):
         self.assertEqual((i['kind'], i['threads'], i['payload'], i['task'], i['max_v'], i['max_p'], i['primitive']), ('ms', 8, 1408, True, 32, 16, [(0, 0)]))
         self.assertEqual(ms.info(control(7, max_v=128, max_p=64), area)['primitive'], [])
 
+    def test_mesh_size_as_metal_counts_it(self):   # 626fbf48041cb82b's shape with its pads: Metal's own figure
+        i = ms.info(control(7, max_v=160, max_p=128), sph(0xf0, bytes.fromhex('ff0fff0f0f0f')))
+        self.assertEqual(ms.written(i), {0, 1, 2, 4, 5, 6, 8, 10})
+        self.assertEqual(ms.mesh_bytes(i, 5), 35840); self.assertGreater(ms.mesh_bytes(i, 5), ms.METAL_MAX_MESH); self.assertLessEqual(ms.mesh_bytes(i), ms.METAL_MAX_MESH)
+
     def test_task_memory(self):   # the payload's bytes hold the mesh count at +4, as the game's stores do
         lay, size = ms.memory(ms.info(control(6), bytes(0x80)))
         self.assertEqual(lay, [0, 0x10, 0x110, 0x210]); self.assertEqual(size, 0x210)

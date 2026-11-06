@@ -413,12 +413,12 @@ def tool_fingerprint():
 PROFILE_ROWS = dmsh_chain.profile_rows(GAME)
 def shader_key(key, name, rec):
     """The per-shader cache key. It covers the profile's build keys and the shader's pairs; a vertex shader with pairs also takes its pixel shaders' keys (pair_keyed), since vs_pad reads their
-    MSL. Before, these were only in the chain version, so a build after changing only them hit the old entries and filed them under the new version (with an empty DMSH_CAS as the workaround)"""
+    MSL, and a pixel shader with a mesh shader its partners' (fs_unwritten). Before, these were only in the chain version, so a build after changing only them hit the old entries and filed them under the new version (with an empty DMSH_CAS as the workaround)"""
     pc = dmsh_facts.row(key, FACTS[key]).encode() if key in FACTS else 'missing'.encode()
     map_row = MAP_ROWS.get(key, 'missing'.encode()) + MAP_CONFLICT_ROWS.get(key, b'')
     payload = (b'record\0' + rec + b'\0map\0' + map_row + b'\0pc\0' + pc +
                b'\0tools\0' + TOOL_FP + b'\0code\0' + CODE_FP.encode() +
-               b'\0rule\0' + shader_rule_source(name) + b'\0profile\0' + PROFILE_ROWS + b'\0pairs\0' + ','.join(sorted(PAIRS.get(key, ()))).encode() +
+               b'\0rule\0' + shader_rule_source(name) + b'\0profile\0' + PROFILE_ROWS + b'\0pairs\0' + ','.join(sorted(set(PAIRS.get(key, ())) | PARTNERS.get(key, set()))).encode() +
                b'\0dual\0' + (b'1' if key in DUAL_WANT else b'0'))   # fs_dual emits another entry point for listed shaders; the cache must track that choice
     return hashlib.sha256(payload).hexdigest()
 def pair_keyed(digest, pixel_digests):   # a vertex shader's key with its pixel shaders' keys (vs_pad)
@@ -1211,6 +1211,10 @@ def load_pairs(game, package):
     return pairs
 
 PAIRS = load_pairs(GAME, dm_dir)
+PARTNERS = collections.defaultdict(set)   # a pixel shader with a mesh shader → its vertex and mesh shaders (fs_unwritten)
+for _v, _ps in PAIRS.items():
+    for _p in _ps: PARTNERS[_p].add(_v)
+PARTNERS = {_p: _v for _p, _v in PARTNERS.items() if any(loc.get(v, ' ')[0][:2] == 'ms' for v in _v)}
 
 def build_keys(want, locations, pairs):
     """A partial vertex build needs its available paired pixel shaders before padding; a full build keeps every shader."""
@@ -1240,6 +1244,28 @@ def vs_pad(key, src):
     src = src[:j] + ''.join(f'\n    float4 dm_pad{l} [[user(locn{l})]];' for l in miss) + src[j:]
     k = src.find('main0_out out = {};') + len('main0_out out = {};')
     return src[:k] + ''.join(f'\n    out.dm_pad{l} = float4(0.0, 0.0, 0.0, 1.0);' for l in miss) + src[k:], miss
+
+def mesh_facts(key):   # a mesh shader's control section and SPH facts, from its record
+    rec = rec_of(key)[1]; ci = rec.find(bytes.fromhex('34127698'))
+    return dmsh_meshstage.info(rec[ci:], rec[0x38:ci])
+
+def fs_unwritten(key, src):
+    """A pixel shader's inputs that its mesh shaders have no room to be padded with, read as the (0,0,0,1) vs_pad would give them. Metal limits a mesh to 32 KB and takes a float4 input only from a
+    float4 output, so Ocarina of Time's mesh shader 626fbf48041cb82b, 160 vertices of a position and 10 attributes, cannot give c5eb985e769e317f the 3 more it reads: 35,840 bytes. Only for inputs
+    every partner leaves unwritten, and only where all its partners are mesh shaders: a vertex shader's outputs are not known here, and a constant would hide what a partner writes"""
+    partners = PARTNERS.get(key, ())
+    if not partners or any(loc.get(v, ' ')[0][:2] != 'ms' for v in partners): return src
+    i = src.find('struct main0_in\n{\n'); j = src.find('\n};', i)
+    names = {int(l): n for n, l in re.findall(r'\n    float4 (\w+) \[\[user\(locn(\d+)\)\]\];', src[i:j])} if i >= 0 else {}
+    facts = [mesh_facts(v) for v in partners]
+    miss = [set(names) - dmsh_meshstage.written(m) for m in facts]
+    if not any(dmsh_meshstage.mesh_bytes(m, len(p)) > dmsh_meshstage.METAL_MAX_MESH for m, p in zip(facts, miss)): return src
+    for l in sorted(set.intersection(*miss)):
+        n = names[l]
+        src = src.replace(f'\n    float4 {n} [[user(locn{l})]];', '', 1)
+        src = re.sub(rf'\bin\.{n}\.([xyzw])\b', lambda m: '1.0' if m[1] == 'w' else '0.0', src)
+        src = re.sub(rf'\bin\.{n}\b', 'float4(0.0, 0.0, 0.0, 1.0)', src)
+    return src
 
 def vs_init(src):
     """Every vertex shader output starts as (0,0,0,1) before the translated body runs: on the hardware that is what an unwritten component reads. The translator's source starts with out = {}, all zeros;
@@ -1644,6 +1670,7 @@ def finish(key, w, j, c1):
     except ValueError as e: return 'reflection failed', str(e)[:160], None
     src = dmsh_wide.wide_loads(src)   # storage words the translator split, read whole again (see dmsh_wide.py)
     src = border_emu(src); open(msl, 'w').write(src)   # border colours Metal lacks (see border_emu)
+    if j['stage'] == 'ps': src = fs_unwritten(key, src); open(msl, 'w').write(src)   # inputs no mesh shader has room for (see fs_unwritten)
     first, spill = [], 0
     mesh = j.get('mesh_stage')
     if mesh:   # the kernel as the Metal object or mesh function (dmsh_meshstage.py)
