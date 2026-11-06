@@ -80,6 +80,9 @@ static void readback_pool(void) { @autoreleasepool {
     id<MTLBuffer> big[3]; for (int i = 0; i < 3; i++) big[i] = mrbuf_get(8u << 20);
     for (int i = 0; i < 3; i++) mrbuf_put(big[i]);
     EXPECT("at most 16 MB of readback buffers kept", 1, g_mrbuf_bytes <= (16u << 20) && g_mrbuf_n == 3);
+    id<MTLBuffer> mid[2]; for (int i = 0; i < 2; i++) mid[i] = mrbuf_get(4u << 20);
+    for (int i = 0; i < 2; i++) mrbuf_put(mid[i]);
+    EXPECT("a new size makes room, the oldest first", 1, g_mrbuf_bytes == (16u << 20) && g_mrbuf_n == 3 && g_mrbuf[2] == mid[1]);
     readback_pool_drop();
 } }
 static void *readback_guest_waiter(void *arg) {

@@ -12894,10 +12894,17 @@ static id<MTLBuffer> mrbuf_get(size_t n) {
     return b;
 }
 static void mrbuf_put(id<MTLBuffer> b) {   // the readback has landed: the GPU is done with the buffer
+    id<MTLBuffer> drop[16]; int ndrop = 0;
     pthread_mutex_lock(&g_mrbuf_mu);
+    if (b.length < (8u << 20)) while (g_mrbuf_n && (g_mrbuf_n == 16 || g_mrbuf_bytes + b.length > (16u << 20))) {   // the oldest make room: sizes no readback asks for any more would hold it for good
+        drop[ndrop++] = g_mrbuf[0]; g_mrbuf_bytes -= g_mrbuf[0].length;
+        for (int k = 0; k + 1 < g_mrbuf_n; k++) g_mrbuf[k] = g_mrbuf[k + 1];
+        g_mrbuf[--g_mrbuf_n] = nil;
+    }
     int kept = g_mrbuf_n < 16 && g_mrbuf_bytes + b.length <= (16u << 20);
     if (kept) { g_mrbuf[g_mrbuf_n++] = b; g_mrbuf_bytes += b.length; }
     pthread_mutex_unlock(&g_mrbuf_mu);
+    for (int i = 0; i < ndrop; i++) res_remove(drop[i]);
     if (!kept) res_remove(b);
 }
 static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from, int absorb) {   // absorb: a render pass's readback, which the texture takes as its own (pkg_absorb_note)
