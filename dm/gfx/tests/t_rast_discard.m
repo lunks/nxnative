@@ -28,7 +28,7 @@ static void pixels(const tex_t *t, int red) {
     CHECK(good,red?"normal draw rasterizes every pixel red":"discard leaves every pixel at the blue clear");
 }
 int main(void) { @autoreleasepool {
-    setenv("DM_NVN_TBDR","0",1); mtl_init();
+    setenv("DM_NVN_TBDR","0",1); setenv("DM_NVN_BARRIER","game",1); mtl_init();
     void *memory=NULL; if(posix_memalign(&memory,getpagesize(),65536))abort(); memset(memory,0,65536); mtl_pool_add(memory,65536);
     cmd=memory; uint32_t *output=(uint32_t *)((uint8_t *)memory+32768);
     uint32_t *indices=(uint32_t *)((uint8_t *)memory+36864); indices[0]=7;indices[1]=8;indices[2]=9;
@@ -104,6 +104,29 @@ int main(void) { @autoreleasepool {
         else{bp.prog=&fwp;emit(OP_BIND_PROGRAM,&bp,sizeof bp);emit(OP_DRAW,&arrays,sizeof arrays);}
         uint64_t before=g_stat_pass,vbar=g_order_vbar;execute();
         CHECK(g_stat_pass-before==cases[c].passes&&g_order_vbar-vbar==cases[c].vbar,cases[c].what);
+    }
+    // A barrier that orders only fragments leaves the next draw pass's vertex stage free: the previous pass's end barrier holds its fragments. A write before the fragment stage still waits for the
+    // earlier passes (an ordering barrier also finishes earlier reads before a later write), a write in the fragment stage needs no more; a primitive barrier, or a first pass that wrote, keeps the
+    // full consumer barrier. Each case has two passes: the no-barrier case gives what the first pass adds, so the second pass's barrier is counted exactly
+    tex_t t2=t;t2.serial=910509;p_set_rt rt2={.n=1};rt2.color[0]=&t2;
+    const struct { prog_t *first; int32_t *bar; int then; unsigned full, wait; const char *what; } next[]={
+        {&rf,NULL,0,0,0,"no barrier: the second draw pass adds no consumer barrier"},
+        {&rf,&frag,0,0,0,"a fragment barrier adds no consumer barrier at the next draw pass"},
+        {&rf,&frag,1,0,1,"a vertex-stage write in that pass waits for the earlier passes"},
+        {&rf,&frag,2,0,0,"a fragment-stage write in that pass needs no wait"},
+        {&rf,&barrier,1,1,0,"a primitive barrier keeps the full consumer barrier"},
+        {&fwp,&frag,0,1,0,"a fragment barrier after a pass that wrote keeps the full consumer barrier"}};
+    uint64_t first=0;
+    for(int c=0;c<6;c++){
+        discard(0);emit(OP_SET_RT,&rt,sizeof rt);bp.prog=next[c].first;emit(OP_BIND_PROGRAM,&bp,sizeof bp);emit(OP_DRAW,&arrays,sizeof arrays);
+        if(next[c].bar)emit(OP_BARRIER,next[c].bar,4);
+        emit(OP_SET_RT,&rt2,sizeof rt2);
+        if(next[c].then==0)emit(OP_DRAW,&arrays,sizeof arrays);
+        else if(next[c].then==1){discard(1);bp.prog=&pp;emit(OP_BIND_PROGRAM,&bp,sizeof bp);emit(OP_DRAW,&writes,sizeof writes);}
+        else{bp.prog=&fwp;emit(OP_BIND_PROGRAM,&bp,sizeof bp);emit(OP_DRAW,&arrays,sizeof arrays);}
+        uint64_t skip,full,skip0,full0,wait=g_bar_vfree;mtl_barrier_stats(&skip0,&full0);execute();mtl_barrier_stats(&skip,&full);
+        if(c==0)first=full-full0;
+        CHECK(g_bar_vfree-wait==next[c].wait&&full-full0==first+next[c].full&&skip-skip0+full-full0==2,next[c].what);
     }
     printf("rasterizer discard: %d checks, %d failed\n",checks,fails);return fails!=0;
 } }

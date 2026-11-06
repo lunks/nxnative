@@ -179,6 +179,7 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 
 ## Found on this game
 
+- [Fragment-only game barriers leave the next pass's vertex stage free](../../../docs/reference/rendering.md#fragment-only-game-barriers-leave-the-next-passs-vertex-stage-free): Hyrule Field, 720p MetalFX temporal, two boots of `DM_NVN_BARRIER_FRAG=ab`: GPU p50 14.64 to 14.16 ms, -0.47 ms, 86 of 86 rounds lower; -0.49 ms, 26 of 26 in the other. 26 shots in on and off phases show no systematic difference (a coarse test: the scene moves).
 - [A control section's words read as a BAHS entry](../../../docs/reference/shaders.md#a-control-sections-words-read-as-a-bahs-entry): six map rows that were no shaders, one of them failing the build; `tera_common` gave its variation pairs once its row was gone.
 - [Freeing a memory pool during a texture ID walk](../../../docs/reference/nvn-objects.md#freeing-a-memory-pool-during-a-texture-id-walk): the `-[NvPkg buffer]: unrecognized selector` crash after a save or a scene change.
 - [HMMA chains keep their matrices in the SIMD-group](../../../docs/reference/shaders.md#hmma-chains-keep-their-matrices-in-the-simd-group): the NDVE movie networks behind the title and the opening, 14.8 → 11.4 ms of compute a frame on this M6.

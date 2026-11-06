@@ -1308,6 +1308,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Check:** `make -C dm/gfx/tests GAME=<id> check_t_perf_order`: dispatches on different memory keep no barrier and both write; the same range, a read of what the one before wrote, a game barrier, a copy between and the switch off keep it; raw memory, images, handles, a size of 0 and indirect dispatches prove nothing.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): 86 of 138 dispatch pairs a frame have no game barrier; the bindings prove 71 of them, tiny agl and NintendoWare dispatches. The other 15 are the leaf emitters, which read through pointers loaded from memory, and they hold most of the time. In the same A/B: GPU p50 -0.19 ms in Hyrule Field (11 of 11 rounds) and -0.22 ms in Kokiri Forest (18 of 27 rounds); with the conversions above -0.81 and -0.54 ms. About 40% of the dispatches that follow a dispatch keep no barrier.
 
+### Fragment-only game barriers leave the next pass's vertex stage free
+
+- **Symptom:** with `draw_barriers game`, GPU time in a frame of many small passes: most passes still open behind a full consumer barrier, because nearly every step of a mip chain or a post effect follows `ORDER_FRAGMENTS | INVALIDATE_TEXTURE` (bits 0x12).
+- **Cause:** any game barrier asked for the full consumer barrier at the next draw pass, which also holds that pass's vertex stage. NVN does not ask for that: a fragment barrier orders fragments, and a vertex-stage read of rendered results takes `ORDER_PRIMITIVES`. The previous pass's end barrier already holds the next pass's fragment stage.
+- **Fix:** `enc_r_begin_pass` in `nvn_mtl.m` adds no consumer barrier after barriers of only `ORDER_FRAGMENTS`, `ORDER_FRAGMENTS_TILED`, `INVALIDATE_TEXTURE` and `INVALIDATE_ZCULL`, under `draw_barriers game` (`DM_NVN_BARRIER_FRAG=0` turns it off, `ab` alternates it). An ordering barrier also finishes earlier work before a later draw writes, so a draw of that pass that writes before the fragment stage first takes a consumer barrier inside the pass (`vfree_draw`). A pass that wrote through shaders keeps the full barrier after it.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_rast_discard` counts the barriers of each case and runs under Metal validation.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game).
+
 ### Fragment-ordering barriers between draws that write images
 
 - **Symptom:** dialog boxes with holes the size of their text, and white specks where text faded.

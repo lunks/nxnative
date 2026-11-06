@@ -1189,7 +1189,7 @@ static int g_pass_order;    // ordering barriers came in the open draw pass afte
 static int g_pass_late_res; // a draw of the open pass reads memory in a stage after the vertex stage (order_note)
 static uint64_t g_order_vbar;   // ordering barriers kept inside the pass as a vertex-to-vertex barrier (prog_swrites)
 static void img_fit_upgrade(void); static int g_imfit_npend;   // textures an image slot needs a format view of (img_fit), upgraded before the next draw pass opens
-static int g_last_end_relaxed, g_game_barrier;   // the last encoder ended was a draw pass with the relaxed end barrier (nothing else since); the game issued nvnCommandBufferBarrier since the last draw pass began
+static int g_last_end_relaxed, g_game_barrier, g_game_bits;   // g_game_bits: the bits of those barriers; the last encoder ended was a draw pass with the relaxed end barrier (nothing else since); the game issued nvnCommandBufferBarrier since the last draw pass began
 static uint64_t g_bar_skip, g_bar_full;            // draw passes begun without / with the consumer barrier (DM_NVN_BARRIER=game)
 static void gp_end(id e);
 static inline void m4_end(id e) {
@@ -1203,7 +1203,13 @@ static inline void m4_end(id e) {
 // the Wild). The next draw pass adds the full consumer barrier when the game called nvnCommandBufferBarrier since the last one (NVN asks for one before results of rendering are read as textures, shader data or
 // indirect arguments), or when anything other than a draw pass ran in between (compute, copies and uploads keep their full barriers). Only vertex-stage reads of the previous pass's results without a barrier change order
 // DM_NVN_BARRIER=ab... alternates game and full with the DM_AB phases (measurement)
+// DM_NVN_BARRIER_FRAG (default on, ab for measurement): a game barrier that orders only fragments (ORDER_FRAGMENTS, ORDER_FRAGMENTS_TILED, with INVALIDATE_TEXTURE or INVALIDATE_ZCULL) adds no consumer barrier at the next
+// draw pass. The previous pass's end barrier already holds this pass's fragment stage, which is all NVN asks: a vertex-stage read of rendered results takes ORDER_PRIMITIVES. The one thing a full barrier gave beyond that is
+// that an ordering barrier also finishes earlier work before a later draw writes: a draw of this pass that writes before the fragment stage first waits for the earlier passes (g_pass_vfree, vfree_draw).
+// A pass that wrote through shaders keeps the full barrier after it: that hand-over is what the fragment-ordering splits rely on (swrite_note)
+static int g_pass_vfree; static uint64_t g_bar_vfree;   // the open draw pass began after a fragment-only game barrier with no consumer barrier; draws that then waited (vfree_draw)
 static int sw_mode(const char *name, int dflt); static inline int sw_on(int m);
+static int barrier_frag(void) { static int v = -1; if (v < 0) v = sw_mode("DM_NVN_BARRIER_FRAG", 1); return sw_on(v); }
 static int barrier_game(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER"); v = e && !strncmp(e, "ab", 2) ? sw_mode("DM_NVN_BARRIER", 0) : e ? !strcmp(e, "game") : DM_GAME_DRAW_BARRIERS_GAME; if (v == 1) MLOG("DM_NVN_BARRIER=game: draw passes are ordered by the game's own barriers (fragment work still has barriers between passes; vertex work may overlap the previous pass's fragments)"); } return sw_on(v); }
 void mtl_barrier_stats(uint64_t *skip, uint64_t *full) { *skip = g_bar_skip; *full = g_bar_full; }
 uint64_t mtl_cut_count(void);
@@ -1286,9 +1292,11 @@ static void gp_report(int n, gp_lab *lab, uint64_t frame) {   // the frame's las
 }
 static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) {   // the draw passes (rp_begin_ex); see barrier_game
     id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d];
-    if (g_last_end_relaxed && !g_game_barrier && barrier_game() && !g_image_heap_n) g_bar_skip++;
+    int frag = g_game_barrier && !(g_game_bits & ~(NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT | NVN_BARRIER_INVALIDATE_ZCULL_BIT)) && barrier_frag();
+    g_pass_vfree = 0;
+    if (g_last_end_relaxed && (!g_game_barrier || frag) && barrier_game() && !g_image_heap_n) { g_bar_skip++; g_pass_vfree = frag; }
     else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; }
-    g_game_barrier = 0;
+    g_game_barrier = 0; g_game_bits = 0;
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e;
 }
 static inline void enc_r_end_pass(id e) {
@@ -6920,6 +6928,13 @@ static void order_draw(NvProg *pr, int merged) {   // merged: a merged (readable
     }
     static int once; if (!once++) MLOG("a draw with shader writes after a game barrier in a draw pass: the pass ends before it (first case pass %llu)", g_stat_pass);
     PD("M %llu a draw with shader writes after an ordering barrier; split here", g_stat_pass); rp_end();
+}
+// A draw about to be encoded that writes before the fragment stage, in a pass that began with no consumer barrier after a fragment-only game barrier (barrier_frag): it waits for the earlier passes
+// first. A write in the fragment stage is held by the previous pass's end barrier. Here and not in order_draw: the pass may open after that (and order_draw may have just ended the pass for this very draw)
+static void vfree_draw(NvProg *pr) {
+    if (!g_pass_vfree || !(prog_swrites(pr) & 5)) return;
+    [g_enc barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageVertex | MTLStageObject | MTLStageMesh visibilityOptions:resource_vis()]; g_pass_vfree = 0; g_bar_vfree++;
+    PD("M %llu a draw that writes before the fragment stage after a fragment-only barrier: waits for the earlier passes", g_stat_pass);
 }
 static void swrite_note(NvProg *pr) {
     if (!pr) return;
@@ -12975,7 +12990,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     rr_snap(dw,di);
 #endif
     udc_note_draw(pr, raster_mask);
-    swrite_note(pr); order_note(pr);
+    vfree_draw(pr); swrite_note(pr); order_note(pr);
     if (g_mtk.on) { mtk_encode(en); return; }
     if (g_geo_mesh.on) { geo_mesh_encode(en); return; }
     if (g_geo_program) {
@@ -14298,7 +14313,7 @@ void mtl_exec(const uint8_t *p) {
                 PD("I %llu barrier bits %#x%s", g_stat_pass, bits, split ? ": ends the pass (shader writes)" : order ? " (render pass open; a later shader write is ordered after its draws)" : g_enc ? " (render pass open)" : "");
                 if (split) { rp_end(); static int once; if (!once++) MLOG("a game barrier (bits %#x) after shader writes in a draw pass: the pass ends there (first case pass %llu)", bits, (unsigned long long)g_stat_pass); }
                 else if (order) g_pass_order |= (bits & NVN_BARRIER_ORDER_PRIMITIVES_BIT ? 1 : 0) | (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT) ? 2 : 0);
-                if (bits) { g_game_barrier = 1; g_fb_bar++; } break; }   // g_fb_bar: snapshots taken before it are stale (see fb_prepare)
+                if (bits) { g_game_barrier = 1; g_game_bits |= bits | (g_pass_swrite ? NVN_BARRIER_ORDER_PRIMITIVES_BIT : 0); g_fb_bar++; } break; }   // after shader writes the next pass keeps the full barrier (barrier_frag)   // g_fb_bar: snapshots taken before it are stale (see fb_prepare)
             case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: state_op(h.op, a); break;
             default: break;
         }
