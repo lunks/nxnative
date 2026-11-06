@@ -24,12 +24,10 @@ zip_store	.bwav:.webm:.zs:.metallib
 
 # ---- Memory ----
 # The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap.
-# The alias region holds the game's streaming allocator (main+0x7ed630): in Kokiri Forest it keeps about 5,100 address regions with 3.0-3.3 GB mapped, spread up to +4.95 GB
-# (DM_REGIONS). It runs out of address space, not memory: VammManager::AllocateAddressRegion fails and the game aborts after 5-15 minutes outdoors (nn::diag abort, Result 0,
-# sdk+0x16cb54; seen at 2.38 GB, and 4.375 GB is under that spread too). 8 GB leaves room for its fragmentation. The reserve grows with it: the heap region,
-# mem_reserve - 256 MB - mem_alias - mem_stack, is 0x248000000, which holds the 0x18ce00000 request. A 17.6 GiB reservation has not been tried on an iPhone
-mem_reserve	0x468000000
-mem_alias	0x200000000
+# The alias region holds the game's streaming allocator (main+0x7ed630): in Kokiri Forest about 5,100 address regions with 3.0-3.3 GB mapped, reaching +4.95 GB (DM_REGIONS).
+# On the Mac the region is 64 GB of address space whatever this key says (hle_svc.c, e9d71e27): mem_alias sizes the heap, mem_reserve - 256 MB - mem_alias - mem_stack = 0x248000000, which holds the 0x18ce00000 request, and an iPhone's region.
+mem_reserve	0x380000000
+mem_alias	0x118000000
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
