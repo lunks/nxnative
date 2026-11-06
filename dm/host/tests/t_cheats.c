@@ -794,6 +794,51 @@ int main(void) {
         CHECK(sp_apply(wp, nw) == 1 && rd32(0x1300) == 0x11111111u && rd32(0x1304) == 0x33333333u && rd32(0x1308) == 0x77777777u,
               "setting patches: that variable's own condition did not hold: nothing written for it, and the term sees it unset");
         unsetenv("DM_T_CEIL"); unsetenv("DM_T_SOFT"); EP_RESET();
+        // RomFS rows (module romfs, build = the file's path): a parameter file of the rom mount (a folder here) is read, its original word checked, and a changed copy put in the overlay folder
+        // (DM_TEMP + _romfs_overlay) that DM_ROMFS_OVERLAY then names; one value's rows are written whole or not at all, two settings of one file compose, the folder is emptied at each apply
+        {
+            char rom[1100], tmp[1100], d[1200], f[1300], ov[1300]; uint32_t w[4] = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u}, got[4];
+            snprintf(rom, sizeof rom, "%s/rom", root); snprintf(tmp, sizeof tmp, "%s/tmp", root); snprintf(d, sizeof d, "%s/gsys", rom);
+            mkdir(rom, 0755); mkdir(d, 0755); snprintf(f, sizeof f, "%s/a.bin", d);
+            FILE *fp = fopen(f, "wb"); fwrite(w, 4, 4, fp); fclose(fp);
+            snprintf(ov, sizeof ov, "%s_romfs_overlay/gsys/a.bin", tmp);
+            setenv("DM_ROMFS", rom, 1); setenv("DM_TEMP", tmp, 1); unsetenv("DM_ROMFS_OVERLAY");
+            static const setting_patch_t rp[] = {
+                {"DM_T_ROM", "a", "A", "romfs", "gsys/a.bin", 0x4, 0x22222222u, 0xAAAAAAAAu},
+                {"DM_T_ROM", "a", "A", "romfs", "gsys/a.bin", 0xC, 0x44444444u, 0xBBBBBBBBu},
+                {"DM_T_ROM2", "b", "B", "romfs", "gsys/a.bin", 0x0, 0x11111111u, 0xCCCCCCCCu},
+                {"DM_T_ROM3", "bad", "Bad", "romfs", "gsys/a.bin", 0x8, 0x99999999u, 0x1u},       // the file holds another word
+                {"DM_T_ROM3", "bad", "Bad", "romfs", "gsys/a.bin", 0x0, 0x11111111u, 0x2u},
+                {"DM_T_ROM4", "gone", "Gone", "romfs", "gsys/none.bin", 0x0, 0x1u, 0x2u},         // no such file
+                {"DM_T_ROM5", "far", "Far", "romfs", "gsys/a.bin", 0x10, 0x1u, 0x2u},             // past the end
+            };
+            const int nrp = (int)(sizeof rp / sizeof rp[0]);
+            const char *rv[] = {"DM_T_ROM", "DM_T_ROM2", "DM_T_ROM3", "DM_T_ROM4", "DM_T_ROM5"};
+            #define RP_CLEAR() do { for (int k = 0; k < 5; k++) unsetenv(rv[k]); g_sp_napplied = 0; } while (0)
+            #define RP_READ() do { FILE *q = fopen(ov, "rb"); memset(got, 0, sizeof got); if (q) { if (fread(got, 4, 4, q) != 4) got[0] = 0xDEAD; fclose(q); } else got[0] = 0xFFFFFFFFu; } while (0)
+            RP_CLEAR(); setenv("DM_T_ROM", "a", 1);
+            CHECK(sp_apply(rp, nrp) == 2, "setting patches: a RomFS value with two words: both written");
+            RP_READ();
+            CHECK(got[0] == 0x11111111u && got[1] == 0xAAAAAAAAu && got[2] == 0x33333333u && got[3] == 0xBBBBBBBBu, "setting patches: the overlay folder has the changed copy of the file, the other words as they were");
+            { FILE *q = fopen(f, "rb"); uint32_t o[4]; size_t r = fread(o, 4, 4, q); fclose(q); CHECK(r == 4 && !memcmp(o, w, 16), "setting patches: the rom mount's own file is untouched"); }
+            CHECK(getenv("DM_ROMFS_OVERLAY") && !strncmp(getenv("DM_ROMFS_OVERLAY"), tmp, strlen(tmp)) && strstr(getenv("DM_ROMFS_OVERLAY"), "_romfs_overlay"), "setting patches: DM_ROMFS_OVERLAY names the overlay folder first");
+            CHECK(dm_setting_patch_applied("DM_T_ROM", NULL) && !strcmp(dm_setting_patch_applied("DM_T_ROM", NULL), "A"), "setting patches: a RomFS value's label is kept for the host's launch lines");
+            setenv("DM_T_ROM2", "b", 1);
+            CHECK(sp_apply(rp, nrp) == 3, "setting patches: two settings of one file: three words written");
+            RP_READ();
+            CHECK(got[0] == 0xCCCCCCCCu && got[1] == 0xAAAAAAAAu && got[3] == 0xBBBBBBBBu, "setting patches: two settings of one file compose (the second reads the first's copy)");
+            RP_CLEAR(); setenv("DM_T_ROM3", "bad", 1);
+            CHECK(sp_apply(rp, nrp) == 0, "setting patches: a RomFS word that is not the original: the value is refused, nothing of it written");
+            RP_READ();
+            CHECK(got[0] == 0xFFFFFFFFu, "setting patches: the overlay folder is emptied at each apply (no file of an earlier launch)");
+            RP_CLEAR(); setenv("DM_T_ROM4", "gone", 1);
+            CHECK(sp_apply(rp, nrp) == 0, "setting patches: a RomFS file that is not in the rom mount: refused");
+            RP_CLEAR(); setenv("DM_T_ROM5", "far", 1);
+            CHECK(sp_apply(rp, nrp) == 0, "setting patches: a RomFS offset past the end of the file: refused");
+            RP_CLEAR(); setenv("DM_T_ROM", "game", 1);
+            CHECK(sp_apply(rp, nrp) == 0, "setting patches: a value without rows (the game's own) writes no file");
+            RP_CLEAR(); unsetenv("DM_ROMFS"); unsetenv("DM_TEMP"); unsetenv("DM_ROMFS_OVERLAY"); sp_overlay_clear();
+        }
         // a word value (Bananza's native-mfx) whose rows need one upscaler, and a group of extra words chosen by a plain setting with a negative value (DM_NATIVE_MIP_BIAS=-0.5)
         static const setting_patch_t np[] = {
             {"DM_T_RATIO", "native-mfx", "Native (AA)", "main", B1, 0x1300, 0x11111111u, 0x22222222u, "DM_T_UP=metalfx-temporal"},

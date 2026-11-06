@@ -1970,8 +1970,8 @@ static uint8_t *sp_rom_read(const char *path, size_t *n) {
 static int sp_overlay_write(const char *path, const uint8_t *buf, size_t n) {
     char d[1024], p[1536]; sp_overlay_dir(d, sizeof d);
     snprintf(p, sizeof p, "%s/%s", d, path);
-    for (char *q = p + strlen(d) + 1; (q = strchr(q, '/')); q++) { *q = 0; mkdir(p, 0755); *q = '/'; }
     mkdir(d, 0755);
+    for (char *q = p + strlen(d) + 1; (q = strchr(q, '/')); q++) { *q = 0; mkdir(p, 0755); *q = '/'; }
     char t[1560]; snprintf(t, sizeof t, "%s.part", p);
     FILE *f = fopen(t, "wb"); if (!f) return 0;
     int ok = fwrite(buf, 1, n, f) == n; ok = fclose(f) == 0 && ok;
@@ -2093,7 +2093,8 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         int k = snprintf(list + used, sizeof list - used, "%smain+0x%llX %08X -> %08X", i ? ", " : "", (unsigned long long)off, g[i]->orig, w);
         if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
     }
-    LOG("setting %s=%s%s (%s): %d word%s written, %d in RomFS files, %d argument%s given: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, nw, nw == 1 ? "" : "s", nr, na, na == 1 ? "" : "s", list,
+    char rfs[40] = ""; if (nr) snprintf(rfs, sizeof rfs, ", %d in RomFS files", nr);
+    LOG("setting %s=%s%s (%s): %d word%s written%s, %d argument%s given: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, nw, nw == 1 ? "" : "s", rfs, na, na == 1 ? "" : "s", list,
         conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
     if (g_sp_napplied < SP_APPLIED_MAX) {
         snprintf(g_sp_applied[g_sp_napplied].var, sizeof g_sp_applied[0].var, "%s", var); snprintf(g_sp_applied[g_sp_napplied].value, sizeof g_sp_applied[0].value, "%s", val);
