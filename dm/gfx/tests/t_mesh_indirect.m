@@ -7,6 +7,39 @@ module_t *g_mod; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 
+// A command stream of later ops for the scan of ixc_next (ixc_ahead, ixc_run)
+typedef struct { uint8_t b[2048]; size_t n; } ops;
+static void op(ops *c, uint32_t code, const void *a, size_t bytes) {
+    op_hdr h = {code, (uint32_t)(8 + ((bytes + 7) & ~(size_t)7))}; memcpy(c->b + c->n, &h, 8); if (bytes) memcpy(c->b + c->n + 8, a, bytes); c->n += h.size;
+}
+static void op_update(ops *c, uint64_t dst, uint64_t n) { uint64_t a[3] = {dst, n, 0}; op(c, OP_UPDATE_UB, a, sizeof a); }
+static void op_mesh(ops *c, uint64_t ind) { p_draw d = {.prim = DM_PRIM_MESH_TASKS, .ind = ind}; op(c, OP_DRAW, &d, sizeof d); }
+// Conversions made ahead of the draws that use them: an update elsewhere is crossed, one over a record is not, and one over a record already converted drops the table when replay reaches it
+static void scan_cases(uint32_t *guest) {
+    uint64_t r0 = (uintptr_t)guest, r1 = (uintptr_t)(guest + 2), r2 = (uintptr_t)(guest + 4), other = (uintptr_t)(guest + 64);
+    const p_draw d0 = {.prim = DM_PRIM_MESH_TASKS, .ind = r0}, d1 = {.prim = DM_PRIM_MESH_TASKS, .ind = r1}, d2 = {.prim = DM_PRIM_MESH_TASKS, .ind = r2};
+    mtl_sub_begin(); g_ret_n = 0;
+    { ops c = {.n = 0}; op_update(&c, other, 16); op_mesh(&c, r1); op(&c, OP_END, NULL, 0); g_exec_next = c.b; g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial;
+      ixc_run(&d0, NULL); assert(ixc_find(&d0, NULL) && ixc_find(&d1, NULL)); }
+    puts("an update elsewhere does not stop the scan PASS");
+    { ops c = {.n = 0}; op_update(&c, r1, 8); op_mesh(&c, r1); op(&c, OP_END, NULL, 0); g_exec_next = c.b; g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial;
+      ixc_run(&d0, NULL); assert(ixc_find(&d0, NULL) && !ixc_find(&d1, NULL)); }
+    puts("a draw whose record an update writes first waits for that update PASS");
+    { ops c = {.n = 0}; op_update(&c, r0, 8); op_mesh(&c, r1); op(&c, OP_END, NULL, 0); g_exec_next = c.b; g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial;
+      ixc_run(&d0, NULL); assert(ixc_find(&d0, NULL) && !ixc_find(&d1, NULL) && g_ixc_stop == c.b); }
+    puts("an update over a converted record stops the scan and marks where the table goes PASS");
+    { ops c = {.n = 0}; p_dispatch dp = {.x = 1, .y = 1, .z = 1}; op(&c, OP_DISPATCH, &dp, sizeof dp); op_mesh(&c, r1); op(&c, OP_END, NULL, 0); g_exec_next = c.b; g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial;
+      ixc_run(&d0, NULL); assert(ixc_find(&d0, NULL) && !ixc_find(&d1, NULL)); }
+    puts("a dispatch stops the scan PASS");
+    { // ixc_ahead: only the pass being opened, and nothing in a pass with no such draw
+      ops c = {.n = 0}; op_mesh(&c, r1); op(&c, OP_END, NULL, 0); g_exec_next = c.b; g_ixc_n = 0; g_ixc_any = 1; g_ixc_ahead_m = 1; uint64_t n = g_ixc_ahead_n;
+      ixc_ahead(); assert(g_ixc_ahead_n == n + 1 && ixc_find(&d1, NULL) && !ixc_find(&d2, NULL));
+      ixc_ahead(); assert(g_ixc_ahead_n == n + 1);   // already converted
+      g_ixc_ahead_m = 0; g_ixc_n = 0; ixc_ahead(); assert(g_ixc_ahead_n == n + 1 && !ixc_find(&d1, NULL)); g_ixc_ahead_m = 1;
+      ops e = {.n = 0}; op(&e, OP_END, NULL, 0); g_exec_next = e.b; g_ixc_n = 0; ixc_ahead(); assert(g_ixc_ahead_n == n + 1); }
+    puts("a pass converts ahead of a later draw PASS");
+    g_exec_next = NULL; mtl_sub_commit(); mtl_drain();
+}
 int main(void) { @autoreleasepool {
     mtl_init(); size_t bytes = (size_t)getpagesize();
     uint32_t *guest = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -39,8 +72,9 @@ int main(void) { @autoreleasepool {
     assert(!memcmp((const uint8_t *)converted.contents + ao, expected_3, sizeof expected_3));
     assert(!memcmp((const uint8_t *)converted.contents + bo, expected_0, sizeof expected_0));
     assert(!memcmp((const uint8_t *)converted.contents + qo, expected_3, sizeof expected_3));
-    res_remove(seed); mtl_pool_del(guest); mtl_drain(); munmap(guest, bytes);
     puts("GPU-written mesh arguments: grid, first task and zero-work dispatch PASS");
+    scan_cases(guest);
+    res_remove(seed); mtl_pool_del(guest); mtl_drain(); munmap(guest, bytes);
     // DM_NVN_ENC_THREAD records encoders: an indirect mesh draw needs its stand-in, or the first one stops the host (deferred encoding: DmRecEnc has no stand-in)
     assert([DmRecEnc instancesRespondToSelector:@selector(drawMeshThreadgroupsWithIndirectBuffer:threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:)]);
     puts("the encoding thread records an indirect mesh draw PASS");
