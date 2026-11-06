@@ -94,6 +94,15 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertIn('DM_SSAO_QUALITY',other,'the RomFS rows hold on any build')
         for var,values in want.items():
             self.assertEqual((listed[var]['section'],listed[var]['default'],[o[0] for o in listed[var]['options']]),('Effects','game',values),var)
+    def test_ocarina_texture_sharpness(self):   # DM_LOD_BIAS: the profile key lod_bias, a host rule (nvn_mtl.m dm_lod_bias); Bananza has its own DM_MIP_BIAS rows and is not offered it
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':'mac'}):
+            (Path(tmp)/'main.fixups.tsv').write_text('# BUILD_ID\te0f3ccfaf50065ae4ea01eb5aeb13b1a\n')
+            oot=[s for s in settings.build('0400486024DEC000',tmp,'unused')['settings'] if s['env']=='DM_LOD_BIAS']
+            (Path(tmp)/'main.fixups.tsv').write_text(f'# BUILD_ID\t{self.DKB_MAIN}\n')
+            dkb=[s for s in settings.build(self.DKB,tmp,'unused')['settings'] if s['env']=='DM_LOD_BIAS']
+        self.assertEqual(len(oot),1)
+        self.assertEqual((oot[0]['section'],oot[0]['default'],[o[0] for o in oot[0]['options']]),('Resolution','game',['game','nvidia','-1','-1.5','-2']))
+        self.assertEqual(dkb,[])
     def test_star_fox_render_resolution(self):   # argument rows (any build): Render resolution's rates, without the values Star Fox lacks in the row's conflicts and rates, no Dynamic resolution
         r=self.rows('0400E88025B1A000','# BUILD_ID\t'+'0'*32+'\n')
         q=r['DM_UPSCALE_RATIO']

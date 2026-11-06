@@ -181,6 +181,10 @@ Mac only, for Donkey Kong Bananza. How sharp textures are sampled while the game
 - **What to look for:** sharper ground and walls at glancing angles. Fine patterns (grates, fences, stripes) may shimmer, more so without jitter. The game biases its 3D models' textures only: 2D menus and HUD text should look as before.
 - In `env.txt`: `DM_MIP_BIAS=nvidia` (`game`, `nvidia`). The game log names it at launch (`resolution: … mip bias …`, `mip bias: nvidia, rate 1.5 → bias -1.586 (jitter on) at launch`) and each rate's first use (`mip bias: nvidia, rate 1.375 → bias -1.456 (jitter on)`).
 
+### Texture sharpness
+
+Mac only, for Ocarina of Time (Bananza has its own [Texture mip bias](#texture-mip-bias)). The game biases its model textures half a level sharper (-0.5 on every material sampler, at every upscale rate), picked for a small render. **Texture sharpness** lets the host sharpen those samplers further: **Game** (default) leaves the -0.5, **NVIDIA** is the log2 of the upscale rate (-1 at 2.0, -1.58 at 3.0; for dynamic resolution or the game's own range, the middle of it), and -1, -1.5, -2 are fixed. Only the samplers the game itself sharpens change: 2D menus, post-processing, shadow maps and depth pyramids keep their levels. No GPU cost worth measuring (the next mip level is read); fine patterns may shimmer more. In `env.txt`: `DM_LOD_BIAS=nvidia` (`game`, `nvidia`, `-1`, `-1.5`, `-2`). The launch line names it (`texture sharpness: nvidia, rate 2 → DM_LOD_BIAS=-1.000`).
+
 ## Effects
 
 Mac only, for Donkey Kong Bananza, in Advanced settings: the parts of the picture the game draws smaller than its 3D picture.
@@ -459,6 +463,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Ambient occlusion quality (Mac, Ocarina of Time) | `DM_SSAO_QUALITY` | `game` (default), `high`, `higher` |
 | Ambient occlusion resolution (Mac, Ocarina of Time) | `DM_SSAO_RES` | `game` (default), `full` |
 | Frame rate mode (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
+| [Texture sharpness](#texture-sharpness) (Mac, Ocarina of Time) | `DM_LOD_BIAS` | `game` (default), `nvidia`, `-1`, `-1.5`, `-2` |
 | Anisotropic filtering | `DM_ANISO` | `0` off, `2` to `16` |
 | Trilinear filtering | `DM_TRILINEAR` | `1`, `0` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |
