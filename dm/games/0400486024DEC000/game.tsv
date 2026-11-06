@@ -29,7 +29,6 @@ zip_store	.zs:.bwav:.webm:.metallib
 # On the Mac the region is 64 GB of address space whatever this key says (hle_svc.c, e9d71e27): mem_alias sizes the heap, mem_reserve - 256 MB - mem_alias - mem_stack = 0x248000000, which holds the 0x18ce00000 request, and an iPhone's region.
 mem_reserve	0x380000000
 mem_alias	0x118000000
-mem_map_limit	on
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
@@ -56,7 +55,6 @@ tex_dirty_upload	off
 camera_mats	vertex 0 0x0 0x30
 # Dynamic resolution reads the GPU time between two timestamp reports of the frame (main+0x5a8f0): with one time for the whole submission it is 0 and the rate never moves. At fixed 720p
 # in Hyrule Field the frame time is the same (README.md, Render resolution)
-gpu_timestamps	segment
 # Metal encoding on its own thread: in Link's house at rate 3.0 it takes MetalFX's temporal scaler from 30.7 to 25.4 ms a frame (GPU p50 24.2 to 17.9), and the game's own upscaler stays at 18.7
 # (README.md, MetalFX's frame time)
 # The resolution chain the host logs at launch (loader.c res_chain_log) and the launcher's render sizes (settings.py rate_base): the upscaler's output docked (the 2560x1440 window: ResolutionParam's
