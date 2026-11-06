@@ -1430,7 +1430,9 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder_t *s = (const win_builder_t *)b; win_t *o = (win_t *)w;
     memset(o, 0, sizeof *o); o->magic = MAGIC('W', 'I', 'N', 'D'); o->native = s->native; o->ntex = s->ntex; o->interval = s->interval;
     memcpy(o->tex, s->tex, sizeof o->tex);
-    for (int i = 0; i < o->ntex; i++) if (o->tex[i]) mtl_xv_window_tex(CTX(o->tex[i])->serial);
+    // A window texture is the GPU's before anything is drawn into it: it leaves the CPU-written list (ft_add), as the present thread, which may not upload (up_owner_check), resolves it.
+    // A game can present one no submission has written (DRAGON QUEST XI S does, three times), and a CPU write in its pages would then have made it CPU-written (nvn_ft_poll, mtl_tex_gpu_owned)
+    for (int i = 0; i < o->ntex; i++) if (o->tex[i]) { mtl_xv_window_tex(CTX(o->tex[i])->serial); ft_del(CTX(o->tex[i])->serial); }
     if (o->ntex && o->tex[0]) mtl_note_window_size((int)CTX(o->tex[0])->d.width, (int)CTX(o->tex[0])->d.height);   // the upscaler's output is logged against it (nvn_mtl.m up_out_note)
     LOG("[nvn] WindowInitialize swap chain %d textures, interval %d, first %dx%d format %#x", o->ntex, o->interval,
         o->ntex && o->tex[0] ? (int)CTX(o->tex[0])->d.width : 0, o->ntex && o->tex[0] ? (int)CTX(o->tex[0])->d.height : 0, o->ntex && o->tex[0] ? CTX(o->tex[0])->d.format : 0);
