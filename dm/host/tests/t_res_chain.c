@@ -3,6 +3,7 @@
 // GAME=040074A01BF12000 (its res_chain); another profile without the key logs nothing. Then what single_upscale_apply writes into the state page for DM_SINGLE_UPSCALE (no screen
 // here: match display falls back to the game's window). Expectations are written by hand.
 #include "../loader.c"
+void mtl_present_screen(uint32_t w, uint32_t h) { (void)w; (void)h; }   // a taller screen for the present: nothing here presents
 #include <assert.h>
 
 struct dm_flags g_flag;

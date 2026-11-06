@@ -1,6 +1,7 @@
 // The display a game is told of (hle_vi.c): the largest display buffer (QueryDisplayBufferMaxResolution) and the largest layer ListDisplays gives, handheld and docked on
 // screens of a few sizes, for a Switch 2 build and a Switch 1 one. Expectations written by hand: a Switch 1's layer is 1920x1080; a Switch 2's is the largest buffer
 #include "../../gfx/hle_vi.c"
+void mtl_present_layer(uint32_t w, uint32_t h) { (void)w; (void)h; }   // the shape of a sized layer: nothing in these checks presents
 static int g_mode = 1, g_ounce = 1;
 extern int g_w, g_h;   // the screen front_display_pixels reports (t_vi_display_front.c, its own file: hle_vi.c has a weak one)
 int dm_opmode(void) { return g_mode; }
