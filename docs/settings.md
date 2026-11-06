@@ -5,7 +5,7 @@ The screen before the game starts shows the settings the game supports. A settin
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Game language](#game-language), [Picture](#picture), [Picture shape](#picture-shape), [Frame-rate counter](#frame-rate-counter)
 - [Resolution](#resolution): [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Output resolution](#output-resolution), [Render resolution](#render-resolution), [Dynamic resolution](#dynamic-resolution), [Softest](#softest)
-- [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Anisotropic filtering](#anisotropic-filtering), [Trilinear filtering](#trilinear-filtering)
+- [Effects](#effects): [Effects resolution](#effects-resolution), [Shadow resolution](#shadow-resolution), [Shadow map size](#shadow-map-size), [Ocarina of Time's shadows and ambient occlusion](#ocarina-of-times-shadows-and-ambient-occlusion), [Anisotropic filtering](#anisotropic-filtering), [Trilinear filtering](#trilinear-filtering)
 - [Frame rate (Mac)](#frame-rate-mac): [Frame rate mode](#frame-rate-mode), [Frame interpolation](#frame-interpolation)
 - [HDR](#hdr)
 - [Controls](#controls): [Touch feedback](#touch-feedback), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff)
@@ -198,6 +198,19 @@ Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advan
 Mac only, for a game whose profile has the patch (Donkey Kong Bananza), in Advanced settings. **Game default** keeps the game's own size (2048 in Donkey Kong Bananza); a larger size gives sharper shadow edges for more GPU time and memory, and with **Shadow resolution** at Full you get all of it. Larger sizes are untested: if shadows look cut off or the game crashes, set it back to **Game default**. The game's render-target memory grows with it ([Graphics memory](#graphics-memory)). It changes the game's code when the game starts.
 
 The game's shadow cheats, if you have them, are turned off while one of these settings is not **Game default**: the setting wins.
+
+### Ocarina of Time's shadows and ambient occlusion
+
+Mac only, for The Legend of Zelda: Ocarina of Time, in Advanced settings. Every row keeps the game's own value as **Game default** and raises quality above it; none switches a shadow off. They change the game's parameter files as the game reads them, not its code: the app's files stay as they are, and a different version of a file refuses the setting (a red line in the log).
+
+- **Shadow distance** (`DM_SHADOW_DISTANCE`): **Far (1.5x)** and **Farther (2x)** move the cascade splits (32, 64 and 200 units in the game) and the distance where shadows fade out (80 to 200) outwards. The same shadow maps cover more ground, so far shadows get softer unless **Shadow map size** is raised too.
+- **Shadow map size** (`DM_SHADOW_CASCADE_SIZE`): the cascades' texture size, 1024 in the game's file; **1536** and **2048**. Cost: GPU time for the cascades (about 0.4 to 0.9 ms of a 7 to 14 ms frame at the game's size, mostly draws) and memory (a 32-bit depth map per cascade).
+- **Shadow filtering** (`DM_SHADOW_FILTER`): **Smooth** takes more filter taps in the screen-space shadow pass; **Smoother** also widens the filter.
+- **Character shadow** (`DM_LOCAL_SHADOW`): **Sharp** draws the soft shadow under Link and other characters at double resolution with less blur.
+- **Ambient occlusion quality** (`DM_SSAO_QUALITY`): **High** and **Higher** take more samples (and **Higher** one more blur pass).
+- **Ambient occlusion resolution** (`DM_SSAO_RES`): **Full-resolution depth** computes it from the full-size depth instead of the reduced one.
+
+The values, the files they live in and what was and was not run are in [the game's note](../dm/games/0400486024DEC000/README.md#shadow-settings-static-analysis-not-played-yet).
 
 ### Graphics memory
 
@@ -439,6 +452,12 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Frame interpolation (Mac) | `DM_MFX_INTERP` | `1`, `0` |
 | Shadow resolution (Mac) | `DM_SHADOW_RES` | `game` (default), `full` |
 | Shadow map size (Mac) | `DM_SHADOW_MAP_SIZE` | `game` (default), `3072`, `4096` |
+| [Shadow distance](#ocarina-of-times-shadows-and-ambient-occlusion) (Mac, Ocarina of Time) | `DM_SHADOW_DISTANCE` | `game` (default), `1.5`, `2` |
+| Shadow map size (Mac, Ocarina of Time) | `DM_SHADOW_CASCADE_SIZE` | `game` (default), `1536`, `2048` |
+| Shadow filtering (Mac, Ocarina of Time) | `DM_SHADOW_FILTER` | `game` (default), `smooth`, `smoother` |
+| Character shadow (Mac, Ocarina of Time) | `DM_LOCAL_SHADOW` | `game` (default), `sharp` |
+| Ambient occlusion quality (Mac, Ocarina of Time) | `DM_SSAO_QUALITY` | `game` (default), `high`, `higher` |
+| Ambient occlusion resolution (Mac, Ocarina of Time) | `DM_SSAO_RES` | `game` (default), `full` |
 | Frame rate mode (Mac) | `DM_FPS_LOCK` | `game` (default), `60`, `30` |
 | Anisotropic filtering | `DM_ANISO` | `0` off, `2` to `16` |
 | Trilinear filtering | `DM_TRILINEAR` | `1`, `0` |

@@ -118,6 +118,27 @@ MetalFX temporal, headless, 3,000 frames after the load on an idle Mac, frame ti
 
 The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
 
+## Shadow settings (static analysis, not played yet)
+
+A frame outdoors shows blocky shadow shapes on a distant tower, a dark band across stone slabs and a soft dark patch under Link. What the game draws for shadows, from a GPU profile of a walk (`DM_NVN_GPUPROF`, scene 1280x720; the sizes are the same at 2560x1440, so shadows do not follow the render size): three 1600x1600 D32 depth passes a frame (the cascades; 104, 182 and 779 draws at a stage start, 15 to 600 later, 60 to 270 us each), one 2400x2400 (2 draws, 40 to 100 us), one 768x768 (26 draws, about 70 us; 1920x1920 in some scenes) and small 384x384 ones. Together 0.4 to 0.9 ms of a 7 to 14 ms frame: the near cascades cost draws, not fill. The cascade maps are 1600 wide while the file says 1024 (1.5625 times; 2400 is 1536 times 1.5625): where the game applies that factor is not found yet.
+
+The values are BYML parameters in the RomFS (plain `.bgyml`, no compression; `gsys` / `agl` ParamIO reads them into per-scene structs, readers at `main+0x3566xxx`, `0x34dc7bc`, `0x34e24bc`), not words of code. No symbols name their consumers, so the settings patch the files, through setting patch rows with module `romfs` ([Setting patches](../README.md#setting-patches)): the host checks each original word in the file at launch and serves a changed copy of the file through `DM_ROMFS_OVERLAY`. Offsets are byte offsets in the file of a value stored inline.
+
+| File (RomFS) | Parameter (offset) | Game | Used by |
+|---|---|---|---|
+| `gsys/ModelSceneConfigParam/Main` | `DepthShadowNear01..03` (0x1f74, 0x1f7c, 0x1f84) | 32, 64, 200 (cascade splits; Near00 2, Far0 3000; four values for three cascades, so a fourth cascade cannot be added) | `DM_SHADOW_DISTANCE` |
+| same | `DepthShadowTexWidth`, `DepthShadowTexHeight` (0x1fe4, 0x1fdc) | 1024 | `DM_SHADOW_CASCADE_SIZE` |
+| same | `SsaoIsDepthFull` (0x2484) | false | `DM_SSAO_RES` |
+| `agl/ShadowPrePassParam/MainField` | `DynamicShadowFarFadeStart`, `End` (0x2d8, 0x2d0) | 80, 200 (Common, for the title and viewer, has 100 and 1000) | `DM_SHADOW_DISTANCE` |
+| same | `IsPcfSampleNum` (0x2f8), `PcfWidth` (0x390) | 0 (Kokiri Forest's file sets 2), 2.0 | `DM_SHADOW_FILTER` |
+| `gsys/ModelSceneShadowParam/MainField` (Kokiri Forest and Kakariko inherit it) | `SSAO/SamplePairNum` (0x4e8), `AlchemySamplePairNum` (0x4a0), `BlurNum` (0x4b0) | 3, 5, 2 | `DM_SSAO_QUALITY` |
+| `System/GameGraphics/LocalDepthShadowParam/Default` | `LocalDepthShadowSetting[1,2]`: `ResolustionMaginify` (0x184), `BlurWidth` (0x174) | 0.3, 3.5 (setting 0: 2.0, no magnify) | `DM_LOCAL_SHADOW` |
+
+Rows (all in Advanced settings, the game's value first, nothing switched off): Shadow distance 1.5x and 2x (splits 48, 96, 300 and 64, 128, 400; fade 120 to 300 and 160 to 400), Shadow map size 1536 and 2048, Shadow filtering Smooth (`IsPcfSampleNum` 2, a value Kokiri Forest's own file already uses) and Smoother (also `PcfWidth` 3.0), Character shadow Sharp (magnify 0.6, blur 2.0), Ambient occlusion quality High (3 to 5 pairs, Alchemy 5 to 8) and Higher (8, 12, one more blur), Ambient occlusion resolution Full-resolution depth.
+
+- Not run: the rows were checked against the files (`game.py header`, the host test with a folder as the rom mount) but no frame was drawn with them. Open, and why a row may do nothing or break: the 1024 to 1600 factor; whether the shader variants for a larger PCF or SSAO sample count exist (the game's own files use `IsPcfSampleNum` 2 and `SamplePairNum` 2 to 5, nothing above); whether the render-target memory holds 2048 (the maps would be 3200 wide if the factor is linear, 41 MB each); whether the character shadow's tier 0 (blur 2.0, full resolution) is the one Link uses.
+- Not reached: the baked far shadow (`StaticSdwWidth` 4096, `StaticShadowFarFadeStart` 100 and `End` 1000) is the likely source of the blocky shapes on the tower; a larger one needs the memory and the bake path checked first. Cascade count is fixed by the four split values.
+
 ## Frame rate
 
 Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk.sh` in the work folder).
