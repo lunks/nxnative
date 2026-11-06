@@ -787,8 +787,10 @@ static void big_moved(int i) {   // caller holds g_mu: entry i has a new index
         return; }
 }
 static int sub_open(void);
+static void pkg_alias_drop_range(uintptr_t lo, uintptr_t hi);
 void mtl_pool_del(const void *mem) {
     treg_pool_changed(0);
+    uintptr_t drop_lo = UINTPTR_MAX, drop_hi = 0;
     pthread_mutex_lock(&g_mu);
     // The no-copy buffer goes through deferred release (out of the residency set and unreferenced after submitted commands complete). It used to be removed only from g_keep while the residency set still held a strong reference: after the pool was freed the buffer stayed alive wrapping that guest memory,
     // and a new pool at the same address wrapped it again. Engage's title demo cycles scenes; GPU allocated grew to 5.4 GB and resident memory to 3.6 GB in 850 s.
@@ -797,19 +799,21 @@ void mtl_pool_del(const void *mem) {
     @autoreleasepool {
     int bg = -1; for (int k = 0; k < g_nbig; k++) if (g_big[k].mem == mem) bg = k;
     for (int i = 0; i < g_npool; i++)
-        if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; defer_obj_at(b, 0, g_fence + sub_open()); if (g_pools[i].res) g_pool_res_n--;   // no submission open: none can reach it now that it left the table (defer_idle)
+        if (g_pools[i].key == mem) { drop_lo = MIN(drop_lo, g_pools[i].lo); drop_hi = MAX(drop_hi, g_pools[i].hi); id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; defer_obj_at(b, 0, g_fence + sub_open()); if (g_pools[i].res) g_pool_res_n--;   // no submission open: none can reach it now that it left the table (defer_idle)
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
             [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
             if (i < g_npool) big_moved(i);   // the entry moved into this place
             if (bg < 0) break;   // a large pool has an entry per chunk
             i--; }
     if (bg >= 0) {
+        drop_lo = MIN(drop_lo, g_big[bg].lo); drop_hi = MAX(drop_hi, g_big[bg].hi);
         for (id<MTLBuffer> b in g_big[bg].old) defer_obj_release(b);
         for (int i = g_upk_n - 1; i >= 0; i--) if (g_upk[i].a >= g_big[bg].a && g_upk[i].b <= g_big[bg].b) upk_drop(i, g_fence + sub_open());
         free(g_big[bg].chunk); g_big[bg] = g_big[--g_nbig]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); atomic_fetch_sub(&g_big_n, 1);
     }
     }
     pthread_mutex_unlock(&g_mu);
+    if (drop_hi > drop_lo) pkg_alias_drop_range(drop_lo, drop_hi);
 }
 
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
@@ -2400,7 +2404,8 @@ enum { PKG_READERS = 4 };
 // Unlike that PR's table this one is bounded, as each entry is a private copy of guest memory: the oldest go past g_dev's working set / 16, and all that no live object holds at the GPU memory
 // guard. An entry that goes names its finalized readers, whose IDs hold views of it. Dirty pages are checked as for any packaged texture, so an old entry is re-uploaded, never read stale. Under g_smu
 static nvn_hmap g_pkg_alias = {.klen = sizeof(alias_key)};
-static alias_key *g_pkg_order; static uint32_t g_pkg_first, g_pkg_end, g_pkg_cap;   // keys oldest first; one that left the table is passed over
+typedef struct { alias_key k; uintptr_t mem; } pkg_kept;   // mem: the storage's address, as a pool's memory can go without its pool object (pkg_alias_drop_range)
+static pkg_kept *g_pkg_order; static uint32_t g_pkg_first, g_pkg_end, g_pkg_cap;   // keys oldest first; one that left the table is passed over
 static uint64_t g_pkg_kept_bytes, g_pkg_kept_hits, g_pkg_kept_gone, g_pkg_kept_limit;   // limit: for a test, else the working set / 16
 static int pkg_alias_ok(const tex_t *t) { return t->pool && t->mem && t->pool->magic == MAGIC('P', 'O', 'O', 'L') && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL); }
 static void pkg_alias_reader(NvPkg *pk, uint64_t serial) {
@@ -2416,7 +2421,7 @@ static void pkg_alias_evict(const alias_key *k) {
     pk->nreaders = 0;
     defer_obj_release(pk);
 }
-static void pkg_alias_put(const alias_key *k, NvPkg *pk) {
+static void pkg_alias_put(const alias_key *k, NvPkg *pk, const void *mem) {
     id old = hm_get_id(&g_pkg_alias, k);
     if (old == pk) return;
     if (old) pkg_alias_evict(k);
@@ -2426,20 +2431,27 @@ static void pkg_alias_put(const alias_key *k, NvPkg *pk) {
         if (g_pkg_first > g_pkg_cap / 2) { memmove(g_pkg_order, g_pkg_order + g_pkg_first, (g_pkg_end - g_pkg_first) * sizeof *g_pkg_order); g_pkg_end -= g_pkg_first; g_pkg_first = 0; }
         else { g_pkg_cap = g_pkg_cap ? g_pkg_cap * 2 : 1024; g_pkg_order = realloc_or_die(g_pkg_order, g_pkg_cap * sizeof *g_pkg_order, "the kept packaged textures"); }
     }
-    g_pkg_order[g_pkg_end++] = *k;
+    g_pkg_order[g_pkg_end++] = (pkg_kept){*k, (uintptr_t)mem};
     uint64_t limit = g_pkg_kept_limit ? g_pkg_kept_limit : g_dev.recommendedMaxWorkingSetSize / 16;
-    while (g_pkg_kept_bytes > limit && g_pkg_first + 1 < g_pkg_end) pkg_alias_evict(&g_pkg_order[g_pkg_first++]);
+    while (g_pkg_kept_bytes > limit && g_pkg_first + 1 < g_pkg_end) pkg_alias_evict(&g_pkg_order[g_pkg_first++].k);
 }
-static void pkg_alias_drop_pool(const void *pool) {
-    int any = 0; for (uint32_t i = g_pkg_first; i < g_pkg_end && !any; i++) any = g_pkg_order[i].pool == (uint64_t)(uintptr_t)pool;
+// Entries of a pool object, or (pool NULL) over the memory [lo, hi), and the keys that left in other ways
+static void pkg_alias_drop(const void *pool, uintptr_t lo, uintptr_t hi) {
+    #define PKG_GOES(e) (pool ? (e)->k.pool == (uint64_t)(uintptr_t)pool : (e)->mem >= lo && (e)->mem < hi)
+    int any = 0; for (uint32_t i = g_pkg_first; i < g_pkg_end && !any; i++) any = PKG_GOES(&g_pkg_order[i]);
     if (!any) return;
-    uint32_t w = g_pkg_first;   // and the keys that left in other ways
+    uint32_t w = g_pkg_first;
     for (uint32_t i = g_pkg_first; i < g_pkg_end; i++) {
-        if (g_pkg_order[i].pool == (uint64_t)(uintptr_t)pool) pkg_alias_evict(&g_pkg_order[i]);
-        else if (nvn_hm_get(&g_pkg_alias, &g_pkg_order[i])) g_pkg_order[w++] = g_pkg_order[i];
+        if (PKG_GOES(&g_pkg_order[i])) pkg_alias_evict(&g_pkg_order[i].k);
+        else if (nvn_hm_get(&g_pkg_alias, &g_pkg_order[i].k)) g_pkg_order[w++] = g_pkg_order[i];
     }
     g_pkg_end = w;
+    #undef PKG_GOES
 }
+static void pkg_alias_drop_pool(const void *pool) { pkg_alias_drop(pool, 0, 0); }
+// A pool's memory goes (mtl_pool_del): nvnMemoryPoolFinalize has taken its entries by pool object, but a key names that object, whose address a later pool can have, and an entry's dirty span is
+// gone with the range: a stale entry would pass for a clean texture at the same pool, offset and description. Caller does not hold g_smu
+static void pkg_alias_drop_range(uintptr_t lo, uintptr_t hi) { pthread_mutex_lock(&g_smu); pkg_alias_drop(NULL, lo, hi); pthread_mutex_unlock(&g_smu); }
 // The texture a finalized serial reads, which no table of serials holds
 static __unsafe_unretained NvPkg *pkg_alias_of(const tex_t *t) {
     if (!pkg_alias_ok(t)) return nil;
@@ -2454,7 +2466,7 @@ static int pkg_alias_keep(const tex_t *t) {
     if (![cur isKindOfClass:[NvPkg class]]) return 0;
     NvPkg *pk = cur; if (pk->sparse || pk->ps) return 0;
     alias_key k; tex_alias_key(t, &k);
-    pkg_alias_put(&k, pk); pkg_alias_reader(pk, t->serial);
+    pkg_alias_put(&k, pk, t->mem); pkg_alias_reader(pk, t->serial);
     held_add((__bridge void *)cur, -1);
     defer_obj_unref(pk);
     hm_del_id(&g_by_serial, &t->serial);
@@ -4059,7 +4071,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "upload");
         if (!live && !pk->sparse) {   // a finalized serial: kept by storage, with no ghost entry to churn
             alias_key ak; tex_alias_key(t, &ak);
-            pthread_mutex_lock(&g_smu); pkg_alias_put(&ak, pk); pkg_alias_reader(pk, t->serial); pthread_mutex_unlock(&g_smu);
+            pthread_mutex_lock(&g_smu); pkg_alias_put(&ak, pk, t->mem); pkg_alias_reader(pk, t->serial); pthread_mutex_unlock(&g_smu);
             g_stat_ghost_skip++;
             return pk->view ? pk->view : pk->tex;
         }
@@ -5862,7 +5874,7 @@ static unsigned pkg_trim(void) {
 static unsigned pkg_alias_trim(void) {
     unsigned n = 0;
     pthread_mutex_lock(&g_smu);
-    for (uint32_t i = g_pkg_first; i < g_pkg_end; i++) { id o = hm_get_id(&g_pkg_alias, &g_pkg_order[i]); if (o && !serial_table_holds((__bridge void *)o)) { pkg_alias_evict(&g_pkg_order[i]); n++; } }
+    for (uint32_t i = g_pkg_first; i < g_pkg_end; i++) { id o = hm_get_id(&g_pkg_alias, &g_pkg_order[i].k); if (o && !serial_table_holds((__bridge void *)o)) { pkg_alias_evict(&g_pkg_order[i].k); n++; } }
     pthread_mutex_unlock(&g_smu);
     return n;
 }
