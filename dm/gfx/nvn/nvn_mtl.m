@@ -3616,6 +3616,23 @@ static void sparse_gpu_wrote(const tex_t *t) {
     for (size_t i = 0, n = (size_t)s->layers * s->per_layer; i < n; i++) if (s->slot[i]) { sp_tl *e = sp_tl_of(s->slot[i] - 1); if (e->p) e->drawn = 1; }
     pthread_mutex_unlock(&g_sp_mu);
 }
+// What the GPU has written each texture through (GW_*), by serial. A texture made without a CPU fill has render-target use from the start (tex_desc), so its usage does not say whether the
+// GPU ever drew into it: mtl_tex_gpu_owned keeps a texture's GPU content from a CPU rewrite (nvn_ft_poll in hle_nvn.c) only once the GPU has written it. Ocarina of Time writes its 260x260
+// terrain tiles (R32F height, RGBA8 blend and hole maps) from the CPU into textures bound before their first fill, as tile slots are reused: with the usage alone as the test every such
+// write was dropped and the ground showed flat blue holes
+enum { GW_ATTACH = 1, GW_IMAGE = 2, GW_COPY = 4, GW_CLEAR = 8, GW_DLSS = 16, GW_DRAWTEX = 32 };
+static nvn_hmap g_gpuwt = {.klen = 8}; static pthread_mutex_t g_gpuwt_mu = PTHREAD_MUTEX_INITIALIZER;   // serial → its GW_* kinds, dropped with the texture (mtl_tex_release)
+static void tex_gpu_wrote(const tex_t *t, unsigned kind) {
+    if (!t || !t->serial) return;
+    pthread_mutex_lock(&g_gpuwt_mu);
+    uintptr_t had = (uintptr_t)nvn_hm_get(&g_gpuwt, &t->serial);
+    if ((had & kind) != kind) nvn_hm_put(&g_gpuwt, &t->serial, (void *)(had | kind));
+    pthread_mutex_unlock(&g_gpuwt_mu);
+    sparse_gpu_wrote(t);
+}
+unsigned mtl_tex_gpu_writes(uint64_t serial) {
+    pthread_mutex_lock(&g_gpuwt_mu); unsigned r = (unsigned)(uintptr_t)nvn_hm_get(&g_gpuwt, &serial); pthread_mutex_unlock(&g_gpuwt_mu); return r;
+}
 // A GPU texture in a sparse pool made placement sparse (sparse_make with gpu): nil when it does not qualify
 static id<MTLTexture> sparse_gpu_make(const tex_t *t) {
     id<MTLTexture> made = nil; NvSparse *ps = sparse_make(t, 1, &made); if (!ps) return nil;
@@ -3836,11 +3853,14 @@ static void cpu_tex_drop_pool(const void *pool) {
     const pool_t *p = pool; if (p->mem && p->size) gpuw_drop((uint64_t)(uintptr_t)p->mem, (uint64_t)(uintptr_t)p->mem + p->size);
 }
 static char g_bcrt_gpu_key;   // on a block-compressed texture drawn through a shadow (bcrt_attach): the GPU wrote it, though its usage cannot say so
-// The GPU owns the texture's content: its host texture was made to be rendered into or written by shaders (nvn_ft_poll in hle_nvn.c never re-uploads such a texture from guest memory)
+// The GPU owns the texture's content: its host texture can be rendered into or written by shaders, and the GPU has written it (tex_gpu_wrote); nvn_ft_poll in hle_nvn.c never re-uploads
+// such a texture from guest memory. One made for that use but never written holds what the CPU gives it, like any other
 int mtl_tex_gpu_owned(uint64_t serial) {
     __unsafe_unretained id o = tex_get(serial);
     if (!o || ![o conformsToProtocol:@protocol(MTLTexture)]) return 0;
-    return (((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) != 0 || objc_getAssociatedObject(o, &g_bcrt_gpu_key) != nil;
+    if (objc_getAssociatedObject(o, &g_bcrt_gpu_key) != nil) return 1;
+    if (!(((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite))) return 0;
+    return mtl_tex_gpu_writes(serial) != 0;
 }
 void mtl_tex_cpu_written(const tex_t *t) {
     uint64_t serial = t->serial;
@@ -4342,6 +4362,7 @@ void mtl_tex_release(tex_t *t) {
         if (vm_read_overwrite(mach_task_self(), (vm_address_t)(uintptr_t)own, sizeof seen, (vm_address_t)(uintptr_t)&seen, &got) == KERN_SUCCESS && got == sizeof seen && seen.magic == MAGIC('T', 'E', 'X', 0) && seen.serial == t->serial) { pthread_mutex_unlock(&g_smu); return; }
     }
     int was_live = nvn_hm_del(&g_tex_live, &t->serial) != NULL; free(nvn_hm_del(&g_image_desc, &t->serial)); nvn_hm_del(&g_twin, &t->serial);
+    pthread_mutex_lock(&g_gpuwt_mu); nvn_hm_del(&g_gpuwt, &t->serial); pthread_mutex_unlock(&g_gpuwt_mu);
     pthread_mutex_lock(&g_cpu_tex_mu);
     void *pool = nvn_hm_del(&g_cpu_tex, &t->serial);
     if (pool && t->pool && t->mem) nvn_hm_put(&g_cpu_tex_retired, &t->serial, pool);
@@ -4951,7 +4972,7 @@ static NSUInteger att_layers(MTLRenderPassAttachmentDescriptor *a, const view_t 
     return MAX(n, 1u);
 }
 static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const view_t *v, int has_v) {
-    id<MTLTexture> base = tex_mtl(t); sparse_gpu_wrote(t);
+    id<MTLTexture> base = tex_mtl(t); tex_gpu_wrote(t, GW_ATTACH);
     // A texture made without render-target use (packaged or CPU-written, uploaded from its storage) drawn into: give it that use, as a clear of one does (clear_tex). Metal's validation
     // stops at such an attachment; without it Tears of the Kingdom drew its terrain normal maps into textures made for reading only
     if (base && !(base.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(base.pixelFormat) && base.sampleCount == 1) base = tex_upgrade(t, base, MTLTextureUsageRenderTarget, base.pixelFormat);
@@ -9443,7 +9464,7 @@ static void image_prepare(NvProg *pr, unsigned stages) {
             g_treg[tid].t.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
             tex_t image = g_treg[tid].t; int written = b->rw || b->atom;
             if (written) mtl_tex_gpu_written(image.pool, image.mem, image.L.size);
-            id<MTLTexture> base = tex_mtl(&image); if (written) sparse_gpu_wrote(&image);
+            id<MTLTexture> base = tex_mtl(&image); if (written) tex_gpu_wrote(&image, GW_IMAGE);
             while (base.parentTexture) base = base.parentTexture;
             int reinterpret = b->atom && b->dpf != NVN_DPF_FLOAT && tex_atomic_alias(base);
             int need_pfv = b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(base.pixelFormat) != b->dpf && !(base.usage & MTLTextureUsagePixelFormatView);
@@ -13458,7 +13479,7 @@ static void mirror_rb_land(void *p) {   // the submission's completion handler
 }
 static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
     if (c->tex) zskip_del(c->tex->serial);
-    id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
+    id<MTLTexture> t = tex_mtl(c->tex); tex_gpu_wrote(c->tex, GW_COPY);
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
@@ -13604,7 +13625,7 @@ static void draw_tex(const p_draw_tex *c) {
     for (int k = 0; k < R.rt.n && k < 8; k++) {
         const tex_t *rt = R.rt.color[k]; if (!rt) continue;
         uint32_t wm = (S.chmask.mask >> (4 * k)) & 0xf; if (!wm) continue;
-        id<MTLTexture> d = tex_mtl(rt); uint64_t ser; int lv, sl; rt_sub(&R.rt, k, &ser, &lv, &sl);
+        id<MTLTexture> d = tex_mtl(rt); tex_gpu_wrote(rt, GW_DRAWTEX); uint64_t ser; int lv, sl; rt_sub(&R.rt, k, &ser, &lv, &sl);
         if (!d || fmt_int_or_ds(d.pixelFormat) || mtl_fmt_block(d.pixelFormat) || !(d.usage & MTLTextureUsageRenderTarget)) { RED_ONCE(125, "DrawTexture: target %d (format %lu) not drawn", k, d ? (unsigned long)d.pixelFormat : 0ul); continue; }
         NSNumber *pk = @(d.pixelFormat * 16 + wm);
         id<MTLRenderPipelineState> ps = pso[pk];
@@ -13653,7 +13674,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         int ss = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, ds = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
         if (zskip_has(c->src->serial, sl, ss)) zskip_add(c->dst->serial, dl, ds);
     }
-    id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst); sparse_gpu_wrote(c->dst);
+    id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst); tex_gpu_wrote(c->dst, GW_COPY);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
@@ -13801,7 +13822,7 @@ static void dlss_eval(const p_dlss *c) {
     id<MTLTexture> col = c->tex[DLSS_COLOR] ? tex_mtl(c->tex[DLSS_COLOR]) : nil, dep = c->tex[DLSS_DEPTH] ? tex_mtl(c->tex[DLSS_DEPTH]) : nil, mot = c->tex[DLSS_MOTION] ? tex_mtl(c->tex[DLSS_MOTION]) : nil,
                    out = c->tex[DLSS_OUTPUT] ? tex_mtl(c->tex[DLSS_OUTPUT]) : nil;
     if (!col || !out) { static int once; if (!once++) MLOG("[RED] DLSS evaluated without %s", col ? "an output" : "an input colour"); return; }
-    zskip_del(c->tex[DLSS_OUTPUT]->serial); sparse_gpu_wrote(c->tex[DLSS_OUTPUT]);
+    zskip_del(c->tex[DLSS_OUTPUT]->serial); tex_gpu_wrote(c->tex[DLSS_OUTPUT], GW_DLSS);
     NSUInteger iw = c->iw > 0 ? (NSUInteger)c->iw : col.width, ih = c->ih > 0 ? (NSUInteger)c->ih : col.height;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     if (up_mfx_on() == 2 && DM_GAME_UPSCALER_N && dep && mot && iw == out.width && ih == out.height && !g_dlss_fwd.refused[0]) {   // kept for the upscaler (above): the colour as it is meanwhile
@@ -13873,7 +13894,7 @@ static unsigned mtl_pf_chmask(MTLPixelFormat pf) {
 static void clear_tex_tri(id<MTLTexture> t, unsigned lv, unsigned l0, const p_clear_tex *c);
 static void clear_tex(const p_clear_tex *c) {
     if (c->tex) zskip_del(c->tex->serial);
-    id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
+    id<MTLTexture> t = tex_mtl(c->tex); tex_gpu_wrote(c->tex, GW_CLEAR);
     PD("X ser=%llu view format %#x region %d,%d,%d %dx%dx%d mask %#x %s %g,%g,%g,%g", c->tex ? c->tex->serial : 0ull, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
        c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);
     if (!t) return;
