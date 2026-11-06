@@ -179,6 +179,11 @@ int main(void) {
             EXPECT("no pool: flags", 0, P(nvnMemoryPoolGetFlags)(NULL));
             EXPECT("no pool: map", 0, (uintptr_t)P(nvnMemoryPoolMap)(NULL));
             EXPECT("no pool: size", 0, P(nvnMemoryPoolGetSize)(NULL));
+            EXPECT("no pool: buffer address", 0, P(nvnMemoryPoolGetBufferAddress)(NULL));
+            NVNbufferBuilder none = {0}; P(nvnBufferBuilderSetDevice)(&none, &dev); P(nvnBufferBuilderSetDefaults)(&none); P(nvnBufferBuilderSetStorage)(&none, NULL, 0, 0x3d0);
+            memset(&failed, 0xa5, sizeof failed);   // agl's object, reused: whatever it held
+            EXPECT("no pool: initialization fails", 0, P(nvnBufferInitialize)(&failed, &none));
+            EXPECT("no pool: the object holds no old pool", 0, P(nvnBufferGetAddress)(&failed));
         }
         uint64_t initial_offset, initial_size;
         memcpy(&initial_offset, (uint8_t *)buffer + 0x18, 8);
