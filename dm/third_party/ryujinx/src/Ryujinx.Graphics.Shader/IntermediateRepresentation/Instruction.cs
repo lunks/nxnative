@@ -130,6 +130,8 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         SubgroupBarrier,
         // nxnative: the products of Ampere IMMA.16832 on 8-bit elements of one sign in a TensorOps source (IGpuAccessor.QueryImmaTensor), lowered to a call by TensorPass
         IntegerMatrixMultiply,
+        // nxnative: Ampere LDSM in a compute shader (InstEmitAmpereTensor.ALdsm), lowered to its per-lane emulation by TensorPass once the HMMAs it feeds are known
+        MatrixLoad,
 
         Count,
 
