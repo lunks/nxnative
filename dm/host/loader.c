@@ -461,7 +461,7 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
         double a = r0 < 1.0 ? lo : r0, b = r0 < 1.0 ? hi : r1, r = sqrt(a * b);   // a range (dynamic, or the game's own) takes the middle of it
         char num[32]; snprintf(num, sizeof num, "%.3f", r > 1.0 ? -log2(r) - (mip_bias_jitter() ? 1 : 0) : 0.0);
         setenv("DM_LOD_BIAS", num, 1); lb = getenv("DM_LOD_BIAS");
-        LOG("texture sharpness: nvidia, rate %.5g%s%.5g → DM_LOD_BIAS=%s", a, b > a ? " to " : "", b > a ? b : a, num);
+        if (b > a) LOG("texture sharpness: nvidia, rates %.5g to %.5g → DM_LOD_BIAS=%s", a, b, num); else LOG("texture sharpness: nvidia, rate %.5g → DM_LOD_BIAS=%s", a, num);
     }
     if (lb && *lb == '-' && mode == 0) snprintf(mip, sizeof mip, "the game's own, at least %s on the samplers that sharpen", lb);
     const char *pool = dm_setting_patch_applied("DM_RT_POOL", NULL);   // the render-target pool sized for the output and effects (Bananza's README.md, Render-target pool)

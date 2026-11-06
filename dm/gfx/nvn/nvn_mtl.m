@@ -6646,7 +6646,10 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     d.sAddressMode = wrapm(p.ws); d.tAddressMode = wrapm(p.wt); d.rAddressMode = wrapm(p.wr);
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.lodBias = p.lod_bias < -16 ? -16 : p.lod_bias > 15.99f ? 15.99f : p.lod_bias;   // SetLodBias: Maxwell's sampler bias, Metal 26's range [-16, 15.99]
-    if (p.lod_bias < 0 && dm_lod_bias() < p.lod_bias && !p.cmp_mode && !p.reduction && d.mipFilter != MTLSamplerMipFilterNotMipmapped) d.lodBias = dm_lod_bias();   // DM_LOD_BIAS
+    if (p.lod_bias < 0 && dm_lod_bias() < p.lod_bias && !p.cmp_mode && !p.reduction && d.mipFilter != MTLSamplerMipFilterNotMipmapped) {   // DM_LOD_BIAS
+        static int nlog; if (nlog++ < 6) MLOG("DM_LOD_BIAS: sampler ID %d bias %g -> %g (min %d, lod %g..%g, aniso %g)", sid, p.lod_bias, dm_lod_bias(), (int)p.minf, p.lod_min, p.lod_max, p.aniso);
+        d.lodBias = dm_lod_bias();
+    }
     // DM_ANISO=2..16 raises the game's own anisotropy to at least that, for every sampler. The games were
     // built for a handheld and mostly ask for 1, so ground and wall textures blur at a glancing angle.
     // Sampling only: no render target, no allocation, and a sampler that asks for more keeps what it asked for.
