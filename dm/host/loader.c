@@ -456,6 +456,14 @@ static void res_chain_log(int single, int mw, int mh) {   // single: 0 off, 1 th
     if (mode == 2) snprintf(mip, sizeof mip, "nvidia (%s log2(rate) at each rate, jitter %s)", jit ? "-1 -" : "-", jit ? "on" : "off");
     else if (mode == 1) snprintf(mip, sizeof mip, "game (%s)", mbl);
     else snprintf(mip, sizeof mip, "%s", dm_setting_patch_offered("DM_MIP_BIAS") ? "the game's own (-0.5 while upscaling)" : "the game's own");
+    const char *lb = getenv("DM_LOD_BIAS");   // nvn_mtl.m dm_lod_bias: a floor under the game's own negative sampler bias; nvidia is -log2(rate) for the rate this launch draws at
+    if (lb && !strcmp(lb, "nvidia")) {
+        double a = r0 < 1.0 ? lo : r0, b = r0 < 1.0 ? hi : r1, r = sqrt(a * b);   // a range (dynamic, or the game's own) takes the middle of it
+        char num[32]; snprintf(num, sizeof num, "%.3f", r > 1.0 ? -log2(r) - (mip_bias_jitter() ? 1 : 0) : 0.0);
+        setenv("DM_LOD_BIAS", num, 1); lb = getenv("DM_LOD_BIAS");
+        LOG("texture sharpness: nvidia, rate %.5g%s%.5g → DM_LOD_BIAS=%s", a, b > a ? " to " : "", b > a ? b : a, num);
+    }
+    if (lb && *lb == '-' && mode == 0) snprintf(mip, sizeof mip, "the game's own, at least %s on the samplers that sharpen", lb);
     const char *pool = dm_setting_patch_applied("DM_RT_POOL", NULL);   // the render-target pool sized for the output and effects (Bananza's README.md, Render-target pool)
     LOG("resolution: %s, output %dx%d%s; upscale rate %s; scene %s; upscaler %s; mip bias %s; effects %s; shadows %s; render-target pool %s", docked ? "docked" : "handheld", w, h,
         docked && single == 2 ? " (match display: the window's size, the screen's)" : docked && single ? " (single upscale: the window's size)" : "", rate, scene, ups, mip,

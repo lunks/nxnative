@@ -118,3 +118,12 @@ DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb1
 DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x8065d8	00000000	3E4CCB8B	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x8065dc	00000000	3ECCCDA4	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
 DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0x31c3cb0	B940001A	17590A45	DM_UPSCALE_DYNAMIC=1&DM_UPSCALE_RATIO=2.0
+#
+# Texture sharpness (README.md, Texture sharpness). A host rule, not code words (dm/gfx/nvn/nvn_mtl.m dm_lod_bias): every sampler that asks for a negative bias, which are the model material samplers
+# at -0.5 at every upscale rate, is built with at least the chosen one; so these rows only name the choices (a label row writes nothing). nvidia is -log2 of the launch's rate (the middle of a
+# dynamic or the game's own range), worked out in loader.c res_chain_log
+DM_LOD_BIAS	game	Game (-0.5)	-
+DM_LOD_BIAS	nvidia	NVIDIA (the log2 of the upscale rate)	-
+DM_LOD_BIAS	-1	-1	-
+DM_LOD_BIAS	-1.5	-1.5	-
+DM_LOD_BIAS	-2	-2	-

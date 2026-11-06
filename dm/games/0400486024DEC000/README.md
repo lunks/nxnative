@@ -118,6 +118,10 @@ MetalFX temporal, headless, 3,000 frames after the load on an idle Mac, frame ti
 
 The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
 
+### Texture sharpness (current: static reading and a pass dump of the sampler pool; the in-game proof is below once run)
+
+**Texture sharpness** (`DM_LOD_BIAS`, [`setting_patches.tsv`](setting_patches.tsv): label rows, no code words) is a host rule (`nvn_mtl.m`, `dm_lod_bias`). The game has no bias that follows the render size. Its pass dumps (`samp reg` lines, 7,998 in one run) show the same two kinds of sampler at upscale rate 1.33, 2.0 and the game's own range: model material samplers (repeat wrap, linear mips, anisotropy 2, `lod 0..13` or `0..5`, **bias -0.5**) and everything else at bias 0 (clamped samplers of the screen-space passes, of which comparison and reduction ones are shadows and depth pyramids). So the rule raises only the samplers that already ask for a negative bias, to at least the chosen one: nothing a pass reads by screen position changes. NVIDIA's rule for a temporal upscaler is -log2(rate): -1 at 2.0 (720p to 1440p), -1.58 at 3.0, and one more with camera jitter (`DM_MFX_JITTER`, which Ocarina's profile does not offer yet). `nvidia` is worked out at launch (`loader.c` `res_chain_log`) from the rate the setting patches fix, or the middle (geometric mean) of the dynamic range or the game's own 1.33 to 3.0. The launch line says `texture sharpness: nvidia, rate 2 → DM_LOD_BIAS=-1.000` and `mip bias the game's own, at least -1.000 on the samplers that sharpen`.
+
 ## Frame rate
 
 Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk.sh` in the work folder).
