@@ -8111,13 +8111,20 @@ static id<MTL4Compiler> g_comp4;
 // g_arch4: the files that may hold bases with a vertex layout, g_arch4p: the files that hold none (p<seq>.mtl4a: the prebuild's, and any flush whose bases all read their vertices
 // themselves). A base with a layout is looked up in g_arch4 alone: each file a lookup misses in costs about 0.06 ms, and a cold start's misses were for such bases, in the 13 prebuilt files
 static NSArray<id<MTL4Archive>> *g_arch4, *g_arch4p; static NSString *g_arch_dir; static int g_arch_seq;
+static os_unfair_lock g_arch4p_lock = OS_UNFAIR_LOCK_INIT;
+static NSArray<id<MTL4Archive>> *arch4p_get(void) {
+    os_unfair_lock_lock(&g_arch4p_lock);
+    NSArray<id<MTL4Archive>> *a = g_arch4p;
+    os_unfair_lock_unlock(&g_arch4p_lock);
+    return a;
+}
 // Compaction: every start writes a file or more (each flush captures only what is new), Breath of the Wild 5-7 per start, and each file a base is not in costs a lookup about 0.06 ms.
 // With more than PSO_ARCH_COMPACT files of bases with a vertex layout, the bases the prewarm takes from them are captured again from the original shader functions, so the flush
 // after the prewarm writes them into one file; the old files are then removed (open archives stay usable for the rest of the run). Bases the
 // prewarm did not take (pso_user.tsv never named them) go with them and are built again when drawn. The prebuild's files (p<seq>) are left as they are
-enum { PSO_ARCH_COMPACT = 8 };
+enum { PSO_ARCH_COMPACT = 8, PSO_ARCH_SHARD_MB = 256, PSO_ARCH_COMPACT_MB = 512 };
 static int g_compact_enabled;   // immutable after pso4_init; unlike g_compact_files, never cleared by the archive queue
-static NSArray<NSString *> *g_compact_files; static _Atomic int g_compacted, g_compact_taken;   // g_compact_taken: a flush period holds the recaptured bases (arch_flush)
+static NSArray<NSString *> *g_compact_files; static NSSet<id<MTL4Archive>> *g_compact_arch; static _Atomic int g_compacted, g_compact_taken;   // g_compact_taken: a flush period holds the recaptured bases (arch_flush)
 // Keep the crash-recovery guard if a compaction still fails in Metal. Markers name the OS build and capture method: a marker from the old archive-import path must not
 // disable the safer original-function capture. A failed flush of this method disables compaction on this OS build until it changes; ordinary archive reads remain available.
 static NSString *arch_compact_marker(void) { return [g_arch_dir stringByAppendingPathComponent:@"compacting"]; }
@@ -8141,7 +8148,7 @@ static dispatch_queue_t g_arch_q; static _Atomic int g_arch_new, g_arch_new_vd, 
 // pipeline found in the files. The flush used to hold a lock against every such compile instead, and one compile that did not return (Super Mario Odyssey's alRenderMaterialUber
 // with the front end at -O2: 33.7 minutes until Metal gave up, GitHub issue #294) held the flush, and the flush every compile and draw that came after it. Now such a compile
 // holds back the file of its own period and nothing else
-@interface ArchEpoch : NSObject { @public id<MTL4Compiler> comp; id<MTL4PipelineDataSetSerializer> ser; dispatch_group_t busy; _Atomic int active, n, vd, cs; int compacting; } @end
+@interface ArchEpoch : NSObject { @public id<MTL4Compiler> comp; id<MTL4PipelineDataSetSerializer> ser; dispatch_group_t busy; _Atomic int active, n, vd, cs; int compacting, kind; } @end
 // n: pipelines captured; vd, cs: those of them that are bases with a vertex layout, compute pipelines
 @implementation ArchEpoch @end
 static ArchEpoch *g_ep; static os_unfair_lock g_ep_lock = OS_UNFAIR_LOCK_INIT;   // the current period
@@ -8271,9 +8278,18 @@ static ArchEpoch *ep_new(void) {   // a flush period: its compiler and serialize
     ep->busy = dispatch_group_create();
     return ep;
 }
-static ArchEpoch *ep_enter(void) {   // the current period, joined: a flush hands it to arch_write only once every compile that joined it has left
+static void arch_flush(void);
+static ArchEpoch *ep_enter(int vd) {   // the current period, joined: a flush hands it to arch_write only once every compile that joined it has left
+    int want = vd ? 2 : 1;
+    if (!atomic_load(&g_warm_running)) {
+        os_unfair_lock_lock(&g_ep_lock);
+        int split = g_ep->kind && g_ep->kind != want;
+        os_unfair_lock_unlock(&g_ep_lock);
+        if (split) arch_flush();
+    }
     os_unfair_lock_lock(&g_ep_lock);
-    ArchEpoch *ep = g_ep; atomic_fetch_add(&ep->active, 1); dispatch_group_enter(ep->busy);
+    ArchEpoch *ep = g_ep; if (!ep->kind) ep->kind = want;
+    atomic_fetch_add(&ep->active, 1); dispatch_group_enter(ep->busy);
     os_unfair_lock_unlock(&g_ep_lock);
     return ep;
 }
@@ -8282,7 +8298,7 @@ static void ep_leave(ArchEpoch *ep) { atomic_fetch_sub(&ep->active, 1); dispatch
 // archive entries (see the compaction crash below)
 static id<MTLRenderPipelineState> arch_capture(MTL4RenderPipelineDescriptor *d, NSError **e, int vd) {
     if (!g_arch_cap) return [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:nil error:e];
-    ArchEpoch *ep = ep_enter();
+    ArchEpoch *ep = ep_enter(vd);
     id<MTLRenderPipelineState> ps = [ep->comp newRenderPipelineStateWithDescriptor:d compilerTaskOptions:nil error:e];
     if (ps) { atomic_fetch_add(&ep->n, 1); atomic_fetch_add(&g_arch_new, 1); if (vd) { atomic_fetch_add(&ep->vd, 1); atomic_fetch_add(&g_arch_new_vd, 1); } }
     ep_leave(ep);
@@ -8291,7 +8307,7 @@ static id<MTLRenderPipelineState> arch_capture(MTL4RenderPipelineDescriptor *d, 
 // The same for a compute pipeline (cps_new). It counts as a base with a vertex layout does: its file is a plain one, never a p<seq> file, so its lookups skip the prebuild's files
 static id<MTLComputePipelineState> arch_capture_cs(MTL4ComputePipelineDescriptor *d, NSError **e) {
     if (!g_arch_cap) return [g_comp4 newComputePipelineStateWithDescriptor:d compilerTaskOptions:nil error:e];
-    ArchEpoch *ep = ep_enter();
+    ArchEpoch *ep = ep_enter(1);   // a compute pipeline goes to the plain file with the vertex-layout bases (kind 2), never to a p<seq> file
     id<MTLComputePipelineState> ps = [ep->comp newComputePipelineStateWithDescriptor:d compilerTaskOptions:nil error:e];
     if (ps) { atomic_fetch_add(&ep->n, 1); atomic_fetch_add(&g_arch_new, 1); atomic_fetch_add(&ep->cs, 1); }
     ep_leave(ep);
@@ -8308,6 +8324,24 @@ static id arch_read_mapped(id self, SEL cmd, NSString *path, NSUInteger options,
 static Method arch_read_method(void) { return class_getInstanceMethod([NSData class], sel_registerName("initWithContentsOfFile:options:maxLength:error:")); }
 static void arch_open_begin(void) { Method m = arch_read_method(); if (m) g_ns_read = (ns_read_fn)method_setImplementation(m, (IMP)arch_read_mapped); }
 static void arch_open_end(void) { Method m = arch_read_method(); if (m && g_ns_read) method_setImplementation(m, (IMP)g_ns_read); }
+// In macOS 27's MTL4ArchiveImpl::newArchiveReplyForKey, an entry deserialized with a zero-length function reflection slice (refl_size == 0) leaves refl1 == NULL, then compares
+// refl2_off == refl1_off (both equal to slice_offset + 0) and calls dispatch_retain(NULL). Reject and remove any archive file containing a zero-length AIR or reflection slice.
+static int arch_entries_ok(id<MTL4Archive> a) {
+    static ptrdiff_t off = -1; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class c = NSClassFromString(@"_MTL4Archive");
+        Ivar iv = c ? class_getInstanceVariable(c, "_archiveReader") : NULL;
+        if (iv) off = ivar_getOffset(iv);
+    });
+    if (off < 0 || !a) return 1;
+    uint8_t *impl = *(uint8_t **)((uint8_t *)(__bridge void *)a + off);
+    if (!impl) return 1;
+    for (uint8_t *node = *(uint8_t **)(impl + 0x30); node; node = *(uint8_t **)node)
+        if (*(uint64_t *)(node + 0x68) == 0 || *(uint32_t *)(node + 0x74) == 0) return 0;
+    for (uint8_t *rnode = *(uint8_t **)(impl + 0x58); rnode; rnode = *(uint8_t **)rnode)
+        if (*(uint64_t *)(rnode + 0x38) == 0 || *(uint32_t *)(rnode + 0x44) == 0) return 0;
+    return 1;
+}
 static void pso4_init(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -8326,21 +8360,38 @@ static void pso4_init(void) {
                 MLOG("pipeline archive: %d of Metal's build folders left by earlier runs removed", n);
             });
 #endif
-            uint64_t t0 = bp_now(); unsigned long long bytes = 0;
+            uint64_t t0 = bp_now(); unsigned long long bytes = 0, run_bytes = 0;
             arch_open_begin();
             NSMutableArray<NSString *> *runf = [NSMutableArray array];
+            NSMutableArray<id<MTL4Archive>> *sharded = [NSMutableArray array];
+            NSMutableSet<id<MTL4Archive>> *carch = [NSMutableSet set];
             NSArray<NSString *> *names = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:g_arch_dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.mtl4a'"]]
                                           sortedArrayUsingSelector:@selector(compare:)];
             for (NSString *n in names.reverseObjectEnumerator) {   // newest first
                 NSString *p = [g_arch_dir stringByAppendingPathComponent:n]; NSError *ae = nil;
                 id<MTL4Archive> a = arch_file_ok(p) ? [g_dev newArchiveWithURL:[NSURL fileURLWithPath:p] error:&ae] : nil;
+                int bad_ent = 0;
+                if (a && !arch_entries_ok(a)) { a = nil; bad_ent = 1; unlink(p.fileSystemRepresentation); }
                 int pf = [n hasPrefix:@"p"];
-                if (a) { [pf ? archp : arch addObject:a]; if (!pf) [runf addObject:p]; bytes += [[NSFileManager.defaultManager attributesOfItemAtPath:p error:nil] fileSize]; }
-                else MLOG("[RED] pipeline archive file %s not usable (%s): its bases are built again", p.UTF8String, ae ? ae.localizedDescription.UTF8String : "not a pipeline archive");
+                if (a) {
+                    unsigned long long fsize = [[NSFileManager.defaultManager attributesOfItemAtPath:p error:nil] fileSize];
+                    bytes += fsize;
+                    if (pf) [archp addObject:a];
+                    else if (fsize >= ((unsigned long long)PSO_ARCH_SHARD_MB << 20)) [sharded addObject:a];   // already-compacted large shard: searched first, never re-compacted into a >1 GB LMDB map
+                    else {
+                        [arch addObject:a];
+                        if (run_bytes + fsize <= ((unsigned long long)PSO_ARCH_COMPACT_MB << 20)) { [runf addObject:p]; [carch addObject:a]; run_bytes += fsize; }
+                    }
+                }
+                else {
+                    if (pf) unlink([g_arch_dir stringByAppendingPathComponent:@"prebuilt.tsv"].fileSystemRepresentation);
+                    MLOG("[RED] pipeline archive file %s not usable (%s): its bases are built again", p.UTF8String, bad_ent ? "truncated reflection entry, removed" : ae ? ae.localizedDescription.UTF8String : "not a pipeline archive");
+                }
                 g_arch_seq = MAX(g_arch_seq, [n substringFromIndex:pf].intValue + 1);
             }
             arch_open_end();
-            if (runf.count > PSO_ARCH_COMPACT && arch_compact_allowed()) { g_compact_enabled = 1; g_compact_files = runf; }
+            if (sharded.count) { [sharded addObjectsFromArray:arch]; arch = sharded; }
+            if (runf.count > PSO_ARCH_COMPACT && arch_compact_allowed()) { g_compact_enabled = 1; g_compact_files = runf; g_compact_arch = carch; }
             MLOG("pipeline archive %s: %lu files (%lu of bases without a vertex layout), %.1f MB, opened in %.1f ms", g_arch_dir.UTF8String, (unsigned long)(arch.count + archp.count - (g_arch_bundle != nil)),
                  (unsigned long)archp.count - (g_arch_bundle != nil), bytes / 1048576.0, (bp_now() - t0) / 1e6);
         }
@@ -8420,6 +8471,14 @@ static void arch_write(ArchEpoch *ep) {
     if (!ok) { MLOG("[RED] pipeline archive: writing %s failed%s%s", path.UTF8String, e ? ": " : "", e ? e.localizedDescription.UTF8String : ""); unlink(tmp.fileSystemRepresentation); }
     else {
         g_arch_flush_ok = 1;
+        if (!vd && !cs && arch_file_ok(path)) {   // a pulling-only period: its file is searched at once as a g_arch4p file
+            id<MTL4Archive> a = [g_dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:nil];
+            if (a && arch_entries_ok(a)) {
+                os_unfair_lock_lock(&g_arch4p_lock);
+                g_arch4p = [g_arch4p ?: @[] arrayByAddingObject:a];
+                os_unfair_lock_unlock(&g_arch4p_lock);
+            }
+        }
         MLOG("pipeline archive: %d new pipeline bases%s written to %s (%.1f MB, %.0f ms)", n - cs, cs ? [NSString stringWithFormat:@" and %d compute pipelines", cs].UTF8String : "", path.lastPathComponent.UTF8String,
              [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileSize] / 1048576.0, (bp_now() - t0) / 1e6);
     }
@@ -8456,7 +8515,7 @@ static void arch_compact_finish(void) {   // after the period that holds the rec
     if (!g_arch_flush_ok) { MLOG("[RED] pipeline archive: compaction left the old files (the flush failed)"); return; }
     for (NSString *f in g_compact_files) unlink(f.fileSystemRepresentation);
     MLOG("pipeline archive compacted: %lu files of bases with a vertex layout gave %d bases to the file just written and were removed", (unsigned long)g_compact_files.count, (int)g_compacted);
-    g_compact_files = nil;
+    g_compact_files = nil; g_compact_arch = nil;
 }
 static void pso_col4(MTL4RenderPipelineColorAttachmentDescriptor *a, MTLRenderPipelineColorAttachmentDescriptor *c) {
     a.pixelFormat = c.pixelFormat; a.writeMask = c.writeMask; a.blendingState = c.blendingEnabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
@@ -8523,6 +8582,9 @@ static MTL4RenderPipelineDescriptor *spec_desc(id base, _Atomic int *own) {   //
     CFRelease(raw);   // the call's +1; s holds its own
     return s;
 }
+static id<MTLRenderPipelineState> arch_lookup_one(id<MTL4Archive> a, MTL4RenderPipelineDescriptor *d) {
+    return a && d ? [a newRenderPipelineStateWithDescriptor:d error:nil] : nil;
+}
 static _Atomic int g_spec_own;
 // The pipeline pso_desc describes: its base (built, from the archive or already made), then specialized with its colour state. Called on several threads.
 // compile 0: nil on an archive miss (*e untouched), with no MTLDevice fallback. Prewarm compaction may still refresh a found base for serialization.
@@ -8568,19 +8630,20 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
     else {
         uint64_t t0 = bp_now();
         int vd = 0; for (int i = 0; i < 31 && !vd; i++) vd = bk.va[i][0] != 0;   // a vertex layout (MTLVertexFormatInvalid is 0)
-        if (!vd && !none) for (id<MTL4Archive> a in g_arch4p) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) break;
+        NSArray<id<MTL4Archive>> *archp = arch4p_get();
+        if (!vd && !none) for (id<MTL4Archive> a in archp) if ((base = arch_lookup_one(a, b))) break;
         int from_run = 0;
-        if (!base && !none) for (id<MTL4Archive> a in g_arch4) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) { from_run = 1; break; }
+        if (!base && !none) for (id<MTL4Archive> a in g_arch4) if ((base = arch_lookup_one(a, b))) { from_run = !g_compact_arch || [g_compact_arch containsObject:a]; break; }
         uint64_t t1 = bp_now();
         if (base) { g_pb_archived++; g_pt_hit_n++; g_pt_hit_ns += t1 - t0; }
-        if (base && from_run && g_compact_enabled && atomic_load(&g_warm_running)) {
+        if (base && from_run && vd && g_compact_enabled && atomic_load(&g_warm_running)) {
             // Metal can crash in materializeAirNTFromOnlineForSlice when serializing archive imports mixed with fresh bases (#342).
             // Work around that framework bug by capturing the original shader functions, without lookupArchives. The normal compiler cache still applies.
             id<MTLRenderPipelineState> cb = arch_capture(b, nil, vd);
             if (cb) { base = cb; g_compacted++; }
         }
         if (!base) {
-            if (!none && g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
+            if (!none && g_arch4.count + archp.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
             if (compile) {
                 NSError *be = nil; base = arch_capture(b, &be, vd); job->error = be; job->compiled = 1;
                 g_pt_comp_ns += bp_now() - t1;
@@ -8864,8 +8927,8 @@ static void pre_pair(NSString *vk, NSString *fk, int zero) {
         if (g_pre_known.count && g_pre_known[[NSString stringWithFormat:@"%@\t%@", vk, fk]]) { g_pre_skipped++; g_pre_known_n++; return; }
         MTL4RenderPipelineDescriptor *m = pre_desc(vk, fk, zero);
         if (!m) { g_pre_skipped++; return; }
-        for (id<MTL4Archive> a in g_arch4p) if ([a newRenderPipelineStateWithDescriptor:m error:nil]) { g_pre_archived++; return; }
-        for (id<MTL4Archive> a in g_arch4) if ([a newRenderPipelineStateWithDescriptor:m error:nil]) { g_pre_archived++; return; }
+        for (id<MTL4Archive> a in arch4p_get()) if (arch_lookup_one(a, m)) { g_pre_archived++; return; }
+        for (id<MTL4Archive> a in g_arch4) if (arch_lookup_one(a, m)) { g_pre_archived++; return; }
         NSError *e = nil; id ps = arch_capture(m, &e, 0);
         if (ps) g_pre_built++;
         else {
@@ -8910,7 +8973,7 @@ static int pso_bundle_covers(NSArray<NSArray<NSString *> *> *pairs, NSString *wa
         NSArray<NSString *> *p = cand[k * n / MIN(n, (NSUInteger)PRE_PROBE)];
         MTL4RenderPipelineDescriptor *m = pre_desc(p[0], p[1], zero);
         if (!m) continue;
-        probed++; found += [g_arch_bundle newRenderPipelineStateWithDescriptor:m error:nil] != nil;
+        probed++; found += arch_lookup_one(g_arch_bundle, m) != nil;
     }
     int ok = probed > 0 && found == probed;   // skipped samples give no evidence that this system can take a base from the archive
     MLOG("pipeline archive bundled with the app: %s (%d of %d probed bases found, %.1f ms)%s", ok ? "holds the bases of every shader pair" : "this system does not take its bases",
@@ -8952,8 +9015,27 @@ static int pso_prebuild(int threads, int wait, dispatch_qos_class_t qos) {
     if (!g_arch_cap) { g_pre_running = 0; return -1; }
     NSString *stamp = [g_arch_dir stringByAppendingPathComponent:@"prebuilt.tsv"], *failp = [g_arch_dir stringByAppendingPathComponent:@"prebuild_failed.tsv"];
     int other = 0; g_pre_known = pre_fail_load(failp, want, &other); g_pre_fails = [NSMutableArray array]; g_pre_known_n = 0;
-    // done, unless its failures were found on another system build: then they are tried again (the rest are taken from the archive)
-    if ([[NSString stringWithContentsOfFile:stamp encoding:NSUTF8StringEncoding error:nil] isEqualToString:want] && !other) { g_pre_running = 0; return -1; }
+    // done, unless its failures were found on another system build or a probe of full-sized pair lists finds bases missing from the archive
+    if ([[NSString stringWithContentsOfFile:stamp encoding:NSUTF8StringEncoding error:nil] isEqualToString:want] && !other) {
+        int covered = 1;
+        if (pairs.count >= PRE_PROBE) {
+            int probed = 0, found = 0; NSUInteger np = pairs.count;
+            for (NSUInteger k = 0; k < PRE_PROBE && k < np; k++) @autoreleasepool {
+                NSArray<NSString *> *p = pairs[k * np / PRE_PROBE];
+                if (g_pre_known.count && g_pre_known[[NSString stringWithFormat:@"%@\t%@", p[0], p[1]]]) continue;
+                MTL4RenderPipelineDescriptor *m = pre_desc(p[0], p[1], zero);
+                if (!m) continue;
+                probed++;
+                int hit = 0;
+                for (id<MTL4Archive> a in arch4p_get()) if (arch_lookup_one(a, m)) { hit = 1; break; }
+                for (id<MTL4Archive> a in g_arch4) if (!hit && arch_lookup_one(a, m)) { hit = 1; break; }
+                found += hit;
+            }
+            covered = (probed == 0 || found == probed);
+            if (!covered) MLOG("pipeline prebuild: %s has the current stamp, but only %d of %d probed bases are in the archive: rebuilding missing bases", stamp.UTF8String, found, probed);
+        }
+        if (covered) { g_pre_running = 0; return -1; }
+    }
     int n = (int)pairs.count; uint64_t t0 = bp_now();
     MLOG("pipeline prebuild: %d shader pairs of %s%s%s, %d workers (%s)", n, pp.UTF8String, txt2 ? " and " : "", txt2 ? pp2.UTF8String : "", threads, wait ? "tool" : prepare_on() ? "prepare step, before the first frame" : "background");
     atomic_store(&g_pre_next, 0);
@@ -12143,7 +12225,7 @@ void ms_after(void) {
 // DM_NVN_FB_SNAP=0 none, all a fresh snapshot for every draw sampling an attachment of its pass (diagnostic); DM_NVN_FB_TILE=0 no tile reads
 static int g_fb_mode = -1;   // 0 none, 1 writers with reuse until a barrier, 2 every sampling draw, fresh
 static uint64_t g_fb_bar, g_fb_reuse, g_fb_split;   // game barriers so far (OP_BARRIER with bits); draws that reused a snapshot; passes ended before a write to an attachment an earlier draw read
-static uint64_t g_fb_pass = UINT64_MAX; static uint32_t g_fb_wmask, g_fb_rmask, g_fb_dread;   // the current Metal render pass: color attachments written so far, sampled directly; a draw has read its depth attachment (or could have: bindless)
+static uint64_t g_fb_pass = UINT64_MAX; static uint32_t g_fb_wmask, g_fb_rmask, g_fb_dread, g_fb_dwrite;   // the current Metal render pass: color attachments written so far, sampled directly; a draw has read or written its depth attachment
 typedef struct { uint64_t ser, bar, sub, use; int lv, sl; __strong id<MTLTexture> snap; } fb_cache_t;   // use: when it was last taken or reused (g_fbc_use)
 static fb_cache_t g_fbc[8]; static uint64_t g_fbc_use;
 static int fb_mode(void) {
@@ -12151,7 +12233,7 @@ static int fb_mode(void) {
         if (g_fb_mode != 1) MLOG("same-pass feedback sampling snapshot: %s (DM_NVN_FB_SNAP)", g_fb_mode ? "a fresh one for every draw sampling an attachment of its pass" : "off"); }
     return g_fb_mode;
 }
-static inline void fb_pass_sync(void) { uint64_t p = g_stat_pass + !g_enc; if (p != g_fb_pass) { g_fb_pass = p; g_fb_wmask = g_fb_rmask = g_fb_dread = 0; g_fb_dread_pool = 0; } }
+static inline void fb_pass_sync(void) { uint64_t p = g_stat_pass + !g_enc; if (p != g_fb_pass) { g_fb_pass = p; g_fb_wmask = g_fb_rmask = g_fb_dread = g_fb_dwrite = 0; g_fb_dread_pool = 0; } }
 static inline int fb_shape(const fb_cache_t *e, MTLPixelFormat pf, NSUInteger w, NSUInteger h) { return e->snap && e->snap.pixelFormat == pf && e->snap.width == w && e->snap.height == h; }
 static inline int fb_live(const fb_cache_t *e) { return e->ser && e->bar == g_fb_bar && e->sub == g_sub_serial; }   // a later draw may still reuse it
 // The snapshot of an attachment's level and layer: the cached one (valid: *fresh = 0) or a texture to copy into (*fresh = 1; the entry is then valid from this barrier and submission on).
@@ -12277,7 +12359,11 @@ static void fb_prepare(NvProg *pr) {
     int dsw = R.rt.depth && ((S.ds.dt && S.ds.dw) || (S.ds.st && (S.st_wmask[0] || S.st_wmask[1]) && (S.ds.fail_f != NVN_STENCIL_OP_KEEP || S.ds.zfail_f != NVN_STENCIL_OP_KEEP || S.ds.zpass_f != NVN_STENCIL_OP_KEEP
         || S.ds.fail_b != NVN_STENCIL_OP_KEEP || S.ds.zfail_b != NVN_STENCIL_OP_KEEP || S.ds.zpass_b != NVN_STENCIL_OP_KEEP)));
     if (g_enc && dsw && g_fb_dread) { g_fb_split++; g_fb_split_pool += g_fb_dread_pool; g_fb_dread_pool = 0; rp_end(); fb_pass_sync(); }   // the same for its depth and stencil (see rtc_on)
-    if (R.rt.depth && !g_fb_dread && ((fs->rf.pool && pool_ds_read(R.rt.depth) && (g_fb_dread_pool = 1)) || fs->rf.dyn || (fs->rf.bindless && fb_texu_reads(fs, R.rt.depth->serial)))) g_fb_dread = 1;
+    uint32_t dread = 0;
+    if (R.rt.depth && !g_fb_dread && ((fs->rf.pool && pool_ds_read(R.rt.depth) && (g_fb_dread_pool = 1)) || fs->rf.dyn || (fs->rf.bindless && fb_texu_reads(fs, R.rt.depth->serial)))) {
+        if (g_enc && g_fb_dwrite && !g_fb_dread_pool) { g_fb_split++; rp_end(); fb_pass_sync(); }
+        dread = 1;
+    }
     uint64_t tile[4]; int ntile = fb_tile_plan(pr, wm, tile);
     for (int i = 0; i < fs->rf.nb && g_fb_n < 4; i++) {
         const nvn_rbind *b = &fs->rf.b[i];
@@ -12287,7 +12373,10 @@ static void fb_prepare(NvProg *pr) {
         int tid = (int)(handle & 0xfffff); if (!tid) continue;
         os_unfair_lock_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; os_unfair_lock_unlock(&g_rmu);
         if (!ser) continue;
-        if (R.rt.depth && R.rt.depth->serial == ser) g_fb_dread = 1;
+        if (R.rt.depth && R.rt.depth->serial == ser) {
+            if (g_enc && g_fb_dwrite) { g_fb_split++; rp_end(); fb_pass_sync(); }
+            dread = 1;
+        }
         for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
             if (!image && (tile[b->reg >> 6] >> (b->reg & 63) & 1)) { PD("N %llu same-pass feedback sampling: slot %d reads attachment %d ser=%llu from the tile", g_stat_pass + !g_enc, b->reg, k, (unsigned long long)ser); continue; }   // fb_tile_plan
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
@@ -12361,7 +12450,7 @@ static void fb_prepare(NvProg *pr) {
                      (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass + !g_enc, fs->key, b->reg, k, (unsigned long long)ser, (unsigned long)w, (unsigned long)h, (unsigned long)base.pixelFormat);
             PD("N %llu same-pass feedback sampling: attachment %d ser=%llu level %d layer %d copied into a snapshot; this draw samples the snapshot", g_stat_pass + !g_enc, k, (unsigned long long)ser, lv, sl);
         } }
-    g_fb_wmask |= wm;
+    g_fb_wmask |= wm; g_fb_dread |= dread; if (dsw) g_fb_dwrite = 1;
     if (g_fb_n) { g_fb_seq = g_draw_seq; args_dirty_all(); g_fb_rebind = 1; }
     if (ntile) { g_fb_tseq = g_draw_seq; g_fb_tile_draws++;
         if (g_fb_tile_draws == 1 || g_fb_tile_draws == 1000 || g_fb_tile_draws % 100000 == 0)

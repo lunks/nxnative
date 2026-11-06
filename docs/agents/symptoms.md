@@ -796,6 +796,8 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - a large resource retirement batch stalls replay in `NSArray` removal, with hundreds of thousands of entries awaiting release. → [Deferred release partition](../reference/rendering.md#deferred-release-partition)
 - `nvnCommandBufferDrawMeshTasksIndirect` was unimplemented and its GPU-driven draws were skipped. → [Indirect mesh arguments](../reference/rendering.md#indirect-mesh-arguments)
 - `image atomics on a texture Metal cannot run them on` when a shader's R32Uint image view is backed by an RGBA8 color texture. → [Atomic reinterpretation of RGBA8](../reference/rendering.md#atomic-reinterpretation-of-rgba8)
+- soft-depth surfaces (translucent walls, a pedestal's glow) flickered with black blocks on Apple Silicon. → [A draw that samples the attached depth ends the pass that wrote it](../reference/rendering.md#a-draw-that-samples-the-attached-depth-ends-the-pass-that-wrote-it)
+- after a compaction, the pipeline bases without a vertex layout (pulling bases) were missing from the archive and were built again at the next start. → [Pipeline archive: pulling bases and compacted shards](../reference/rendering.md#pipeline-archive-pulling-bases-and-compacted-shards)
 
 ## Shaders
 

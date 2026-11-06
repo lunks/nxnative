@@ -1757,3 +1757,19 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Cause:** Metal rejects shader-atomic usage on RGBA8 storage, even when a view reinterprets the texel as R32Uint. Substituting a sink discards the atomic writes.
 - **Fix:** for a private single-sampled 2D RGBA8 texture, preserve its texels through an RGBA8 view of integer storage made with atomic usage. Bind the integer image from the root backing and retain the color view for other uses. The heap remains resident while its views live. `t_image_usage` verifies that a color clear survives the upgrade and an atomic OR changes the bytes read through the color view.
 - **Found on:** The Legend of Zelda: Ocarina of Time 1.1.1.
+
+### A draw that samples the attached depth ends the pass that wrote it
+
+- **Symptom:** soft-depth surfaces (translucent walls, a pedestal's glow) flickered with black blocks on Apple Silicon.
+- **Cause:** a fragment shader sampled the depth target that is still attached, in a Metal render pass in which an earlier draw had written depth. On a tile-based GPU the sample reads the tile's depth before it is stored.
+- **Fix:** `fb_prepare` ends the pass before such a draw (`g_fb_dwrite`: a draw in this pass wrote depth; counted in `g_fb_split`), as it already did for colour attachments a draw samples. A pass that only read depth is not split.
+- **Check:** `t_feedback` ("a draw reading depth after a write of it in the same pass ends the pass").
+- **Found on:** The Legend of Zelda: Ocarina of Time (Inside Jabu-Jabu's Belly), by ksolenk38ze in PR #1590. Not run in game here; the extra passes cost is not measured.
+
+### Pipeline archive: pulling bases and compacted shards
+
+- **Symptom:** after a compaction, the pipeline bases without a vertex layout (pulling bases) were missing from the archive and were built again at the next start.
+- **Cause:** a flush period held bases of both kinds in one file, and the compaction of the plain files (`include_pull = NO`) dropped the pulling bases that file held.
+- **Fix:** a period holds one kind (`ArchEpoch.kind`: pulling or vertex-layout; a compute pipeline counts as vertex-layout); a change of kind flushes the period, so pulling bases stay in `p<seq>.mtl4a`. A new `p` file is searched at once. Compacted shards of 256 MB or more are searched first and never compacted again. `arch_entries_ok` rejects, and removes, an archive file holding an entry with a zero-length AIR or reflection slice (macOS 27 retains NULL when it loads one). `pso_prebuild` probes up to `PRE_PROBE` entries of `prebuilt.tsv` against the archives and builds again when bases are missing.
+- **Check:** `t_pso_pending`, `t_pso_skey`; the archive paths themselves are not covered by a test.
+- **Found on:** The Legend of Zelda: Ocarina of Time, by ksolenk38ze in PR #1590. Not run in game here.
