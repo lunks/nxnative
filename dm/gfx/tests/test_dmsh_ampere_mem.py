@@ -5,7 +5,7 @@ import json, os, re, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
-sys.path.insert(0, str(TOOLS)); import dmsh_atomic, dmsh_meshstage
+sys.path.insert(0, str(TOOLS))
 EXIT = (0x000fea0003800000, 0x000000000000794d)   # hi, lo: EXIT
 # SUATOM.ADD.U32 R12, [R3], R12 on the 1D image whose handle is word 12 of c0 (AMapC0: image slot 1), as the game encodes it but unpredicated (PT)
 SUATOM = (0x002ea200001ee000, 0x00000c0c030c7593)
@@ -430,30 +430,6 @@ class RawGlobal(Translated):
         self.has(msl, r'device _\d+\* cp_s0 \[\[id\(0\)\]\];\s*(const )?device _\d+\* cp_s1 \[\[id\(1\)\]\];')
         self.has(msl, r'cp_s0\)\._m0\[2\] = ')
 
-    def test_a_kernels_stage_memory_stays_first_under_the_range_cache(self):   # dmsh_meshstage.to_stage finds a task or mesh kernel by it
-        msl = re.sub(r'(kernel void main0\((?:[^()]|\([^()]*\))*\)\n\{\n)', r'\1    threadgroup spvUnsafeArray<uint, 64> stage_mem;\n', self.msl(), count=1)
-        self.assertIn('stage_mem', msl)
-        cached = dmsh_atomic.raw_range_cache(msl)
-        self.assertIn('dmsh_gmc dm_gc', cached)
-        self.assertIsNotNone(dmsh_meshstage._KERNEL.search(cached))
-
-    def test_the_range_cache_goes_around_the_hint_and_the_search(self):   # dmsh_atomic.raw_range_cache: the build runs it on every shader
-        msl = dmsh_atomic.raw_range_cache(self.msl())
-        self.has(msl, r'struct dmsh_gmc \{ ulong s; ulong n; int i; \};')
-        self.has(msl, r'thread dmsh_gmc& dm_c\)\n\{\n    ulong dm_a = as_type<ulong>\(uint2\(uint\(_\d+\), uint\(_\d+\)\)\);\n    int (_\d+);\n    if \(dm_a - dm_c\.s < dm_c\.n\)\n    \{\n        \1 = dm_c\.i;')
-        self.has(msl, r'dm_c\.i = (_\d+);\n    \}\n    int _\d+ = \1 \* 8;')   # the end check, the delta and the access use the entry, however it was found
-        self.has(msl, r'dmsh_gmc dm_gc = \{0, 0, 0\};\n')
-        self.has(msl, r'= _\d+\([^;]*, dm_gc\);')
-        self.assertLess(msl.index('>> uint(21)'), msl.index('+ 4096;'), 'the hint comes before the search')
-
-    def test_a_lookup_of_another_form_stays_as_it_is(self):
-        msl = self.msl()
-        early = re.search(r'int (_\d+) = _\d+ << 11;', msl).group(1)   # a value of the lookup that the code after it reads would not be there on a hit
-        for broken in (re.sub(r'(= _\d+) \+ 6;', r'\1 + 5;', msl, count=1), re.sub(r'(\n        _\d+ = _\d+;\n    \}\n)', lambda m: m.group(1) + f'    int dm_late = {early};\n', msl, count=1)):
-            self.assertNotEqual(broken, msl)
-            self.assertEqual(dmsh_atomic.raw_range_cache(broken), broken)
-        self.assertEqual(dmsh_atomic.raw_range_cache('using namespace metal;\nkernel void main0()\n{\n}\n'), 'using namespace metal;\nkernel void main0()\n{\n}\n')
-
 
 class RawStore(Translated):
     """A store at an address the shader loaded from memory: the same lookup, and the write log's bit for the entry. t_gmem_raw walks it through the range cache (--fixture)"""
@@ -464,18 +440,16 @@ class RawStore(Translated):
         code = b''.join(inst(*c) for c in (AtomgCas.ULDC, AtomgCas.ADDR_LO, AtomgCas.ADDR_HI, RawGlobal.LDG_PTR, self.LDG_VALUE, self.STG_RAW)) + inst(*EXIT)
         return self.translate(code, nvn2_cs=[3, 1, 0, 0x50, 0])
 
-    def test_the_log_bit_uses_the_entry_the_cache_gives(self):
-        msl = dmsh_atomic.raw_range_cache(self.msl())
-        m = re.search(r'dm_c\.i = (_\d+);\n    \}\n', msl)
-        self.assertTrue(m, 'no range cache in the store')
-        self.assertIn(m.group(1), msl[m.end():], 'the entry goes on to the log')
-        self.assertIn('atomic_fetch_or_explicit', msl[m.end():], 'the log comes after the lookup')
+    def test_the_log_bit_uses_the_entry_the_cache_gives(self):   # GlobalToStorage.TryGenerateRawStorageOp: the store takes the invocation's last entry, and the log follows the lookup
+        msl = self.msl()
+        self.assertRegex(msl, r'thread uint& _\d+\)\n\{', 'no last entry in the store')
+        self.assertIn('atomic_fetch_or_explicit', msl[msl.index('+ 4096;'):], 'the log comes after the lookup')
 
 
 WALK_LOAD = '''
 kernel void walk(device MAP& map [[buffer(0)]], device const ulong* addrs [[buffer(1)]], device uint* out [[buffer(2)]], constant uint& n [[buffer(3)]], uint tid [[thread_position_in_grid]])
 {
-    dmsh_gmc dm_gc = {0, 0, 0};
+    uint dm_gc = 0;
     for (uint k = 0; k < n; k++) {
         if ((tid & 3) == 2 && k % 3 == 1) continue;
         uint step = tid & 1 ? n - 1 - k : k;
@@ -487,7 +461,7 @@ kernel void walk(device MAP& map [[buffer(0)]], device const ulong* addrs [[buff
 WALK_STORE = '''
 kernel void walk(device MAP& map [[buffer(0)]], device MAP& log [[buffer(1)]], device const ulong* addrs [[buffer(2)]], constant uint& n [[buffer(3)]], uint tid [[thread_position_in_grid]])
 {
-    dmsh_gmc dm_gc = {0, 0, 0};
+    uint dm_gc = 0;
     for (uint k = 0; k < n; k++) {
         uint step = tid & 1 ? n - 1 - k : k;
         ulong a = addrs[step] + 4 * tid; int lo = int(uint(a)), hi = int(uint(a >> 32)), value = int(0x5000 + tid * 64 + step);
@@ -505,13 +479,13 @@ def raw_fixture(out):
         msl, air = Path(out) / (name + '.metal'), Path(out) / (name + '.air'); msl.write_text(source)
         subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance', '-fbracket-depth=1024', str(msl), '-o', str(air)], check=True)
         subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', str(air), '-o', str(Path(out) / (name + '.metallib'))], check=True)
-    load = dmsh_atomic.raw_range_cache(RawGlobal('test_the_search_steps_over_the_table').msl())
+    load = RawGlobal('test_the_search_steps_over_the_table').msl()
     lib('raw', load)
-    # Walks through one cache per invocation, as a shader's many lookups do: every lane its own order, so lanes hit and miss apart, and some skip steps in a loop
+    # Walks through one last entry per invocation, as a shader's many lookups do: every lane its own order, so lanes hit and miss apart, and some skip steps in a loop
     fn = re.search(r'^int (_\d+)\(thread const int&', load, re.M).group(1); ty = re.search(r'device (_\d+)& cp_s1', load).group(1)
     lib('raw_walk', load + WALK_LOAD.replace('LOOKUP', fn).replace('MAP', ty))
-    store = dmsh_atomic.raw_range_cache(RawStore('test_the_log_bit_uses_the_entry_the_cache_gives').msl())
-    fn = re.search(r'^void (_\d+)\(thread const int&', store, re.M).group(1); ty = re.search(r'device (_\d+)& cp_s\d+, device _\d+& cp_s\d+, thread dmsh_gmc', store).group(1)
+    store = RawStore('test_the_log_bit_uses_the_entry_the_cache_gives').msl()
+    fn = re.search(r'^void (_\d+)\(thread const int&', store, re.M).group(1); ty = re.search(r'device (_\d+)& cp_s\d+, device _\d+& cp_s\d+, thread uint&', store).group(1)
     lib('raw_store', store + WALK_STORE.replace('LOOKUP', fn).replace('MAP', ty))
 
 

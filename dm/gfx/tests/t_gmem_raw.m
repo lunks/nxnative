@@ -1,6 +1,6 @@
 // A translated load at an address the shader read from memory (GlobalToStorage.TryGenerateRawStorageOp), run on the GPU against the host's own pool table (nvn_mtl.m gmem_map) with
 // thousands of pools: each probe must read its pool's word, whether the lookup takes the chunk hint (a large pool) or the binary search (small pools), and an address in no pool reads 0. The shader is test_dmsh_ampere_mem.py's RawGlobal one: it loads the address from words 0 and 1 of storage slot 0 and stores what it read at word 2.
-// Then the range cache (dmsh_atomic.raw_range_cache) with many lookups an invocation: lanes that walk a list in different orders, some skipping steps, so that they hit and miss apart, read what each
+// Then the last entry a lookup keeps (GlobalToStorage.TryGenerateRawStorageOp), with many lookups an invocation: lanes that walk a list in different orders, some skipping steps, so that they hit and miss apart, read what each
 // address holds; stores through it land at their addresses and set the log bit of each pool they reach, and of no other.
 // Usage: t_gmem_raw <metallib> <walk metallib> <store metallib>
 #include "../nvn/nvn_mtl.m"
