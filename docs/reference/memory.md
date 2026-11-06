@@ -361,7 +361,7 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Symptom:** the alias region's mapped total runs past the application pool in the first minute.
 - **Cause:** `nninitStartup` allocates and frees everything allocatable (pool − used, 3.15 GB, mapped at the top of the region) and the SDK keeps the freed pages mapped; later allocations map new pages at the bottom until a map fails, and only then does it unmap the cached block and retry. The host never refused a map, so the block stayed mapped beside the 0.4 GB the game used.
 - **Fix:** profile key `mem_map_limit` (`hle_svc.c`): a map past the pool fails with ResultLimitReached, and the used memory `GetInfo` reports counts the mapped pages, as on Horizon (without that, the startup probe itself, sized as total − used, was refused).
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (2.0.2, SDK 19.3.11; one boot). Measured: one refused 4 MB map, the 3.15 GB unmap, the same map again.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (2.0.2, SDK 19.3.11; one boot). Measured: one refused 4 MB map, the 3.15 GB unmap, the same map again. [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), for the used memory rather than the refusal: its heap in the alias region caches nothing and does not retry a refused map, but reads its free size from `QueryMemoryInfo`, so without the key that never falls.
 
 ### Unmapped guest memory stays resident
 
