@@ -227,7 +227,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // The 64-bit address of a global access: Ra (a pair with bit raPairBit, else 32 bits) plus a uniform register pair at urLo (a pair with bit 72) in
         // the uniform form (bit 91), plus the signed offset (40..64). The low word stays (UR + Ra + offset), the form Ryujinx's global-to-storage pass
         // traces back to a storage buffer table entry in c[0].
-        private static (Operand Low, Operand High) AGlobalAddress(EmitterContext context, AmpereOp x, int raPairBit, int urLo, int extraOffset)
+        private static (Operand Low, Operand High) AGlobalAddress(EmitterContext context, AmpereOp x, int raPairBit, int urLo, int extraOffset, int descBit)
         {
             bool uniformForm = x.Bit(91);
             bool raPair = uniformForm ? x.Bit(raPairBit) : x.Bit(72);
@@ -236,7 +236,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand lo = Register(x.Ra, RegisterType.Gpr);
             Operand hi = raPair && x.Ra != RegisterConsts.RegisterZeroIndex ? Register(x.Ra + 1, RegisterType.Gpr) : Const(0);
 
-            if (uniformForm)
+            // desc[URb][Ra.64] (descBit: 76 in LDG / STG, 71 in ATOMG / RED; nvdisasm): URb is a memory descriptor (the compiler's cache policy), not part of the address
+            if (uniformForm && !x.Bit(descBit))
             {
                 int ur = x.Bits(urLo, urLo + 6);
 
@@ -295,7 +296,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             for (int index = 0; index < count; index++)
             {
-                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 32, index * 4);
+                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 32, index * 4, 76);
                 (los[index], his[index]) = (context.Copy(lo), context.Copy(hi));
             }
 
@@ -347,7 +348,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 bool isRz = x.Rb + index >= RegisterConsts.RegisterZeroIndex;
                 Operand value = isRz ? Const(0) : Register(x.Rb + index, RegisterType.Gpr);
 
-                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 64, index * 4);
+                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 64, index * 4, 76);
 
                 context.Store(storageKind, lo, hi, value);
             }
@@ -357,38 +358,62 @@ namespace Ryujinx.Graphics.Shader.Instructions
         public static void ARed(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
-            (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 64, 0);
+            (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 64, 0, 71);
+            AtomOp op = (AtomOp)x.Bits(87, 90);
 
-            EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 90), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
+            if (op is AtomOp.Inc or AtomOp.Dec && x.Bits(73, 75) is 0 or 1)
+            {
+                AGlobalIncDec(context, op, lo, hi, Register(x.Rb, RegisterType.Gpr));
+                return;
+            }
+
+            EmitAtomicOp(context, StorageKind.GlobalMemory, op, (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
         }
 
         // ATOMG Rd, [Ra + UR + offset], Rb: operation 87..91; the uniform form keeps Ra's pair bit at 70
         public static void AAtomg(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
-            (Operand lo, Operand hi) = AGlobalAddress(context, x, 70, 64, 0);
+            (Operand lo, Operand hi) = AGlobalAddress(context, x, 70, 64, 0, 71);
+            AtomOp op = (AtomOp)x.Bits(87, 91);
+            Operand value = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
 
-            Operand res = EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
+            Operand res = op is AtomOp.Inc or AtomOp.Dec && x.Bits(73, 75) is 0 or 1
+                ? AGlobalIncDec(context, op, lo, hi, value)
+                : EmitAtomicOp(context, StorageKind.GlobalMemory, op, (AtomSize)x.Bits(73, 76), lo, hi, value);
 
             ASet(context, x, res);
         }
 
-        // ATOMG.CAS Rd, [Ra + offset], Rb (expected), Rc (new value): Rd = the old value, as PTX atom.cas (Mesa NAK OpAtom: Ra a pair with .E, 72; Rb 32..40; Rc 64..72, so there is no
-        // uniform form; type 73..76; predicate result 81..84). Star Fox's character compute shader 9ac392648752d3d2 takes slots from a counter in a storage buffer up to a bound with
-        // ATOMG.E.CAS.STRONG.GPU PT, R2, [R2.64], R4, R5 (000ea400001ee10500000004020273a9), retrying while Rd differs from the R4 it expected: the old value, not the success flag of
-        // ATOMS.CAS (AAtomsCas), which has 3 in the operation field 87..91 where this one has 0. Only the 32-bit form with no predicate result is taken
+        // INC (3) / DEC (4) on global memory, CUDA's atomicInc / atomicDec: EmitAtomicOp has no case for them (the operation vanished, its result 0). A compare-and-swap loop, as ATOMS's:
+        // INC: old >= b ? 0 : old + 1; DEC: old == 0 || old > b ? b : old - 1 (unsigned), retried until the word did not change meanwhile; the old value
+        private static Operand AGlobalIncDec(EmitterContext context, AtomOp op, Operand lo, Operand hi, Operand value)
+        {
+            Operand loop = Label();
+            context.MarkLabel(loop);
+            Operand cur = context.Load(StorageKind.GlobalMemory, lo, hi);
+            Operand next = op == AtomOp.Inc
+                ? context.ConditionalSelect(context.ICompareGreaterOrEqualUnsigned(cur, value), Const(0), context.IAdd(cur, Const(1)))
+                : context.ConditionalSelect(context.BitwiseOr(context.ICompareEqual(cur, Const(0)), context.ICompareGreaterUnsigned(cur, value)), value, context.IAdd(cur, Const(-1)));
+            Operand prev = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, cur, next);
+            context.BranchIfFalse(loop, context.ICompareEqual(prev, cur));
+
+            return cur;
+        }
+
+        // ATOMG.CAS Rd, [Ra + offset], Rb (expected), Rc (new value, 64..71) (0x3a9; refused until now): PTX atom.cas, Rd the old value. 32 bits only (73..76 = 0)
         public static void AAtomgCas(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
 
-            if (x.Bits(73, 76) > 1 || x.Bits(87, 91) != 0 || x.Bit(91) || x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex)
+            if (x.Bits(73, 76) != 0)
             {
-                throw AFail(context, $"ATOMG.CAS type {x.Bits(73, 76)}, operation {x.Bits(87, 91)}, predicate result {x.Bits(81, 84)}");
+                throw AFail(context, $"ATOMG.CAS size {x.Bits(73, 76)}");
             }
 
-            (Operand lo, Operand hi) = AGlobalAddress(context, x, 72, 64, 0);
-            Operand expected = AGpr(x.Rb);
-            Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
+            (Operand lo, Operand hi) = AGlobalAddress(context, x, 70, 64, 0, 71);
+            Operand expected = context.Copy(x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr));
+            Operand value = x.Bits(64, 72) >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Bits(64, 72), RegisterType.Gpr);
 
             ASet(context, x, context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, expected, value));
         }

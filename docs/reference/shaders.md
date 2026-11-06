@@ -74,6 +74,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Pairing:** control sections are shared between programs, so pair by entry, never by searching for code near a control.
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (BAHS version 9).
 
+### A control section's words read as a BAHS entry
+
+- **Symptom:** the shader build fails one agl or terrain shader no run ever asks for, with `Ampere instruction 481 at 0x0 (000000000000000000000000020c0481) is not implemented` (a vertex shader's SPH read as an instruction); in the map, a shader whose control stage disagrees with its code (a compute control with a vertex SPH, a pixel control with a vertex SPH) and whose stored control section is longer than the file's real ones (0x200, 0x1100, 0x1400 against 0xe0). Also: no `pso_pairs.tsv` rows from a file whose lowest such entry hides its binary array.
+- **Cause:** `bahs_shaders` finds the entries by scanning the table area 4 bytes at a time. An NVN2 control section's +0x38..+0x47 (instruction length, c1 start and end, code length: `L, 0, L, L`) reads as an entry `{code offset L, 0, control size L, control L bytes on}`. When L is a multiple of 0x100 and a later program's control section lies L bytes on, every check passes: the shader pairs that control with whatever code lies at L in the code region. `bahs_variations` finds the binary array at the lowest entry taken minus 0x18, so such an entry below the real ones also hid that file's variation pairs.
+- **Fix:** an entry that lies inside a control section another entry names, measured by that section's own length (`ctl_len`, 0x48 key bytes for NVN2) rather than the length an entry claims, is dropped. Whether a false entry's section is genuine does not matter, as its first 0x48 bytes are a real control section.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): six such shaders in `agl_common`, `agl_technique`, `agl_technique_pfx` and `tera_common`, none of them ever loaded; one failed the build. `tera_common` gave 175 variation pairs once its false entry was gone. [Splatoon Raiders](../../dm/games/0400380020056000/README.md)' map holds the same three agl keys (`68bbe98b3bfd9876`, `18be578dfdaaffa0`, `7a4936fccf82094e`); it, Mario Kart World and Donkey Kong Bananza need their tables split again.
+- **Check:** `dm/tools/tests/test_split_bahs_entries.py` (two programs and the false entry between them, taken on `main`).
+
 ### Zstd files recognised by their magic
 
 - **Symptom:** `shader_split.py` finds 0 shaders in a RomFS of zstd files named `.zst`.
@@ -1220,6 +1228,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Pokémon Pokopia](../../dm/games/0400A3A01EE4C000/README.md): 10,177 instructions in 7,590 programs. The fix made no visible difference in its tutorial area.
 - **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_mem.py`.
 
+### Global memory: descriptors, ATOMG.CAS, INC / DEC
+
+- **Symptom:** a global load, store or atomic at the wrong address in code that uses `desc[URb][Ra.64]` (the descriptor's value added to the address); a shader with `ATOMG.CAS` refused (`Ampere instruction 3a9 ... is not implemented`); an `ATOMG.INC` / `ATOMG.DEC` / `RED.INC` / `RED.DEC` with no effect.
+- **Cause:** `AGlobalAddress` added the uniform register in every uniform form. nvdisasm (sm_86) names two forms: `[Ra.64+URb]`, where URb is part of the address, and `desc[URb][Ra.64]` (bit 76 of LDG / STG, bit 71 of ATOMG / RED), where it is a memory descriptor (the compiler's cache policy) and the address is Ra.64 alone. Unreal Engine 5.4's bounded read (`LDG.!P0 R5, [R5 + UR4]`, `GuardedWrites`) is the first form and is unchanged. Opcode 0x3a9 was not registered; INC and DEC have no case in `EmitAtomicOp`.
+- **Fix:** `AGlobalAddress` takes the form's descriptor bit; `AAtomgCas` (0x3a9, 32 bits: Rb expected, Rc at 64 the new value, the old value returned); `AGlobalIncDec`, a compare-and-swap loop as ATOMS's, for ATOMG and RED.
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` (`GlobalMemory`: the three fail on `main`). A GPU cross-check of 300 LDG / STG / ATOMG / RED from an nvdisasm-validated corpus (sm_86 and sm_80 compiled code), as one-thread compute shaders through a gmem_map the harness builds as the host does (`dmsh_abi.h` `DMSH_GMEM_MAP_*`), production options: 135 identical to 300. Which forms NVN's compiler emits for games is not known here: the descriptor form is CUDA's usual one, and no game note in this repository shows it.
+- **Found on:** cross-checking the translator against nvdisasm and a reference interpreter; no game run.
+
 ### A guarded load whose destination is its address
 
 - **Symptom:** none in the log: everything drawn with an engine's scene data lands on the first instance's transform, or at nothing. In the MSL, a bounds-checked read has a constant index (`vp_s2._m0[0]`) just after a comparison of the register it should use.
@@ -1583,15 +1599,6 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game): loading the Link's house autosave made 4,097 to 4,522 pools. Before the fix all nine runs overflowed the table, and six of them hung the GPU (three wedged, any upscaler). Upstream issue #1265 (v131072 on an M4 with 16 GB): 2,131 ranges at boot, past 4,095 about eight minutes in (frame 14,040) and still growing, 88 pools left out, floors missing; 2,211 of its shaders go through the table. Upstream issue #1326 is the same overflow, though it reads otherwise: its 262,144 is the host's pool tracking table, and both its logs have this red line (5 and 1 pools left out) with 4,248 to 4,594 pools. Its first run hung at 614 s, as this entry describes. Its second ended in GPU write faults at 15.5 GB of GPU allocations, which this entry does not explain. Freed pools leave the table at its next rebuild, which also shrinks it. Donkey Kong Bananza's table held 3,664 ranges when first built, near the old limit too.
 - **Check:** `t_pool_chunks` (5,000 pools: each pool's address found as the shader finds it, and a write-log bit of a late entry), `t_gmem_raw` (the translated load on the GPU against that table: small pools through the search, a large pool through its hint, 0 outside any pool), `test_dmsh_ampere_mem.py` (`RawGlobal`).
 
-
-### A pool made after a raw shader's arguments were encoded
-
-- **Symptom:** a GPU hang or a raw read of 0 while a save loads, with the pool table's size in order: no `more pool ranges` red line. The memory report's `raw pool table words at commit` line counts the words that were out of date.
-- **Cause:** an argument block holds the [pool table](#global-memory-at-an-address-loaded-from-memory) that was current when it was encoded. A pool made after that, later in the submission or on another thread while it is encoded, is not in it, and a read of that pool gets 0, as past the table's end ([More memory pools than the raw pool table had entries](#more-memory-pools-than-the-raw-pool-table-had-entries)). A later encode builds a newer table, but the blocks already encoded keep theirs.
-- **Fix:** `gmem_commit_patch` in `nvn_mtl.m`, for every game, from [#1407](https://github.com/seedds/nxnative/pull/1407)'s idea. Every table word of an argument block is noted when it is encoded, and at each commit, whole or segment, before the GPU can read it, it is pointed at a table of the pools as they are then. A word with a write log takes its log along: the log's bits are entries of the table the shader searches and its completion handler reads them against that table, and a larger table needs a larger log. An argument block reused after a segment commit keeps the table of that commit.
-- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_gmem_raw`: a pool added after the word was noted reads its word through the patched table and 0 through the one it was encoded with; a word behind a newer table follows it; a log moves with its table.
-- **Open:** whether this is what is left of the hang in [#1326](https://github.com/seedds/nxnative/issues/1326), minutes after a clean table growth: nothing here reproduced that hang.
-- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): loading the outdoor save, 5,729 of 154,107 words held an older table and 2,582 the current one behind the pools by frame 5,100.
 
 ### Bindless handles through a loop phi
 
@@ -2212,3 +2219,11 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** `fs_uint` emits `main0_u` for every shader with float colour outputs, reinterpreting their bits as unsigned integers. The host chooses it for unsigned integer attachments. Float entries and mixed-format inference remain unchanged. This increases shader library size.
 - **Checks:** `test_dmsh_fs_uint.py` compiles the generated variants for Mac and iOS, and reads back native R8Uint/R32Uint targets for raw varying values and arithmetic results. It also checks mixed outputs, early returns and non-colour outputs.
 - **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md#shaders), a mesh draw into an R8Uint attachment.
+
+### Raw pool table words that predate the pools
+
+- **Symptom:** a raw global memory read of a memory pool made after the shader's arguments were encoded gets 0, though the pool exists when the GPU runs it; a task shader that reads both ends of a range this way loops `(0 - 1) >> 5` times and hangs the GPU. The memory report's `raw pool table words at commit` line counts the words that were out of date.
+- **Cause:** an argument block holds the address of the pool table that was current when it was encoded (`gmem_map_gpu`). A pool made later in the same submission, or on another thread while it is encoded, is not in that table, and the table is rebuilt only for the next block that is encoded. A save load makes more than 4,000 pools in a burst, so many blocks are encoded with a table that lags.
+- **Fix:** the words are noted as they are encoded (`gmem_slot_note`) and, at each commit of the command buffer, whole or segment, pointed at a table of the pools as they are then (`gmem_commit_patch`). A new table is built when the pools changed, not refilled in place, as earlier segments may be reading the old one; the replaced one goes through the deferred release. The write log of a block is a bitmap of the entries of the table its shader searches, so the log follows its table (`NvGmlLog`): `gml_read` decodes its bits against the table the block holds at the commit, not the one it was encoded with. The idea is #1407's, which rewrites the words at commit in its own stack.
+- **Found on:** The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, profile in PR #1299): on the author's stack, loading the outdoor save, 5,729 of 154,107 words held an older table than the current one by frame 5,100 and 2,582 held the current one behind the pools. Whether this is what is left of the hang in issue #1326, minutes after a clean table growth, is open.
+- **Check:** `t_gmem_words` (words noted, a pool made after them, an older table, a table that lags, a commit with no words).

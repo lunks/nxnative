@@ -11,6 +11,7 @@ struct dm_flags g_flag;
 void svc_thread_dump(void) {}
 void dm_vi_layer_size(int *w, int *h) { *w = *h = 0; }
 void dm_vi_layer_crop(int c[4]) { memset(c, 0, 4 * sizeof *c); }
+void dm_vi_frame_queued(uint64_t frame) { (void)frame; }
 int dm_opmode(void) { return 1; }
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 uint64_t guest_ns(void) { return 0; }
