@@ -163,19 +163,86 @@ static void finalized_bindless_pool(void) {
     os_unfair_lock_lock(&g_rmu);
     pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &a);
     uint64_t first = ((const uint64_t *)((const char *)a.contents + DMSH_POOL_HEAD))[FIRST];
-    CHECK(g_pkg_uploads == uploads + N && g_ghost_active.n == N, "one upload per retired descriptor in the first pool walk");
+    CHECK(g_pkg_uploads == uploads + N && g_pkg_alias.n == N && !g_ghost_active.n, "one upload per retired descriptor in the first pool walk, kept by storage with no ghost entry");
     pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &b);
     uint64_t again = ((const uint64_t *)((const char *)b.contents + DMSH_POOL_HEAD))[FIRST];
     os_unfair_lock_unlock(&g_rmu);
     CHECK(first == again && g_pkg_uploads == uploads + N, "rebuilding the pool preserves textures that spilled out of the ghost ring");
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "bindless pool uploads completed");
-    CHECK(!g_ghost_active.n && g_ghost.n == NGHOST && !g_treg[FIRST].view, "submission drops its pins and transient views and keeps the bounded ghost cache");
+    CHECK(!g_ghost_active.n && !g_ghost.n && g_pkg_alias.n == N, "the ring holds none of them");
     for (int i = 0; i < N; i++) mtl_reg_tex(FIRST + i, NULL, NULL);
+    h_nvnMemoryPoolFinalize(&pool);
+    CHECK(!g_pkg_alias.n && !g_pkg_kept_bytes, "the pool's kept textures go with it");
+    defer_drain(); munmap(mem, len);
+}
+// A packaged texture past its object (nvn_mtl.m g_pkg_alias): kept by storage, the serial table's count leaving with it, found by the next object, uploaded again when the CPU wrote it,
+// upgraded in place, let go past the limit and under pressure
+static void kept_past_object(void) {
+    const size_t len = 1 << 20;
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (mem == MAP_FAILED) abort();
+    NVNmemoryPool pool = {0};
+    pool_builder_t pb = {.mem = mem, .size = len, .flags = NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    CHECK(h_nvnMemoryPoolInitialize(&pool, (const NVNmemoryPoolBuilder *)&pb), "kept texture storage initialized");
+    NVNtextureBuilder tb; h_nvnTextureBuilderSetDefaults(&tb);
+    h_nvnTextureBuilderSetWidth(&tb, 4); h_nvnTextureBuilderSetHeight(&tb, 4); h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA8);
+    h_nvnTextureBuilderSetStorage(&tb, &pool, 65536);
+    NVNcopyRegion region = {0, 0, 0, 4, 4, 1};
+    uint8_t pixels[64]; memset(pixels, 0x41, sizeof pixels);
+    NVNtexture a = {0}, b = {0};
+    CHECK(h_nvnTextureInitialize(&a, &tb), "first object");
+    h_nvnTextureWriteTexels(&a, NULL, &region, pixels);
+    uint64_t uploads = g_pkg_uploads, serial = ((tex_t *)&a)->serial;
+    mtl_sub_begin();
+    id<MTLTexture> first = tex_mtl((const tex_t *)&a); id entry = tex_get(serial);
+    CHECK(first && g_pkg_uploads == uploads + 1 && [entry isKindOfClass:[NvPkg class]] && serial_table_holds((__bridge void *)entry), "the first object uploads, and the serial table holds it");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "first upload completed");
+    h_nvnTextureFinalize(&a);
+    CHECK(!tex_get(serial) && g_pkg_alias.n == 1 && !serial_table_holds((__bridge void *)entry), "finalized: kept by storage, and the serial count left with it");
+    CHECK(h_nvnTextureInitialize(&b, &tb), "second object over the storage");
+    mtl_tex_cpu_written((const tex_t *)&b);
+    mtl_sub_begin();
+    id<MTLTexture> again = tex_mtl((const tex_t *)&b);
+    CHECK(again == first && g_pkg_uploads == uploads + 1 && tex_get(((tex_t *)&b)->serial) == entry && serial_table_holds((__bridge void *)entry), "the next object finds it, with no upload");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "lookup completed");
+    memset(pixels, 0x42, sizeof pixels); h_nvnTextureWriteTexels(&b, NULL, &region, pixels);
+    uint64_t reuploads = g_pkg_reuploads;
+    mtl_sub_begin();
+    id<MTLTexture> written = tex_mtl((const tex_t *)&b);
+    CHECK(written && written != first && g_pkg_reuploads == reuploads + 1, "the CPU wrote it: uploaded again, not read stale");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "second upload completed");
+    tex_t snap = *(tex_t *)&b;
+    h_nvnTextureFinalize(&b);
+    mtl_sub_begin();
+    id<MTLTexture> up = tex_upgrade(&snap, written, MTLTextureUsageRenderTarget, written.pixelFormat);
+    CHECK(up != written && pkg_alias_of(&snap) == entry && ((NvPkg *)entry)->tex == up, "a finalized serial's upgrade replaces the kept texture, not only its name");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "upgrade completed");
+    NVNtexture c = {0}; h_nvnTextureBuilderSetStorage(&tb, &pool, 131072);
+    CHECK(h_nvnTextureInitialize(&c, &tb), "an object over other storage");
+    h_nvnTextureWriteTexels(&c, NULL, &region, pixels);
+    mtl_sub_begin(); CHECK(tex_mtl((const tex_t *)&c) != nil, "its upload"); CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "its upload completed");
+    uint64_t gone = g_pkg_kept_gone; g_pkg_kept_limit = 1;
+    h_nvnTextureFinalize(&c);
+    g_pkg_kept_limit = 0;
+    CHECK(g_pkg_alias.n == 1 && g_pkg_kept_gone == gone + 1 && !pkg_alias_of(&snap), "past the limit the oldest goes");
+    CHECK(pkg_alias_trim() == 1 && !g_pkg_alias.n && !g_pkg_kept_bytes, "under pressure what no live object holds goes");
     h_nvnMemoryPoolFinalize(&pool);
     defer_drain(); munmap(mem, len);
 }
 // A pool walk makes no texture for an ID whose texture would start empty, live or retired: the table reads the dummy, as it would read 0. A real use of that storage reaches the table, also for a
 // retired ID with another serial, and content in the storage still takes a texture
+// A block-compressed texture drawn through a shadow (bcrt_attach) has no render-target usage to say the GPU owns it: a copy from it must not read the storage instead
+static void bc_target_owned(void) {
+    tex_t t = {.magic = MAGIC('T', 'E', 'X', 0), .serial = 99810};
+    t.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = 0x42, .width = 16, .height = 16, .depth = 1, .levels = 1, .samples = 1}; nvn_tex_layout(&t.d, &t.L);
+    mtl_tex_init(&t);
+    mtl_sub_begin(); id<MTLTexture> bc = tex_mtl(&t);
+    CHECK(bc && mtl_fmt_block(bc.pixelFormat) && !mtl_tex_gpu_owned(t.serial) && !tex_gpu_touched(t.serial), "a compressed texture nothing drew into is not the GPU's");
+    objc_setAssociatedObject(bc, &g_bcrt_gpu_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CHECK(mtl_tex_gpu_owned(t.serial) && tex_gpu_touched(t.serial), "one drawn through a shadow is");
+    CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "compressed target submission completed");
+    mtl_tex_release(&t);
+}
 static void walk_leaves_empty(void) {
     enum { N = 64, LIVE = 8, FIRST = 256, STRIDE = 4096, CONTENT = N - 1 };
     const size_t len = (N + 1) * STRIDE;
@@ -282,6 +349,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     CHECK(mtl_cpu_tex_count() == N - 2, "a texture with no serial is not recorded");
     for (int i=0;i<N;i++) mtl_tex_release(&t[i]);
     retired_classification(); descriptor_replacement(); gpu_written_ranges();
-    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); walk_leaves_empty(); packaged_entry_outside_the_set(); }
+    if (argc > 1 && !strcmp(argv[1], "--metal")) { mtl_init(); finalized_upload(0); finalized_upload(1); finalized_bindless_pool(); kept_past_object(); bc_target_owned(); walk_leaves_empty(); packaged_entry_outside_the_set(); }
     printf("t_cpu_tex: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }

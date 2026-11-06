@@ -501,6 +501,14 @@ Games read this count as a position in their own command memory and size their h
 - **Also:** Pokémon Pokopia gives nearly every texture `IMAGE` (flags 0x4), its icons BC1 / BC7 in a `CPU_UNCACHED` pool: with `IMAGE` excluding them, a new icon over storage another icon had used got that icon's picture (in the store and the Pokédex, once storage was reused). `IMAGE` now keeps only uncompressed textures out. Found and fixed by xFractals/pokopia-native (issue #1).
 - **Also found on:** [Xenoblade Chronicles 3](../../dm/games/010074F013262000/README.md) (GitHub issue #1011): its particle steering fields are 10x10x10 RGBA8 and RGBA16F 3D textures, flags 0, that the CPU writes before first use. As GPU textures of zeros they steered every send-off particle along (-1, -1, -1), so the particles sank diagonally into the ground instead of rising. `t_initial_uncached.m` also covers a 4x4x4 RGBA8 3D texture (each slice holds the CPU's texels at first use) and a 3D `IMAGE` texture (left alone).
 
+### Packaged textures past their objects
+
+- **Symptom:** the memory report shows ghost puts in the hundreds of thousands, generation bumps every frame, and uploads of textures that have not changed, in a scene with many finalized texture objects.
+- **Cause:** a finalized object's descriptor stays registered, and a new object over the same storage is the same texture, but each took an upload and a ghost entry. Past the ghost ring's 512 every eviction noted a serial, so the next pool table patch resolved it again.
+- **Fix:** `g_pkg_alias` in `nvn_mtl.m` keeps a packaged texture by pool, offset and description. `mtl_tex_release` moves it there, a finalized serial gets no ghost entry, and a new packaged object finds it before uploading. Dirty pages are checked as for any packaged texture. Each entry is a private copy of guest memory, so the table holds at most the working set / 16, and the GPU memory guard lets go of what no live object holds. The report's `packaged textures kept past their objects` line counts it.
+- **Check:** `t_cpu_tex --metal`.
+- **Found on:** The Legend of Zelda: Ocarina of Time, PR #1444 (965,532 ghost puts in the Market and Kakariko Village; not measured on this stack).
+
 ### Mapped-range flushes taken as uploads (`tex_flush_upload`)
 
 - **Symptom:** a movie plays black (Age of Calamity: its intro movie under the "+ Skip" prompt).

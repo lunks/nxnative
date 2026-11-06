@@ -80,6 +80,9 @@ static void readback_pool(void) { @autoreleasepool {
     id<MTLBuffer> big[3]; for (int i = 0; i < 3; i++) big[i] = mrbuf_get(8u << 20);
     for (int i = 0; i < 3; i++) mrbuf_put(big[i]);
     EXPECT("at most 16 MB of readback buffers kept", 1, g_mrbuf_bytes <= (16u << 20) && g_mrbuf_n == 3);
+    id<MTLBuffer> mid[2]; for (int i = 0; i < 2; i++) mid[i] = mrbuf_get(4u << 20);
+    for (int i = 0; i < 2; i++) mrbuf_put(mid[i]);
+    EXPECT("a new size makes room, the oldest first", 1, g_mrbuf_bytes == (16u << 20) && g_mrbuf_n == 3 && g_mrbuf[2] == mid[1]);
     readback_pool_drop();
 } }
 static void *readback_guest_waiter(void *arg) {
@@ -132,6 +135,19 @@ static void sparse_reads(const NVNcopyRegion *region, const uint8_t expected[4])
         int bad = 0; for (int i = 0; i < 32; i++) bad += memcmp(cpu + i * 4, m ? zero : expected, 4) != 0;
         char name[128]; snprintf(name, sizeof name, "sparse texture, %s pages, ReadTexels on %s thread, 32 literal pixels", m ? "unmapped" : "mapped", other ? "a game" : "the submit");
         EXPECT(name, 0, bad);
+    }
+    // The host textures: the gathered copy goes through the batch's GPU deswizzle, and they hold what the page table maps
+    uint64_t gpu_uploads = g_sparse_gpu_uploads;
+    mtl_sub_begin(); id<MTLTexture> gm = tex_mtl((const tex_t *)&mapped), gu = tex_mtl((const tex_t *)&unmapped);
+    EXPECT("sparse uploads completed", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
+    EXPECT("sparse uploads take the GPU deswizzle", 1, gm && gu && g_sparse_gpu_uploads == gpu_uploads + 2);
+    for (int m = 0; m < 2; m++) {
+        id<MTLBuffer> rb = [g_dev newBufferWithLength:8 * 4 * 4 options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> c = q_cb(); id<MTLBlitCommandEncoder> e = [c blitCommandEncoder];
+        [e copyFromTexture:m ? gu : gm sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(8, 4, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:8 * 4 destinationBytesPerImage:8 * 4 * 4];
+        [e endEncoding]; [c commit]; [c waitUntilCompleted];
+        int bad = 0; for (int i = 0; i < 32; i++) bad += memcmp((const uint8_t *)rb.contents + i * 4, m ? zero : expected, 4) != 0;
+        EXPECT(m ? "sparse upload, unmapped pages: 0" : "sparse upload, mapped pages: their texels", 0, bad);
     }
     h_nvnTextureFinalize(&unmapped); h_nvnTextureFinalize(&mapped);
     h_nvnMemoryPoolFinalize((NVNmemoryPool *)&sparse); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&physical); munmap(phys, len);

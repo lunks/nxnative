@@ -82,6 +82,17 @@ int main(void) { @autoreleasepool {
     CHECK("swizzle", !nvn_swizzle(&t.d, 0, 0, lin, 256 * 4, t.mem));
     int n2 = g_npool; mtl_sub_begin(); id<MTLTexture> image = tex_mtl(&t); CHECK("texture resolves", image != nil); finish();
     CHECK("the upload made no chunk", g_npool == n2);
+    CHECK("it keeps one upload buffer, a stride long", g_upk_n == 1 && g_upk[0].b - g_upk[0].a == BIG_S);
+    id<MTLBuffer> keptb = g_upk[0].buf; uint64_t ko = 0;
+    CHECK("an upload beside it reads the same buffer", up_big_src((uint64_t)(uintptr_t)t.mem + 4096, 4096, &ko, 0) == keptb && g_upk_n == 1 && ko == (uint64_t)(uintptr_t)t.mem + 4096 - g_upk[0].a);
+    { uint64_t real = g_upk_bytes, o = 0, was = atomic_load(&g_cur_frame); g_upk_bytes = UPK_MAX;
+      mtl_sub_begin(); up_begin(); id<MTLBuffer> own = up_big_src((uint64_t)(uintptr_t)mem + 500 * MB, 4096, &o, 0);
+      CHECK("past the bound an upload has a buffer of its own, and takes none from one in use", own && own != keptb && own.length < BIG_S && g_upk_n == 1); finish();
+      atomic_store(&g_cur_frame, was + UPK_IDLE + 1); g_upk_bytes = UPK_MAX; mtl_sub_begin(); up_begin(); id<MTLBuffer> next = up_big_src((uint64_t)(uintptr_t)mem + 500 * MB, 4096, &o, 0);
+      CHECK("a long-idle buffer gives way", next && next != keptb && g_upk_n == 1 && g_upk[0].buf == next); finish();
+      atomic_store(&g_cur_frame, was); g_upk_bytes = real;
+      mtl_sub_begin(); up_begin(); id<MTLBuffer> lng = up_big_src((uint64_t)(uintptr_t)mem + 100 * MB, 200 * MB, &o, 0);
+      CHECK("a long texture has a buffer of its own", lng && g_upk_n == 1); finish(); }
     id<MTLBuffer> rb = [g_dev newBufferWithLength:256 * 256 * 4 options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> ce = [cb blitCommandEncoder];
     [ce copyFromTexture:image sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(256, 256, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:256 * 4 destinationBytesPerImage:256 * 256 * 4];
@@ -110,6 +121,7 @@ int main(void) { @autoreleasepool {
     int n3 = g_npool; mtl_pool_add(small, 64 * MB); CHECK("one entry", g_npool == n3 + 1 && g_nbig == 1);
     CHECK("its buffer is the whole pool", look((uint64_t)(uintptr_t)small + 10, 16).length == 64 * MB);
     mtl_pool_del(mem); mtl_drain();
+    CHECK("the kept upload buffers go with the pool", !g_upk_n && !g_upk_bytes);
     CHECK("no large pool left", g_nbig == 0);
     CHECK("only the small pool's entry is left of those added", g_npool == pools0 + 1);
     CHECK("the small pool still answers, its entry moved", look((uint64_t)(uintptr_t)small + 20, 16).length == 64 * MB);

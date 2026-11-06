@@ -361,7 +361,7 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Symptom:** the alias region's mapped total runs past the application pool in the first minute.
 - **Cause:** `nninitStartup` allocates and frees everything allocatable (pool − used, 3.15 GB, mapped at the top of the region) and the SDK keeps the freed pages mapped; later allocations map new pages at the bottom until a map fails, and only then does it unmap the cached block and retry. The host never refused a map, so the block stayed mapped beside the 0.4 GB the game used.
 - **Fix:** profile key `mem_map_limit` (`hle_svc.c`): a map past the pool fails with ResultLimitReached, and the used memory `GetInfo` reports counts the mapped pages, as on Horizon (without that, the startup probe itself, sized as total − used, was refused).
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (2.0.2, SDK 19.3.11; one boot). Measured: one refused 4 MB map, the 3.15 GB unmap, the same map again.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (2.0.2, SDK 19.3.11; one boot). Measured: one refused 4 MB map, the 3.15 GB unmap, the same map again. [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), for the used memory rather than the refusal: its heap in the alias region caches nothing and does not retry a refused map, but reads its free size from `QueryMemoryInfo`, so without the key that never falls.
 
 ### Unmapped guest memory stays resident
 
@@ -385,6 +385,14 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Tracing it with probes** ([05](../agents/05-debugging.md#probes-without-a-debugger-dm_probe)): the gsys GPU allocator at `main+0x4290c0` and the heap's `tryAlloc` (vtable slot +0x30) show which heap, its size and every allocation into it; the `!xN` heap walk shows the free and used blocks at the moment of failure.
 - **Note:** read the probe log carefully: `tryAlloc` probes show *requests*, not successes, so a running total that already exceeds the heap means an earlier request failed.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md), [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (the two entries below).
+
+### Upload buffers kept over a large pool
+
+- **Symptom:** residency commits take milliseconds of every frame while textures stream from a pool of 512 MB or more.
+- **Cause:** each upload batch made a zero-copy buffer over the texture and took it out of the residency set again.
+- **Fix:** `up_big_kept` in `nvn_mtl.m` keeps them by 16 MB stride, at most 64 buffers and 1 GB, as more would wire the pool as uploads reach it. Only a buffer idle for 600 frames gives way; past the bound an upload makes its own, as a scattered load would otherwise wire 16 MB for each small texture. The GPU memory guard lets them go.
+- **Check:** `t_pool_chunks`.
+- **Found on:** The Legend of Zelda: Ocarina of Time, PR #1444 (21.5 ms a frame in the Market and Kakariko Village; not measured on this stack).
 
 ### Model heaps sized by the host's command record sizes
 
