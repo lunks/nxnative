@@ -24,10 +24,8 @@ static void settle(void) { mtl_sub_begin(); mtl_sub_commit(); mtl_drain(); defer
 
 static void levels(void) {
     g_guard.evict = 800; g_guard.stop = 950; g_guard.wall = 1000;
-    CHECK(guard_level(799, 799) == GUARD_OK && guard_level(800, 800) == GUARD_EVICT && guard_level(950, 950) == GUARD_STOP && guard_level(1000, 1000) == GUARD_WALL, "the levels");
-    CHECK(guard_level(100, 799) == GUARD_OK && guard_level(100, 800) == GUARD_EVICT && guard_level(100, UINT64_MAX) == GUARD_EVICT, "the device's size, however large, evicts and never stops");
-    CHECK(guard_level(950, 100) == GUARD_STOP && guard_level(1000, 100) == GUARD_WALL, "the set's size stops");
-    memset(&g_guard, 0, sizeof g_guard); CHECK(guard_level(UINT64_MAX, UINT64_MAX) == GUARD_OK, "off: no level");
+    CHECK(guard_level(799) == GUARD_OK && guard_level(800) == GUARD_EVICT && guard_level(950) == GUARD_STOP && guard_level(1000) == GUARD_WALL, "the levels");
+    memset(&g_guard, 0, sizeof g_guard); CHECK(guard_level(UINT64_MAX) == GUARD_OK, "off: no level");
     setenv("DM_NVN_RES_LIMIT_MB", "950", 1); guard_init();
     CHECK(g_guard.stop == 950ull << 20 && g_guard.evict == 800ull << 20 && g_guard.wall == g_dev.recommendedMaxWorkingSetSize, "DM_NVN_RES_LIMIT_MB sets the stop and the eviction level under it");
     setenv("DM_NVN_RES_LIMIT_MB", "0", 1); memset(&g_guard, 0, sizeof g_guard);
