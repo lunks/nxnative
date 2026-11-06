@@ -161,6 +161,9 @@ def raw_range_cache(source):
         signature, body = new.get(sig, (lines[sig], '\n'.join(lines[opening + 1:closing]) + '\n'))
         called = 0
         for n in names: body, k = _pass_cache(body, n); called += k
-        out += [signature, '{'] + (['    dmsh_gmc dm_gc = {0, 0, 0};'] if called and sig not in new else []) + body.rstrip('\n').split('\n') + ['}']
+        rows = body.rstrip('\n').split('\n')
+        if called and sig not in new:   # after a task or mesh kernel's stage memory, which dmsh_meshstage.py finds as the kernel's first line
+            rows.insert(1 if rows[0].lstrip().startswith('threadgroup spvUnsafeArray<uint') else 0, '    dmsh_gmc dm_gc = {0, 0, 0};')
+        out += [signature, '{'] + rows + ['}']
     out += lines[pos:]
     return '\n'.join(out).replace('using namespace metal;', 'using namespace metal;\n' + _RAW_RANGE_CACHE, 1)

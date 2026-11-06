@@ -5,7 +5,7 @@ import json, os, re, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1] / 'tools'
-sys.path.insert(0, str(TOOLS)); import dmsh_atomic
+sys.path.insert(0, str(TOOLS)); import dmsh_atomic, dmsh_meshstage
 EXIT = (0x000fea0003800000, 0x000000000000794d)   # hi, lo: EXIT
 # SUATOM.ADD.U32 R12, [R3], R12 on the 1D image whose handle is word 12 of c0 (AMapC0: image slot 1), as the game encodes it but unpredicated (PT)
 SUATOM = (0x002ea200001ee000, 0x00000c0c030c7593)
@@ -434,6 +434,13 @@ class RawGlobal(Translated):
         msl = self.msl()
         self.has(msl, r'device _\d+\* cp_s0 \[\[id\(0\)\]\];\s*(const )?device _\d+\* cp_s1 \[\[id\(1\)\]\];')
         self.has(msl, r'cp_s0\)\._m0\[2\] = ')
+
+    def test_a_kernels_stage_memory_stays_first_under_the_range_cache(self):   # dmsh_meshstage.to_stage finds a task or mesh kernel by it
+        msl = re.sub(r'(kernel void main0\((?:[^()]|\([^()]*\))*\)\n\{\n)', r'\1    threadgroup spvUnsafeArray<uint, 64> stage_mem;\n', self.msl(), count=1)
+        self.assertIn('stage_mem', msl)
+        cached = dmsh_atomic.raw_range_cache(msl)
+        self.assertIn('dmsh_gmc dm_gc', cached)
+        self.assertIsNotNone(dmsh_meshstage._KERNEL.search(cached))
 
     def test_the_range_cache_goes_around_the_hint_and_the_search(self):   # dmsh_atomic.raw_range_cache: the build runs it on every shader
         msl = dmsh_atomic.raw_range_cache(self.msl())
