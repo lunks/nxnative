@@ -6,8 +6,9 @@ program_id	0400486024DEC000
 
 # ---- App ----
 name	The Legend of Zelda: Ocarina of Time
-ipa	OcarinaOfTime.ipa
-app_category	public.app-category.games
+ipa	ZeldaOcarinaOfTime.ipa
+app_category	public.app-category.adventure-games
+pad_layout	full
 
 # ---- Versions ----
 # v0 is the base dump the profile was brought up on; v131072 (1.1.1) is the update a NUP carries alone, the whole game. Their modules are the same builds, and the shader tables
@@ -20,7 +21,7 @@ shader_versions	v131072
 # ---- Files ----
 modules	main subsdk0 sdk
 romfs_marker	Event/Movie/Dm_StaffCredit_0000.webm
-zip_store	.bwav:.webm:.zs:.metallib
+zip_store	.zs:.bwav:.webm:.metallib
 
 # ---- Memory ----
 # The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap.
@@ -28,18 +29,24 @@ zip_store	.bwav:.webm:.zs:.metallib
 # On the Mac the region is 64 GB of address space whatever this key says (hle_svc.c, e9d71e27): mem_alias sizes the heap, mem_reserve - 256 MB - mem_alias - mem_stack = 0x248000000, which holds the 0x18ce00000 request, and an iPhone's region.
 mem_reserve	0x380000000
 mem_alias	0x118000000
+mem_map_limit	on
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
 
 # ---- Shader split ----
 shader_groups	/Shader/=shader /Lib/=lib /Effect/=effect /Layout2Shader/=layout /Movie/=movie
-shader_note	0400486024DEC000 shaders
+shader_note	Ocarina of Time shaders
 
 # ---- Graphics ----
 # agl wraps its depth clears in render conditions, as on Donkey Kong Bananza and Splatoon Raiders: in Kokiri Forest the main opaque pass tests EQUAL against a copy of the prepass depth
 # that a conditional clear (skipped on the console) wiped first, so no lit geometry landed and the full-screen sky showed through everywhere (a white scene)
 render_cond	on
+gpu_timestamps	segment
+draw_barriers	game
+# As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
+tex_flush_upload	on
+tex_dirty_upload	on
 # The scene camera for MetalFX's motion vectors (DM_UPSCALER=metalfx-temporal, DM_MFX_INTERP; nvn_mfx.inc): gsys's Context uniform block at vertex uniform 0 of the scene passes, the view
 # (3x4 rows) at +0x0 and the view-projection at +0x30, as on Donkey Kong Bananza. Read in a run (DM_MFX_PROBE, v131072): the opening's 3D cutscenes and Link's house give a GL perspective
 # camera (50 degrees, 16:9, near 0.1, far 25037, no projection offset) in the 1920x1080 D32F depth pass that matches the upscaler's input; 15,000 upscaler frames, none without a camera

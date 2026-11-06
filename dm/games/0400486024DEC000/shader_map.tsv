@@ -1,4 +1,4 @@
-# kind: evidence  0400486024DEC000 shaders (BNSH / BAHS in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# kind: evidence  Ocarina of Time shaders (BNSH / BAHS in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
 # column 5 records where each key first appears; no PC shader pairing supplied
 package	index	stage	dm_ctl_sha16	source
 ps_effect.bin	0	pixel	22a72da0d0862466	/Effect/1668363661_3949112793_1261539663_C3C4_TT.Nin_Ounce_NVN2.vsetb.byml.zs#BNSH@0x15000#var0
@@ -28121,8 +28121,8 @@ ps_lib.bin	4709	pixel	338b536303eeebf9	/Lib/gsys/gsys_resource.Nin_Ounce_NVN2.re
 ps_lib.bin	4710	pixel	53b2a30425f71b0d	/Lib/gsys/gsys_resource.Nin_Ounce_NVN2.release.sarc.zs/common.sharcb#BAHS@0xd1c0
 vs_lib.bin	592	vertex	66fb51ea12511428	/Lib/gsys/gsys_resource.Nin_Ounce_NVN2.release.sarc.zs/common.sharcb#BAHS@0xf390
 vs_lib.bin	593	vertex	f7d849c7b92dd819	/Lib/gsys/gsys_resource.Nin_Ounce_NVN2.release.sarc.zs/common.sharcb#BAHS@0xfa10
-cs_movie.bin	0	compute	c2fc2ddd604c25e7	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE#NDSR@0x104f28
-cs_movie.bin	1	compute	4f41ccf24f163e0d	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE#NDSR@0x105008
+cs_movie.bin	0	compute	c2fc2ddd604c25e7	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE#NDSR@0x104f00
+cs_movie.bin	1	compute	4f41ccf24f163e0d	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE#NDSR@0x104fe0
 cs_movie.bin	2	compute	ba079f68ae288dba	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE@0x1423e8
 cs_movie.bin	3	compute	a8b4fb48fee0ccf8	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE@0x149558
 cs_movie.bin	4	compute	e2eebd7ba18fe35f	/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat.zs#NDVE@0x14dbc8

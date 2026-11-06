@@ -182,7 +182,7 @@ static void notes(void) {
     mtl_sub_begin(); tex_mtl(&gone); CHECK(table_entry(12, &dummy) != dummy, "the table holds it"); mtl_sub_commit();
     mtl_tex_release(&gone);
     mtl_sub_begin(); CHECK(table_entry(12, NULL) != dummy && g_treg[12].view, "the retired ID has a view of the shared texture"); mtl_sub_commit();
-    alias_key gk; tex_alias_key(&gone, &gk);
+    alias_key gk = tex_alias_key(&gone);
     mtl_sub_begin(); pthread_mutex_lock(&g_smu); alias_let_go(&gk, 1); g_ser_gen++; pthread_mutex_unlock(&g_smu);   // an epoch, before the sweep has run
     CHECK(table_entry(12, NULL) == dummy, "the table does not name it"); CHECK(!g_treg[12].view, "and the view went"); mtl_sub_commit();
     mtl_reg_tex(12, NULL, NULL);

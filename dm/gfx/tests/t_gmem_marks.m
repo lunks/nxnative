@@ -1,6 +1,6 @@
-// Raw global memory's pool table (nvn_mtl.m gmem_map) lists only the pools the game took a buffer address in (mtl_pool_buffer_addr: nvnMemoryPoolGetBufferAddress,
-// nvnBufferInitialize, nvnTextureGetTextureAddress), and only those come into the residency set for it. A pool holding only textures stays out of the table and out of the residency
-// set, through a pool walk's storage check (tex_storage_live) and a texture upload (up_big_src) too, and its texture still holds what the pool holds. DM_NVN_GMEM_ALL lists every pool.
+// Raw global memory's pool table (nvn_mtl.m gmem_map) lists only the pools something gave an address in (mtl_pool_addressed: nvnMemoryPoolGetBufferAddress, nvnBufferInitialize,
+// nvnTextureGetTextureAddress), and only those come into the residency set for it. A pool holding only textures stays out of the table and out of the residency set, through a pool
+// walk's storage check (tex_storage_live) and a texture upload (up_big_src) too, and its texture still holds what the pool holds.
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -20,13 +20,12 @@ static int resident(const void *mem) { pthread_mutex_lock(&g_mu); int i = pool_f
 static uint8_t *pool_mem(size_t len) { uint8_t *m = NULL; if (posix_memalign((void **)&m, (size_t)getpagesize(), len)) abort(); memset(m, 0, len); mtl_pool_add(m, len); return m; }
 int main(void) { @autoreleasepool {
     mtl_init();
-    g_gmem_all = 0;
     const size_t LEN = 1 << 20;
     uint8_t *bufs = pool_mem(LEN), *ubo = pool_mem(LEN), *texs = pool_mem(LEN);
-    mtl_pool_buffer_addr(bufs, LEN);          // nvnMemoryPoolGetBufferAddress
-    mtl_pool_buffer_addr(ubo, LEN);           // nvnBufferInitialize marks the buffer's pool
+    mtl_pool_addressed(bufs, LEN);          // nvnMemoryPoolGetBufferAddress
+    mtl_pool_addressed(ubo, LEN);           // nvnBufferInitialize marks the buffer's pool
     uint64_t gen = atomic_load(&g_pool_gen);
-    mtl_pool_buffer_addr(bufs, LEN);
+    mtl_pool_addressed(bufs, LEN);
     CHECK("marking a pool again does not rebuild the table", atomic_load(&g_pool_gen) == gen);
     table();
     CHECK("a pool with a buffer address is listed", listed(bufs) && listed(ubo));
@@ -51,16 +50,12 @@ int main(void) { @autoreleasepool {
     CHECK("the texture holds what the pool holds", !memcmp(rb.contents, lin, 128 * 128 * 4));
     free(lin); mtl_tex_release(&t);
     // nvnTextureGetTextureAddress on it: from then on the pool is listed
-    mtl_pool_buffer_addr(texs, LEN);
+    mtl_pool_addressed(texs, LEN);
     table();
     CHECK("a pool marked later is listed", listed(texs) && resident(texs));
-    // DM_NVN_GMEM_ALL=1: every pool, marked or not
     uint8_t *other = pool_mem(LEN);
     table();
     CHECK("a new unmarked pool is not listed", !listed(other) && !resident(other));
-    g_gmem_all = 1; atomic_fetch_add(&g_pool_gen, 1);
-    table();
-    CHECK("DM_NVN_GMEM_ALL: every pool is listed", listed(other) && resident(other) && listed(bufs));
     mtl_pool_del(bufs); mtl_pool_del(ubo); mtl_pool_del(texs); mtl_pool_del(other); mtl_drain();
     printf("t_gmem_marks: %d checks, %d failed\n", checks, failed); return failed != 0;
 }}

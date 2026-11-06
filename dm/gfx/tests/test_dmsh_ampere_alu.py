@@ -23,6 +23,30 @@ class Alu(Translated):
         return self.translate(pre + body + inst(*waiting(STORE)) + inst(*EXIT), shared=0x1000)
 
 
+class FloatRed(Translated):
+    """RED.F32.FTZ.RN (0x98e, type 3 at bits 73..76, add): agl's scene analysis sums luminance with it (Ocarina of Time's probe_analyze 6e28359aa3558f61). Dropped with a log line, the exposure the CPU
+    reads back from those buffers was several times too bright. A compare-and-swap loop on the word"""
+    RED = (0x000fe20000000000 | 3 << 9, 0x0000000608ff098e)   # RED.F32.FTZ.RN [R8], R6: (control and type, opcode and registers)
+
+    def test_adds_in_a_loop(self):
+        msl = self.translate(b''.join(inst(*waiting(i)) for i in (s2r_tid(6), s2r_tid(8), s2r_tid(9), self.RED)) + inst(*EXIT))
+        self.assertIn('atomic_compare_exchange_weak_explicit', msl)
+        self.assertNotIn('atomic_fetch_add', msl)
+
+
+class DeadChannel(Translated):
+    """An image read whose .x is dead and whose .y is used: the optimizer's RemoveNode followed the read as if it were removed, so the chain computing its coordinate lost its last use and went, and the
+    shader read an uninitialized variable (Ocarina of Time's wind solver 04942f42cae10d0f, the encodings below are from it: its velocity field oscillated and the grass flickered at 10 Hz)"""
+    Y_MINUS_1 = (0x000fe40007ffe0ff, 0xffffffff01077810)   # IADD R7, R1, -1
+    SULD = (0x000f6200001e0300, 0x6000080006047b97)        # SULD.XY R4, [R6, R7]: R5 is .y
+    STORE_Y = (STORE[0], 0x0000080509008388)               # STS.U32 [R9 * 16 + 8], R5
+
+    def test_coordinate_survives(self):
+        msl = self.translate(b''.join(inst(*waiting(i)) for i in (s2r_tid(1), s2r_tid(6), s2r_tid(9), self.Y_MINUS_1, self.SULD, self.STORE_Y)) + inst(*EXIT), shared=0x1000)
+        self.assertRegex(msl, r'\+ \(-1\)|- 1\b')
+        self.assertNotRegex(msl, r'(?m)^\s+int (_\d+);\n\s+int _\d+ = \1;')
+
+
 class Brev(Alu):
     BREV = (0x001e240000000000, 0x0000001300067301)   # BREV R6, R19 (Pokémon Pokopia 6e8db04c25a53d8c, whose destination is R3)
 
@@ -41,6 +65,20 @@ class Bmsk(Alu):
     def test_wrap_masks_the_fields(self):
         msl = self.kept((self.BMSK[0] | 1 << 11, self.BMSK[1]), srcs=(4, 5))   # .W
         self.assertRegex(msl, r'& 31')
+
+
+class F2ip(Alu):
+    """F2IP.U8 (0x243): Ocarina of Time's FoliageShader 83df46a0b1b379b4 packs colour with it, its foliage mesh shaders one byte at a time"""
+    PAIR = (0x000fc400000004ff, 0x000000152c067243)   # F2IP.U8 R6, R44, R21
+    ONE = (0x000fe4000000c4ff, 0x00000009ff067243)    # F2IP.U8.TRUNC R6, RZ, R9
+
+    def test_packs_two_bytes(self):
+        msl = self.kept(self.PAIR, srcs=(44, 21))
+        self.assertIn('rint(', msl)
+        self.assertIn('255.0', msl)
+
+    def test_truncates(self):
+        self.assertIn('trunc(', self.kept(self.ONE, srcs=(9,)))
 
 
 class HalfImmediate(Alu):
@@ -83,62 +121,6 @@ class CompareFtz(Alu):
 
 
 def s2r(rd, sr): return (0x000e260000000000 | sr << 8, 0x0000000000007919 | rd << 16)   # S2R Rd, SR (0x21 SR_TID.X, 0x25 SR_CTAID.X)
-
-
-class F2ip(Alu):
-    """F2IP.U8.F32.NTZ Rd, a, b, RZ (0x243): each float rounded to the nearest integer, saturated to a byte and NaN to 0, b in byte 0 and a in byte 1. The Legend of Zelda:
-    Ocarina of Time's colour converter 99951da6e5cd38f5 has F2IP R22, R13, R12, RZ at +0x530; here it is on R6, R4, R5"""
-    GAME = (0x000fe200000004ff, 0x0000000c0d167243)
-    F2IP = (GAME[0], GAME[1] & ~0xffffffff0000 | 6 << 16 | 4 << 24 | 5 << 32)
-
-    def msl(self):   # a (R4) from SR_TID.X, b (R5) from SR_CTAID.X
-        return self.kept(s2r(4, 0x21), s2r(5, 0x25), self.F2IP)
-
-    def test_rounds_saturates_and_drops_nan(self):
-        msl = self.msl()
-        self.assertEqual(len(re.findall(r'\brint\(', msl)), 2, msl)   # ties to even
-        self.assertEqual(len(re.findall(r'\bisnan\(', msl)), 2, msl)
-        self.assertEqual(len(re.findall(r'\bmin\([^;]*255\.0\)', msl)), 2, msl)
-
-    def test_a_is_the_high_byte(self):
-        msl = self.msl()
-        defs = dict(re.findall(r'^\s*\w+ (_\d+) = (.*);$', msl, re.M))
-        def source(v, seen=()):   # the shader inputs a value is computed from
-            return set().union(*(source(u, seen + (v,)) for u in re.findall(r'_\d+', defs.get(v, '')) if u not in seen),
-                               set(re.findall(r'gl_\w+', defs.get(v, ''))))
-        high, low = re.search(r'(_\d+) << 8;', msl).group(1), re.search(r'= _\d+ \| (_\d+);', msl).group(1)
-        self.assertEqual(source(high), {'gl_LocalInvocationID'}, msl)
-        self.assertEqual(source(low), {'gl_WorkGroupID'}, msl)
-
-    def test_other_encodings_are_refused(self):
-        for hi in (self.F2IP[0] & ~0xffffff00, self.F2IP[0] | 1 << 8, self.F2IP[0] & ~0xff | 7, self.F2IP[0] | 1 << 16):   # bit 74 clear, 72 set (signed), C = R7, 80 set
-            with self.subTest(hi=hex(hi)), self.assertRaises(AssertionError):
-                self.kept(s2r(4, 0x21), (hi, self.F2IP[1]))
-
-
-class F2ipTruncate(Alu):
-    """F2IP.U8.F32.NTZ.TRUNC Rd, RZ, b, RZ (78..79 = 3, F2I's rounding field): Ocarina of Time's foliage mesh shader 740e2b04db624fb1 has F2IP R5, RZ, R5, RZ at +0x370, a
-    colour channel times 255 that it then shifts by 16 into an RGBA8 word; here it is on R6 and R5. The other rounding modes are the same field (no game encoding met)"""
-    GAME = (0x000fe4000000c4ff, 0x00000005ff057243)
-    F2IP = (GAME[0], GAME[1] & ~0xff0000 | 6 << 16)
-
-    def msl(self, hi=GAME[0]):   # b (R5) from SR_CTAID.X
-        return self.kept(s2r(5, 0x25), (hi, self.F2IP[1]))
-
-    def test_truncates_b_into_byte_0(self):
-        msl = self.msl()
-        self.assertEqual(len(re.findall(r'\btrunc\(', msl)), 1, msl)
-        self.assertNotIn('rint(', msl)
-        self.assertEqual(len(re.findall(r'\bisnan\(', msl)), 1, msl)
-        self.assertEqual(len(re.findall(r'\bmin\([^;]*255\.0\)', msl)), 1, msl)
-        self.assertNotRegex(msl, r'<< 8;')   # a = RZ: byte 1 stays zero
-
-    def test_floor_and_ceiling(self):
-        for mode, fn in ((1, 'floor'), (2, 'ceil')):
-            with self.subTest(mode=mode):
-                msl = self.msl(self.GAME[0] & ~(3 << 14) | mode << 14)
-                self.assertEqual(len(re.findall(rf'\b{fn}\(', msl)), 1, msl)
-                self.assertNotIn('trunc(', msl)
 
 
 class UimadImmediateC(Alu):

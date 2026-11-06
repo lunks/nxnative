@@ -74,6 +74,7 @@ int main(void) { @autoreleasepool {
     alarm(120); setvbuf(stdout, NULL, _IONBF, 0);
     setenv("DM_TEST_GPU_HANG", HANG_AT, 1);
     setenv("DM_NVN_CUT", "1", 1);   // a segment at each target change after a draw
+    setenv("DM_NVN_CUT_BUSY", "0", 1);   // and each commits, with earlier work running or not (sub_cut)
     setenv("DM_NVN_TBDR", "0", 1);   // no pass merged across the target changes
     mtl_init(); mtl_set_frame(FRAME);
     NSError *err = nil;

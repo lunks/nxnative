@@ -310,6 +310,8 @@ def header_one(g):
         if not m or not cm or len(cj) == 4 or any(o % 16 or o + 64 > size for o in offs):
             sys.exit(f'{g.id}: camera_jitter takes up to 4 words <block bytes>@<view-projection offset>[,<offset>...] (up to 4 offsets, 16-byte aligned, inside the block) and needs camera_mats: {w}')
         cj.append((size, offs))
+    dbr = g.get('draw_barriers', 'full')   # how draw passes are ordered (nvn_mtl.m barrier_game): full = each waits for all earlier GPU work, game = by the game's own barriers, so vertex work overlaps the previous pass's fragments
+    if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
@@ -369,6 +371,7 @@ def header_one(g):
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
+         f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
          f'#define DM_GAME_UPSCALER_SQRT_KEYS {q(",".join(upscaler_sqrt_keys(g)))}',   # of those, the ones fed square-root colour (agl's variable-ratio packs)
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',

@@ -556,6 +556,13 @@ static struct { int on, miss; NvShader *ts, *ms; uint32_t first, count; uint64_t
 static void draw_(const p_draw *dw, const p_draw_idx *di);
 static uint64_t g_mtk_n;
 static nvn_hmap g_pso_mtk = {.klen = sizeof(pso_key)};   // demand and warm results are installed on the submit thread
+// A mesh pipeline must have a fragment function, where a vertex one need not (validateWithDevice). A task / mesh program with no pixel shader draws depth only (Ocarina of Time's foliage shadows)
+static id<MTLFunction> mtk_nop_fragment(void) {
+    static id<MTLFunction> fn; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:@"fragment void dm_mesh_nop() {}" options:nil error:&e];
+        fn = [l newFunctionWithName:@"dm_mesh_nop"]; if (!fn) MLOG("[RED] the empty fragment function did not compile: %s", e.localizedDescription.UTF8String); });
+    return fn;
+}
 // The pipeline from its base in the archive made offline (pso_offline.py plan_mesh, the same names and sizes), specialized with its colour state as pso_build_ex does: a lookup and a specialization
 // for a pipeline that takes up to seconds to build on a cold Metal cache. nil when the archive does not hold it, as for a fragment of another entry point (integer targets, alpha test) or more samples
 static id<MTLRenderPipelineState> mtk_bundled(MTLRenderPipelineDescriptor *d, NvShader *ts, NvShader *ms) {
@@ -581,7 +588,7 @@ static id<MTLRenderPipelineState> mtk_build(const pso_key *k, NvShader *ts, NvSh
     id<MTLRenderPipelineState> bundled = mtk_bundled(d, ts, ms);
     if (bundled) return bundled;
     MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
-    m.meshFunction = ms->fn; m.fragmentFunction = d.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
+    m.meshFunction = ms->fn; m.fragmentFunction = d.fragmentFunction ?: mtk_nop_fragment(); m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
     if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = (ts->mesh_payload + 15u) & ~15u; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; }
     m.rasterSampleCount = d.rasterSampleCount; m.alphaToCoverageEnabled = d.alphaToCoverageEnabled;
     for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
@@ -642,6 +649,9 @@ static void mtk_encode(id<MTLRenderCommandEncoder> en_) {
     if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind threadsPerObjectThreadgroup:ot threadsPerMeshThreadgroup:mt];
     else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count, 1, 1) threadsPerObjectThreadgroup:ot threadsPerMeshThreadgroup:mt];
 }
+// DrawMeshTasksIndirect: {count, first}, which the game's culling writes earlier in the submission, while Metal's indirect mesh draw takes {x, y, z}. ixc_run converts the record on the GPU, before
+// the render pass and for every such draw up to the next write. Reading the record on the CPU instead took a wait for the GPU at each hazard: 73 % of the submit thread in Ocarina of Time's Kokiri
+// Forest, frames of 90 ms and more against 25 ms of GPU work
 static void mesh_tasks_draw(const p_draw *dw) {
     if (!S.prog || (!dw->ind && dw->count <= 0)) return;
     __unsafe_unretained NvProg *pr = prog_get(S.prog);

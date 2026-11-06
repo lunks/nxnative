@@ -41,6 +41,7 @@ static void present_into(id<MTLTexture> src, MTLPixelFormat pf, double out[2][4]
 
 int main(void) { @autoreleasepool {
     mtl_init();
+    mtl_present_layer(4, 1);   // a picture of the fixtures' own shape: a layer of the display's 16:9 would miss their one row (present_shape)
     // The game's HDR window texture: grey at 203 nits (paper white), 1015 nits (5x), 50 nits and black, as PQ code values
     id<MTLTexture> pq = tex(MTLPixelFormatRGB10A2Unorm, MTLTextureUsageShaderRead);
     uint32_t px[4] = {rgb10(pq_oetf(203)), rgb10(pq_oetf(1015)), rgb10(pq_oetf(50)), rgb10(0)};
