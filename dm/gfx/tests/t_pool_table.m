@@ -2,6 +2,7 @@
 // submission that could still read it has completed (pool_table_take / pool_table_give), and an ID whose registration resolved to another texture type is passed over without its view being
 // made again (treg_t.tt1): a 3D texture in a 2D table, after the submission end dropped its view as it does for a retired registration. A new registration of the ID forgets the type.
 // The copy that patches a table comes from the spares too: the table draws already encoded hold keeps its bytes, and goes to the spares behind this submission's fence.
+// A table of a uniform buffer's handles (htab_gpu) has a pool's form, so a shader's read marks it: on the GPU, through the chain's own dm_pool_mark, the mark lands in that table's bitmap and in no texture's.
 // Last, the time that saves on a walk over 20,000 IDs of another type with dropped views, against looking each one up (under a quarter of it; it prints both).
 #define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
@@ -110,6 +111,35 @@ int main(int argc, const char **argv) { @autoreleasepool {
     os_unfair_lock_unlock(&g_rmu);
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "that submission completes");
     CHECK(!mtl_last_commit_error(), "no GPU error");
+
+    {   // dmsh_build.py pool_arrays gives a table of handles the read it gives a pool, so the kernel takes POOL_MARK from there. With no bitmap in the table's head the mark writes to address 0, which an M5 Pro drops with no fault: the bitmap's bit is what tells them apart
+        NSString *tool = [NSString stringWithContentsOfFile:@"../tools/dmsh_build.py" encoding:NSUTF8StringEncoding error:nil];
+        NSRange at = [tool rangeOfString:@"POOL_MARK = \"\"\""], end = at.length ? [tool rangeOfString:@"\"\"\"" options:0 range:NSMakeRange(NSMaxRange(at), tool.length - NSMaxRange(at))] : at;
+        CHECK(at.length && end.length, "the chain's mark is in dmsh_build.py");
+        NSString *mark = [tool substringWithRange:NSMakeRange(NSMaxRange(at), end.location - NSMaxRange(at))];
+        NSString *src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\n%@\nstruct spvPool_t { uint n; ulong seen; array<ulong, 1> e; };\n"
+                         "kernel void main0(constant spvPool_t* t [[buffer(0)]], device uint* out [[buffer(1)]]) { out[0] = dm_pool_mark(t, min(2u, t->n)); }\n", mark];
+        NSError *error = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:[MTLCompileOptions new] error:&error];
+        id<MTLComputePipelineState> pso = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"main0"] error:&error] : nil;
+        CHECK(pso, "the mark compiles"); if (!pso) fprintf(stderr, "%s\n", error.description.UTF8String);
+        uint64_t *handles = (uint64_t *)(void *)(mem + 0x80000); handles[0] = 1; handles[1] = 3; handles[2] = 1; handles[3] = 3;   // texture IDs, in the low bits of each handle
+        S.ubo[1][0].addr = (uint64_t)(uintptr_t)handles; S.ubo[1][0].size = 32;
+        nvn_rbind hb = {.kind = NVN_RB_TEXH, .reg = 0, .off = 0, .dtt = MTLTextureType2D, .dpf = 0}; __unsafe_unretained id<MTLBuffer> ht = nil;
+        mtl_sub_begin(); os_unfair_lock_lock(&g_rmu); htab_gpu(1, &hb, &ht); os_unfair_lock_unlock(&g_rmu);
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "the table's submission completes");
+        CHECK(ht && *(const uint32_t *)ht.contents == 4, "a table of the four handles");
+        id<MTLBuffer> out = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; *(uint32_t *)out.contents = 0xdeadbeef;
+        id<MTLCommandBuffer> cb = q_cb(); id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+        [ce setComputePipelineState:pso]; [ce setBuffer:ht offset:0 atIndex:0]; [ce setBuffer:out offset:0 atIndex:1];
+        if (g_htab_seen) [ce useResource:g_htab_seen usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        [ce dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        printf("a read of a table of handles: status %ld, error %s, out %u\n", (long)cb.status, cb.error ? cb.error.localizedDescription.UTF8String : "none", *(uint32_t *)out.contents);
+        CHECK(cb.status == MTLCommandBufferStatusCompleted && !cb.error, "a read of a table of handles runs on the GPU");
+        CHECK(*(uint32_t *)out.contents == 2, "and reads its element");
+        CHECK(g_htab_seen && (*(const uint32_t *)g_htab_seen.contents & 1u << 2), "the mark is in the table's own bitmap");
+        CHECK(!pool_seen(2) && !(g_seen_buf && (*(const uint32_t *)g_seen_buf.contents & 1u << 2)), "and not in the texture IDs': an element is no ID");
+        memset(&S.ubo[1][0], 0, sizeof S.ubo[1][0]);
+    }
 
     {   // What the type saves: a 2D-array table walked over 20,000 2D IDs whose views were dropped (a retired registration's go at every submission end), with the type cleared
         // (each ID looked up and its view made again, as before treg_t.tt1) and known (passed over). Ocarina of Time keeps about 12,000 retired descriptors

@@ -9609,11 +9609,12 @@ static int sampu_id(int stage, const nvn_rbind *b, int k) {
 typedef struct { __strong id<MTLBuffer> buf; uint64_t gpu, reg, sgen, pass, addr; uint8_t *copy; uint64_t *ser; uint32_t bytes, cap, n; int samp, dtt, dpf, tb, sb, c2s; } htab_snap;   // ser: each element's texture serial, for fb_texu_reads
 static htab_snap g_htab[HTAB_SNAPS], *g_htab_last; static unsigned g_htab_next;
 static uint64_t g_stat_htab_builds; static double g_stat_htab_ms;
-// A table of a uniform buffer's handles has a pool's form, so a shader's read marks it too (dm_pool_mark), and with no bitmap in its head that write goes to address 0. Its index is an element, not a texture
-// ID, so it has a bitmap of its own, which nothing reads
+// A table of a uniform buffer's handles has a pool's form, so a shader's read marks it too (dm_pool_mark), and with no bitmap in its head that write goes to address 0: an M5 Pro drops it with no fault, which nothing promises.
+// Its index is an element, not a texture ID, so it has a bitmap of its own, which nothing reads
+static __strong id<MTLBuffer> g_htab_seen;
 static uint64_t htab_seen_gpu(void) {
-    static __strong id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared]; res_add(b); res_commit(); }   // 8,193 elements at most
-    return b.gpuAddress;
+    if (!g_htab_seen) { g_htab_seen = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared]; res_add(g_htab_seen); res_commit(); }   // 8,193 elements at most
+    return g_htab_seen.gpuAddress;
 }
 static uint64_t htab_gpu(int stage, const nvn_rbind *b, __unsafe_unretained id<MTLBuffer> *out) {
     int samp = b->kind == NVN_RB_SAMPH, reg = b->reg;
