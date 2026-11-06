@@ -17,7 +17,7 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__); } } while (0)
 
-enum { LEN = 1 << 20, IDS = 8 };
+enum { LEN = 1 << 20, IDS = 10 };
 static uint8_t *pages(void) { uint8_t *m = mmap(NULL, LEN, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (m == MAP_FAILED) abort(); return m; }
 // The 2D float texture table at base 0, in a submission of its own, as a draw that reads it would ask
 static id<MTLBuffer> table(void) {
@@ -137,9 +137,40 @@ int main(void) { @autoreleasepool {
     mtl_reg_tex(3, NULL, NULL); mtl_reg_tex(4, NULL, NULL); table(); table();
     CHECK(snap()->sub == 0 && snap()->trans.n == 0, "a table without views of retired registrations");
 
-    mtl_reg_tex(1, NULL, NULL); mtl_reg_tex(2, NULL, NULL); mtl_reg_tex(5, NULL, NULL);
-    mtl_tex_release(&t2); h_nvnTextureFinalize(&t1); h_nvnTextureFinalize(&t5); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&dpool);
+    // A live sRGB / linear twin (PucaVaz's case, PR #1489, adapted): ID 8's serial resolves to a view of the shared texture that ID 7, finalized since, made (srgb_twins in tex_mtl_). On
+    // main a takeover may evict that texture, as no live serial holds it, and the patch takes ID 8 again after tex_mtl_ finds its view stale. Here twin_holds spares it: a texture over the
+    // same storage takes nothing over, ID 8 keeps its view, and no table is built whole or sent down the slow path
+    uint8_t *me = pages(); pool_t epool = {0}; pool_builder_t pe = {.mem = me, .size = LEN, .flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&epool, (const NVNmemoryPoolBuilder *)&pe), "pool E initialized");
+    NVNtexture t7 = {0}, t8 = {0}, t9 = {0};
+    h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA8); h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&epool, 0);
+    CHECK(h_nvnTextureInitialize(&t7, &tb), "texture 7 initialized");
+    mtl_reg_tex(7, (const tex_t *)&t7, NULL); table();
+    h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA8_SRGB);
+    CHECK(h_nvnTextureInitialize(&t8, &tb), "texture 8, its sRGB twin over the same storage, initialized");
+    mtl_reg_tex(8, (const tex_t *)&t8, NULL);
+    id<MTLBuffer> b15 = table();
+    uint64_t s8 = ((const tex_t *)&t8)->serial;
+    pthread_mutex_lock(&g_smu); id<MTLTexture> v8 = hm_get_id(&g_by_serial, &s8); pthread_mutex_unlock(&g_smu);
+    id<MTLTexture> base8 = v8.parentTexture;
+    CHECK(v8 && base8 && entry(b15, 8) != dummy_of(b15), "ID 8's serial resolves to a view of the shared texture");
+    mtl_reg_tex(7, NULL, NULL); h_nvnTextureFinalize(&t7);
+    for (int i = 0; i <= ALIAS_IDLE; i++) { mtl_sub_begin(); mtl_wait(mtl_sub_commit(), 5000000000ull); }   // until the sharing table no longer spares the entry by its idle time
+    h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_R32F);
+    CHECK(h_nvnTextureInitialize(&t9, &tb), "texture 9 over the same storage initialized");
+    mtl_reg_tex(9, (const tex_t *)&t9, NULL);
+    uint64_t builds2 = g_stat_pool_builds, taken2 = g_alias_taken, ep2 = g_treg_ep;
+    id<MTLBuffer> b16 = table();
+    pthread_mutex_lock(&g_smu); id<MTLTexture> now8 = hm_get_id(&g_by_serial, &s8); int base_shared = CFSetContainsValue(g_alias_set, (__bridge const void *)base8); pthread_mutex_unlock(&g_smu);
+    CHECK(g_alias_taken == taken2 && base_shared, "texture 9 took the storage over without evicting the live twin's base");
+    CHECK(now8 == v8 && g_treg_ep == ep2, "ID 8 keeps its view, and no ID went down the slow path");
+    CHECK(g_stat_pool_builds == builds2 && entry(b16, 8) == entry(b15, 8) && entry(b16, 9) != dummy_of(b16), "no table is built: ID 8 keeps its entry and ID 9 gets its own");
+    same_as_whole(b16, "the patched table holds what a table built whole does (a live twin's base)");
+
+    mtl_reg_tex(1, NULL, NULL); mtl_reg_tex(2, NULL, NULL); mtl_reg_tex(5, NULL, NULL); mtl_reg_tex(8, NULL, NULL); mtl_reg_tex(9, NULL, NULL);
+    mtl_tex_release(&t2); h_nvnTextureFinalize(&t1); h_nvnTextureFinalize(&t5); h_nvnTextureFinalize(&t8); h_nvnTextureFinalize(&t9);
+    h_nvnMemoryPoolFinalize((NVNmemoryPool *)&dpool); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&epool);
     mtl_pool_del(mb); mtl_pool_del(mc);
-    defer_drain(); munmap(ma, LEN); munmap(mb, LEN); munmap(mc, LEN); munmap(md, LEN);
+    defer_drain(); munmap(ma, LEN); munmap(mb, LEN); munmap(mc, LEN); munmap(md, LEN); munmap(me, LEN);
     printf("t_pool_notes: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
