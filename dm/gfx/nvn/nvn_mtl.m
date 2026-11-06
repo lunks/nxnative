@@ -1976,13 +1976,14 @@ static void cbn_failed(const cbn_entry *me, NSError *err) {
         else if (!state[i]) MLOG("[RED]   #%llu: no longer in the ring (it keeps the last %d command buffers)", (unsigned long long)(first + i), CBN_RING);
     }
 }
-static void gmem_commit_note(void);
+static void gmem_commit_patch(void);
 uint64_t mtl_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush(); ubd_land();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     up_flush();
+    gmem_commit_patch();
     g_cut_copy = 0;
     treg_finish_submission();   // Late descriptor views retire behind this submission's fence.
     ghost_finish_submission();
@@ -2017,7 +2018,6 @@ uint64_t mtl_sub_commit(void) {
         defer_drain();
     }];
     void arena_commit(uint64_t fence); arena_commit(fence);
-    gmem_commit_note();
     res_commit();
     if (g_gp_state == 1 && !gp_active()) { int gn = g_gp_n; gp_lab *gl = malloc(sizeof(gp_lab) * (gn ? gn : 1)); memcpy(gl, g_gp_lab, sizeof(gp_lab) * gn); uint64_t gf = g_gp_frame; g_gp_state = 2; atomic_store(&g_gp_busy, 1);
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; gp_report(gn, gl, gf); }]; }
@@ -9085,21 +9085,6 @@ static id<MTLBuffer> gmem_map(void) {
     if (old && cap > old) MLOG("raw global memory: the pool table grows to %u entries for %d ranges", cap, n - 1);
     return b;
 }
-// An argument block holds the table that was current when it was encoded, and a pool made after that, later in the submission or on another thread while it is encoded, is not in it: a raw read of
-// that pool gets 0, the failure that hung agl's task shaders (docs/reference/shaders.md, More memory pools than the raw pool table had entries). Counted at each commit, in the memory report: the
-// argument blocks' table words, those holding an older table than the current one, and those holding the current one when it lags the pools
-static uint64_t **g_gmem_slots; static int g_gmem_nslots, g_gmem_cslots; static uint64_t g_gmem_words, g_gmem_older, g_gmem_behind;
-static void gmem_slot_note(uint64_t *w) {
-    if (g_gmem_nslots == g_gmem_cslots) { g_gmem_cslots = g_gmem_cslots ? 2 * g_gmem_cslots : 256; g_gmem_slots = realloc_or_die(g_gmem_slots, (size_t)g_gmem_cslots * sizeof *g_gmem_slots, "the raw pool table's word list"); }
-    g_gmem_slots[g_gmem_nslots++] = w;
-}
-void mtl_gmem_words(uint64_t *words, uint64_t *older, uint64_t *behind) { *words = g_gmem_words; *older = g_gmem_older; *behind = g_gmem_behind; }
-static void gmem_commit_note(void) {
-    int n = g_gmem_nslots; g_gmem_nslots = 0; if (!n || !g_gmem_buf) return;
-    uint64_t cur = g_gmem_buf.gpuAddress; int lag = atomic_load(&g_pool_gen) != g_gmem_gen;
-    g_gmem_words += (uint64_t)n;
-    for (int i = 0; i < n; i++) if (*g_gmem_slots[i] != cur) g_gmem_older++; else if (lag) g_gmem_behind++;
-}
 // The bitmap records the table entries the GPU actually used. NDVE's full-frame writes overflowed the old page hash log even within one pool.
 // Until the learned set stays unchanged for two logs, the stores count as writes anywhere. Later misses add their ranges and check the shadows that used the prediction.
 // Restarting learning after each miss made subsequent geometry draws wait on the GPU (geo_cpu_hazard), giving Donkey Kong Bananza streaks of 400-2,000 ms frames.
@@ -9156,6 +9141,10 @@ static void gml_read(id<MTLBuffer> b, id<MTLBuffer> map, int predicted, uint64_t
             shadowed ? ": those shadows may have missed a write" : unchecked ? ": the shadow record had wrapped" : "");
     }
 }
+// A log and the table its bits index, as the completion handler reads them: gmem_commit_patch may change both before the GPU starts
+@interface NvGmlLog : NSObject { @public id<MTLBuffer> b, map; } @end
+@implementation NvGmlLog @end
+static __unsafe_unretained NvGmlLog *g_gml_last;   // gml_take's: the submission's commit blocks hold it until it completes
 static uint64_t gml_take(id<MTLBuffer> map) {
     unsigned bytes = gml_bytes(map);
     pthread_mutex_lock(&g_gml_mu);
@@ -9170,8 +9159,34 @@ static uint64_t gml_take(id<MTLBuffer> map) {
     if (!b) { b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared]; res_add(b); res_commit(); }
     memset(b.contents, 0, bytes);
     g_gml_on = 1; uint64_t fence = g_fence + 1;
-    [g_commit_blocks addObject:^{ gml_read(b, map, predicted, fence); }];
+    NvGmlLog *log = [NvGmlLog new]; log->b = b; log->map = map; g_gml_last = log;
+    [g_commit_blocks addObject:^{ gml_read(log->b, log->map, predicted, fence); }];
     return b.gpuAddress;
+}
+// An argument block holds the table that was current when it was encoded, and a pool made after that, later in the submission or on another thread while it is encoded, is not in it: a raw read of
+// that pool gets 0, the failure that hung agl's task shaders (docs/reference/shaders.md, More memory pools than the raw pool table had entries). The GPU has not read the blocks of this command
+// buffer yet, so at each commit, whole or segment, their table words are pointed at a table of the pools as they are then. A word with a write log takes its log along: the log's bits are
+// entries of the table the shader searches, and a larger table needs a larger log. Counted in the memory report: the words, those that held an older table than the current one, and those that held
+// the current one behind the pools
+typedef struct { uint64_t *w, *lw; void *log; } gmem_slot;
+static gmem_slot *g_gmem_slots; static int g_gmem_nslots, g_gmem_cslots; static uint64_t g_gmem_words, g_gmem_older, g_gmem_behind;
+static void gmem_slot_note(uint64_t *w, uint64_t *lw, void *log) {
+    if (g_gmem_nslots == g_gmem_cslots) { g_gmem_cslots = g_gmem_cslots ? 2 * g_gmem_cslots : 256; g_gmem_slots = realloc_or_die(g_gmem_slots, (size_t)g_gmem_cslots * sizeof *g_gmem_slots, "the raw pool table's word list"); }
+    g_gmem_slots[g_gmem_nslots++] = (gmem_slot){w, lw, log};
+}
+void mtl_gmem_words(uint64_t *words, uint64_t *older, uint64_t *behind) { *words = g_gmem_words; *older = g_gmem_older; *behind = g_gmem_behind; }
+static void gmem_commit_patch(void) {
+    int n = g_gmem_nslots; g_gmem_nslots = 0; if (!n || !g_gmem_buf) return;
+    uint64_t was = g_gmem_buf.gpuAddress; int lag = atomic_load(&g_pool_gen) != g_gmem_gen;
+    id<MTLBuffer> map = gmem_map(); uint64_t cur = map.gpuAddress; unsigned bytes = gml_bytes(map);
+    g_gmem_words += (uint64_t)n;
+    for (int i = 0; i < n; i++) { const gmem_slot *k = &g_gmem_slots[i]; if (*k->w == cur) continue;
+        if (*k->w != was) g_gmem_older++; else if (lag) g_gmem_behind++;
+        *k->w = cur;
+        if (!k->lw) continue;
+        NvGmlLog *log = (__bridge NvGmlLog *)k->log; log->map = map;
+        if (log->b.length >= bytes) continue;
+        defer_obj_release(log->b); log->b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared]; res_add(log->b); memset(log->b.contents, 0, bytes); *k->lw = log->b.gpuAddress; }
 }
 static id<MTLBuffer> zero_bank(void) { static __strong id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:65536 options:MTLResourceStorageModeShared]; res_add(b); } return b; }
 static uint64_t zero_bank_gpu(void) { static uint64_t gpu; if (!gpu) gpu = zero_bank().gpuAddress; return gpu; }
@@ -9246,7 +9261,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     int bl = passdump() && (bl_all || g_kd_force || bl_pass[nvn_stage] != g_stat_pass);
     if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb); }
     id<MTLBuffer> raw_map = nil;   // the log and shader use the same map even if pools change during encoding
-    int gmem_aid = -1;   // the slot that holds the raw pool table (gmem_slot_note)
+    int gmem_aid = -1, gml_aid = -1;   // the slots that hold the raw pool table and its write log (gmem_slot_note)
     uint32_t bmask = 0; float bk[DMSH_BORDER_SAMPLERS][4];   // the border colour block (see nvn_border.h): the twins that correct, their factors
     os_unfair_lock_lock(&g_rmu);   // The texture / sampler registration tables may be being grown or rewritten by the game thread
     for (int i = 0; i < sh->rf.nb; i++) {
@@ -9436,7 +9451,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         } else if (b->kind == NVN_RB_GMEM || b->kind == NVN_RB_GMEML) {
             if (!raw_map) raw_map = gmem_map();
             slots[aid] = b->kind == NVN_RB_GMEM ? raw_map.gpuAddress : gml_take(raw_map);
-            if (b->kind == NVN_RB_GMEM) gmem_aid = aid;
+            if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_aid = aid;
             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
         } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer: scale 1.0, BGRA swap 0, viewport transform not disabled (viewport fields are not read)
             slots[aid] = support_gpu();
@@ -9512,7 +9527,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     os_unfair_lock_unlock(&g_rmu);
     id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
     memcpy(g_cur_arena->cpu + off, slots, arg_len);   // the arena arena_alloc took it from (no contents message: see ubo_read)
-    if (gmem_aid >= 0) gmem_slot_note((uint64_t *)(void *)(g_cur_arena->cpu + off) + gmem_aid);
+    if (gmem_aid >= 0) { uint64_t *words = (uint64_t *)(void *)(g_cur_arena->cpu + off); gmem_slot_note(words + gmem_aid, gml_aid >= 0 ? words + gml_aid : NULL, gml_aid >= 0 ? (__bridge void *)g_gml_last : NULL); }
     bind_args(en, nvn_stage, metal_vertex, ab, g_cur_arena->gpu + off, off, sh->rf.abi);
     sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_pass = g_pass.serial; sh->ab_binst = g_draw_binst; sh->ab_pgen = g_psnap_gen; g_args_dirty[nvn_stage] = 0;
     g_stat_args_enc++;
@@ -13210,7 +13225,7 @@ static void sub_cut(void) {
         if (sc) { if (k < SEG_CLK_N) { atomic_store(&sc->t[k][0], gpu_s_guest_ns(cb.GPUStartTime)); atomic_store(&sc->t[k][1], gpu_s_guest_ns(cb.GPUEndTime)); } seg_clk_put(sc); }
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int k; if (k++ < 8) MLOG("[RED] segment command buffer execution error: %s", cb.error.description.UTF8String); res_top_once(cb.error); gpu_lost_check(cb.error, "segment"); }
     }];
-    gmem_commit_note();
+    gmem_commit_patch();
     res_commit();
     [g_cb endCommandBuffer];
     rec_commit(g_cb, o);

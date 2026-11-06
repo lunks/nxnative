@@ -45,6 +45,35 @@ int main(int argc, const char **argv) { @autoreleasepool {
       CHECK("the last small pool lies past the least table", e >= DMSH_GMEM_MAP_ENTRIES); }
     CHECK("a large pool, the hint", probe((uint64_t)(uintptr_t)large + 40 * MB + 12) == 0xb16b00b5u);
     CHECK("an address in no pool reads 0", probe((uint64_t)(uintptr_t)many + PG + 8) == 0);
+    // A pool made after a raw shader's arguments were encoded: at commit the word is pointed at a table that has it, and it reads its word, where the older table reads 0
+    { mtl_sub_begin(); id<MTLBuffer> before = gmem_map(); a[1] = before.gpuAddress; gmem_slot_note(&a[1], NULL, NULL);
+      uint8_t *late = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (late == MAP_FAILED) abort(); uint32_t v = 0x1a7e0001u; memcpy(late + 64, &v, 4); mtl_pool_add(late, PG); mtl_pool_buffer_addr(late, PG);
+      uint64_t words, older, behind, words0, older0, behind0; mtl_gmem_words(&words0, &older0, &behind0);
+      CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+      mtl_gmem_words(&words, &older, &behind);
+      CHECK("the word holds the table of the pools as they are", a[1] == g_gmem_buf.gpuAddress && a[1] != before.gpuAddress);
+      CHECK("counted as behind the pools", words == words0 + 1 && behind == behind0 + 1 && older == older0);
+      CHECK("the late pool reads its word", probe((uint64_t)(uintptr_t)late + 64) == v);
+      uint64_t now_table = a[1]; a[1] = before.gpuAddress; CHECK("the table encoded with reads 0 there", probe((uint64_t)(uintptr_t)late + 64) == 0); a[1] = now_table; }
+    // A word holding an older table than the current one: a later encode of the submission built a newer one
+    { mtl_sub_begin(); uint64_t old_word = gmem_map().gpuAddress, keep = old_word; gmem_slot_note(&old_word, NULL, NULL);
+      uint8_t *late = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (late == MAP_FAILED) abort(); mtl_pool_add(late, PG); mtl_pool_buffer_addr(late, PG);
+      uint64_t newer = gmem_map().gpuAddress, words0, older0, behind0, words, older, behind; mtl_gmem_words(&words0, &older0, &behind0);
+      CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull)); mtl_gmem_words(&words, &older, &behind);
+      CHECK("an older table's word follows the newer one", old_word == newer && newer != keep && older == older0 + 1); }
+    // A raw writer's log goes with the table: its bits are that table's entries, and a table past the log's size needs a larger log
+    { mtl_sub_begin(); id<MTLBuffer> before = gmem_map(); uint64_t tw = before.gpuAddress, lw = gml_take(before), lw0 = lw; NvGmlLog *log = g_gml_last; gmem_slot_note(&tw, &lw, (__bridge void *)log);
+      unsigned entries = gmem_entries(before); enum { MORE = 3400 };
+      uint8_t *more = mmap(NULL, (size_t)MORE * 2 * PG, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (more == MAP_FAILED) abort();
+      for (int i = 0; i < MORE; i++) { mtl_pool_add(more + (size_t)i * 2 * PG, PG); mtl_pool_buffer_addr(more + (size_t)i * 2 * PG, PG); }
+      CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+      CHECK("the table grew", gmem_entries(g_gmem_buf) > entries);
+      CHECK("the log's table is the word's", log->map == g_gmem_buf && tw == g_gmem_buf.gpuAddress);
+      CHECK("a larger log, in the argument block", lw != lw0 && lw == log->b.gpuAddress && log->b.length >= gml_bytes(g_gmem_buf)); }
+    // An unchanged table leaves the word and the counts alone
+    { mtl_sub_begin(); uint64_t w = gmem_map().gpuAddress, w0 = w, n0, o0, b0, n1, o1, b1; gmem_slot_note(&w, NULL, NULL); mtl_gmem_words(&n0, &o0, &b0);
+      CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull)); mtl_gmem_words(&n1, &o1, &b1);
+      CHECK("nothing to do", w == w0 && n1 == n0 + 1 && o1 == o0 && b1 == b0); }
     printf("t_gmem_raw: %d checks, %d failed (%u table entries, %d probes)\n", checks, failed, gmem_entries(map), n + 2);
     return failed != 0;
 }}

@@ -73,6 +73,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- Loading a save, 5,729 of 154,107 raw pool table words were older than the current table at commit and 2,582 behind the pools: [a pool made after a raw shader's arguments were encoded](../../../docs/reference/shaders.md#a-pool-made-after-a-raw-shaders-arguments-were-encoded).
 - About 75 passes a frame ended because material shaders, which read through the texture pool, counted as reading the depth they write: [pool shaders that write depth taken as depth readers](../../../docs/reference/rendering.md#pool-shaders-that-write-depth-taken-as-depth-readers). In Kokiri Forest at 1280x720, GPU p50 20.3 to 16.5 ms.
 - Outdoors about 27 uniform shadows a frame were refused and a pass ended for each (8,093 per 300 frames, all `earlier submission running`): [GPU writes kept by page met unrelated uniform pages in the table](../../../docs/reference/rendering.md#inline-updates-of-a-running-submission-refused-uniform-shadows). Kept as ranges: 0 refused, 294 passes ended per 300 frames on an M5 Pro.
 - The title movie played at the game's frame rate, about 0.77x with the game's upscaler on an M5 Pro: [pictures now follow the movie's clock](../../../docs/reference/movies.md#av1-pictures-by-the-movies-clock). On Macs before M3 [dav1d decodes frames in parallel](../../../docs/reference/movies.md#dav1d-decodes-frames-in-parallel-outside-the-decoder-lock).
