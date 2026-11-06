@@ -93,7 +93,26 @@ The cost is [the temporal scaler's encode itself](../../../docs/reference/render
 | 2.0 Performance | 1280x720 → 2560x1440 | MetalFX temporal |
 | 3.0 Ultra performance | 854x480 → 2560x1440 | MetalFX temporal (content scale 3.0, its limit) |
 
-Quality renders 1743x981, not the 1710x962 of the scale written (0.668): the caller multiplies by a ratio of the controller's own (`ctrl+0xe58 / +0xe50`), which 0.5 and 1.0 hit exactly. **Dynamic resolution** (`DM_UPSCALE_DYNAMIC=1`, sharpest `DM_UPSCALE_RATIO`, softest `DM_UPSCALE_SOFTEST`) keeps the controller stepping and maps its palette onto the chosen range, `s' = a s + b`, in seven words of padding after the update ([`setting_patches.tsv`](setting_patches.tsv)). Checked with Quality to Ultra performance: 1743x981 in Link's house, where the game stays at its first level, and 854x480 with the load threshold zeroed by a test row, which sent the controller straight to its last level. The levels between were not seen. Handheld's palette ends at 0.4445, so it stops short of the softest.
+Quality renders 1743x981, not the 1710x962 of the scale written (0.668): the caller multiplies by a ratio of the controller's own (`ctrl+0xe58 / +0xe50`), which 0.5 and 1.0 hit exactly. **Dynamic resolution** (`DM_UPSCALE_DYNAMIC=1`, sharpest `DM_UPSCALE_RATIO`, softest `DM_UPSCALE_SOFTEST`) keeps the controller stepping and maps its palette onto the chosen range, `s' = a s + b`, as the level list is built, in seven words of padding after the update ([`setting_patches.tsv`](setting_patches.tsv)). Handheld's palette ends at 0.4445, so it stops short of the softest.
+
+What the controller works from, read from its state in a run (the profile's `gpu_timestamps segment`, without which its load stays 0):
+
+- **Its load** (`main+0x5a8f0`) is the time between two timestamp reports of the frame as a percentage of 16.67 ms. MetalFX's temporal scaler runs after the last report, so with it the load reads 3-4.5 ms under the host's GPU time: in Hyrule Field 65% at 720p and 94% at Native, for 13.6 and 19.5 ms.
+- **Its model** (`main+0x805aa0`, `main+0x8065e0`): `load' = (load - F(H)) / (H / 1440)^2`, `F(H) = 13.3 (H / 1080)^2 + 6e-5 w / 2 + 2.25e-5 n + 18.3`, with `w`, `n` counts the frame reports (about 1.08 M and 0.63 M); a level of height `H` fits when `load' (H / 1440)^2 + F(H) + 3` is under the threshold less 3, and 4 less again to go sharper.
+- **The map has to be in the list.** Mapped after the update, the controller took Native for its level 0 of 1080 lines: predicted load 70 against 92 at any real load, so it stayed at 2560x1440 and 19.5 ms for good.
+- **With the temporal scaler** the softest's rows set the threshold to 80 (the stage's 95 less the scaler's time) and the frames a sharper level must have room to 120 (30 in the stage's parameters): the division by `(H / 1440)^2` makes the load noisy at low sizes, and with 30 the rate stepped between 1280 and 1429 wide every 2 to 5 seconds.
+
+MetalFX temporal, headless, 3,000 frames after the load on an idle Mac, frame time and GPU time in ms:
+
+| Save | Setting | Frame p50 / p95 | GPU p50 | Rate moved |
+|---|---|---|---|---|
+| Hyrule Field, still | fixed 720p | 16.65 / 18 | 13.6 | 0 |
+| Hyrule Field, still | Native to 2.0, before | 19.5 / 21-26 | 19.5 | 0 after the load |
+| Hyrule Field, still | Native to 2.0 | 16.65 / 18-19 | 14.3 | 11 times |
+| Hyrule Field, still | Quality to 2.0 | 16.67 / 18.4-19.4 | 14.1 | 8 times |
+| Kokiri Forest, camera turning | Native to 2.0 | 16.8-17.2 / 19-19.4 | 14.2-15.2 | 6 times, 720 to 1007 lines |
+
+`gpu_timestamps segment` costs no frame time at fixed 720p: GPU p50 13.6-14.2 against 13.6-13.7 ms, frame 16.65 in both, submit and present 7.2 against 5.8 ms.
 
 The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
 
