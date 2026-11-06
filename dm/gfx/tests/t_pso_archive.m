@@ -491,6 +491,20 @@ int main(int argc, char **argv) { @autoreleasepool {
     depth_only();
     concurrent_bases(0);
     concurrent_bases(1);
+    // a base the archives do not hold: Metal is asked once, whoever asks after that, and once built the base is there without a compile
+    MTLRenderPipelineDescriptor *md = desc(MTLPixelFormatRGBA8Unorm, 0, MTLPixelFormatRGBA8Unorm, MTLColorWriteMaskAll, 1);
+    md.vertexDescriptor.layouts[16].stride = 3072;
+    NSArray<id<MTL4Archive>> *keep = g_arch4; g_arch4 = @[[g_dev newArchiveWithURL:[NSURL fileURLWithPath:file] error:&err]];
+    uint64_t misses = g_pt_miss_n, built_none = g_pb_built;
+    EXPECT("no such base: nil", 1, pso_build_ex(md, &err, 0) == nil);
+    EXPECT("the archives were asked", misses + 1, g_pt_miss_n);
+    EXPECT("asked again: nil", 1, pso_build_ex(md, &err, 0) == nil);
+    EXPECT("the archives were not asked again", misses + 1, g_pt_miss_n);
+    EXPECT("the compile finds the base", 1, pso_build(md, &err) != nil);
+    EXPECT("without asking them", misses + 1, g_pt_miss_n);
+    EXPECT("its base compiled", built_none + 1, g_pb_built);
+    EXPECT("made now: no compile", 1, pso_build_ex(md, &err, 0) != nil);
+    g_arch4 = keep;
     // key normalization
     pso_key k; memset(&k, 0, sizeof k); k.blend_en = 0x5; k.dfmt = MTLPixelFormatDepth32Float; k.sfmt = MTLPixelFormatStencil8;
     for (int i = 0; i < 8; i++) { k.cfmt[i] = MTLPixelFormatRGBA8Unorm; k.blend[i].src_rgb = 5; k.blend[i].dst_rgb = 6; }   // every target present: only the blend rule acts

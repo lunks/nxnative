@@ -7676,6 +7676,9 @@ static nvn_hmap g_pbase = {.klen = sizeof(pbase_key)};
 @interface PbaseBuild : NSObject { @public dispatch_group_t done; id<MTLRenderPipelineState> ps; NSError *error; int compiled; } @end
 @implementation PbaseBuild @end
 static nvn_hmap g_pbase_pending = {.klen = sizeof(pbase_key)};
+// Bases the archives do not hold. The archives are fixed once pso4_init has opened them (a run's own bases go to g_pbase and to a file the next run reads), so a lookup that found none finds none
+// for the rest of the run, and each one costs about 0.2 ms of hashing inside Metal
+static nvn_hmap g_pbase_none = {.klen = sizeof(pbase_key)};
 static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
 static NSString *pso_user_path(void);
 // The pipeline archive made offline (dm/gfx/tools/pso_offline.py, metal-tt) and bundled with the app: DM_PSO_BUNDLE=<folder> (the iOS app sets it to its pso/ folder when it has one;
@@ -8029,12 +8032,13 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
     MTL4RenderPipelineDescriptor *b = g_comp4 ? pso_desc4(d, rast) : nil;   // with rasterization off there is no colour state to leave open: the base is the pipeline
     if (!b) { if (!compile) return nil; g_pb_legacy++; return pso_build_dev(d, e); }
     pbase_key bk; pbase_key_of(d, &bk);
-    id<MTLRenderPipelineState> base = nil; PbaseBuild *job = nil; int owner = 0;
+    id<MTLRenderPipelineState> base = nil; PbaseBuild *job = nil; int owner = 0, none = 0;
     for (;;) {
         os_unfair_lock_lock(&g_pbase_lock);
         base = hm_get_id(&g_pbase, &bk); job = nil; owner = 0;
         if (!base) {
-            job = hm_get_id(&g_pbase_pending, &bk);
+            job = hm_get_id(&g_pbase_pending, &bk); none = nvn_hm_get(&g_pbase_none, &bk) != NULL;
+            if (!job && none && !compile) { os_unfair_lock_unlock(&g_pbase_lock); return nil; }
             if (!job) { job = [PbaseBuild new]; job->done = dispatch_group_create(); dispatch_group_enter(job->done); hm_put_id(&g_pbase_pending, &bk, job); owner = 1; }
         }
         os_unfair_lock_unlock(&g_pbase_lock);
@@ -8049,9 +8053,9 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
     else {
         uint64_t t0 = bp_now();
         int vd = 0; for (int i = 0; i < 31 && !vd; i++) vd = bk.va[i][0] != 0;   // a vertex layout (MTLVertexFormatInvalid is 0)
-        if (!vd) for (id<MTL4Archive> a in g_arch4p) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) break;
+        if (!vd && !none) for (id<MTL4Archive> a in g_arch4p) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) break;
         int from_run = 0;
-        if (!base) for (id<MTL4Archive> a in g_arch4) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) { from_run = 1; break; }
+        if (!base && !none) for (id<MTL4Archive> a in g_arch4) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) { from_run = 1; break; }
         uint64_t t1 = bp_now();
         if (base) { g_pb_archived++; g_pt_hit_n++; g_pt_hit_ns += t1 - t0; }
         if (base && from_run && g_compact_enabled && atomic_load(&g_warm_running)) {
@@ -8061,7 +8065,7 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
             if (cb) { base = cb; g_compacted++; }
         }
         if (!base) {
-            if (g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
+            if (!none && g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
             if (compile) {
                 NSError *be = nil; base = arch_capture(b, &be, vd); job->error = be; job->compiled = 1;
                 g_pt_comp_ns += bp_now() - t1;
@@ -8072,6 +8076,7 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
         os_unfair_lock_lock(&g_pbase_lock);
         job->ps = base;
         if (base) hm_put_id(&g_pbase, &bk, base);
+        else nvn_hm_put(&g_pbase_none, &bk, (void *)1);
         hm_rel(nvn_hm_del(&g_pbase_pending, &bk)); dispatch_group_leave(job->done);
         os_unfair_lock_unlock(&g_pbase_lock);
         if (!base) { if (compile && e) *e = job->error; return nil; }   // NOLINT(clang-analyzer-osx.cocoa.RetainCount): job stays in g_pbase_pending (hm_put_id's CFBridgingRetain) until hm_rel releases it, not a leak
@@ -8177,13 +8182,24 @@ static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // No
     pso_pend_start(slot, gen, pso_desc(k, vs, fs, nil, 0), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
     return 1;
 }
-// The build a hybrid draw asked for while it draws with its stand-in: outside the speculative limit, on pp_bg_queue
+// The build a hybrid draw asked for while it draws with its stand-in: outside the speculative limit, on pp_bg_queue. Returns 0 when the table is full; that stays so until a build ends
 static int pso_pend_demand(const pso_key *k, NvShader *vs, NvShader *fs) {
     if (hm_get_id(&g_pso, k)) return 0;
+    static uint64_t full_at; uint64_t ended = atomic_load(&g_pp_done_n) + 1;   // submit thread
+    if (full_at == ended) return 0;
     pthread_mutex_lock(&g_pp_mu); uint32_t gen = 0; int slot = pso_pend_slot(k, 0, &gen); pthread_mutex_unlock(&g_pp_mu);
-    if (slot < 0) return 0;
+    if (slot < 0) { full_at = ended; return 0; }
     pso_pend_start(slot, gen, pso_desc(k, vs, fs, nil, 0), pp_bg_queue());
     return 1;
+}
+// Pipelines whose build the full table refused (submit thread): they have no base and a stand-in, so nothing is looked up for them until the table takes them. Hyrule Market's first entry in
+// Ocarina of Time asked for more builds than the table holds, and every draw of the ones it refused made a descriptor and asked the archives again: 240 failed lookups a frame, 48 of the 73 ms of
+// submit CPU, for over a minute
+static nvn_hmap g_pso_asked = {.klen = sizeof(pso_key)};
+static void pso_pend_ask(const pso_key *k, NvShader *vs, NvShader *fs) {
+    int asked = nvn_hm_get(&g_pso_asked, k) != NULL;
+    if (pso_pend_demand(k, vs, fs)) { if (asked) nvn_hm_del(&g_pso_asked, k); }
+    else if (!asked) nvn_hm_put(&g_pso_asked, k, (void *)1);
 }
 // Called by the submit thread: a build in the table is taken (waited for while its worker runs it; made here at once while it is still queued, so a draw that waits waits for its
 // own pipeline alone, not for the builds queued before it: Breath of the Wild's cold start waited 0.5-0.9 s for one pipeline behind a burst); nil when it is not in the table
@@ -8541,12 +8557,12 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
         int st = pso_pend_try(&k, &ps);
         if (st == 2) took = 1;   // built in the background (nil: it failed, and is built again below for its message)
         else {
-            if (st == 0) ps = pso_build_ex(pso_desc(&k, vs, fs, nil, 0), &e, 0);   // its base made or archived: no compile
+            if (st == 0 && !nvn_hm_get(&g_pso_asked, &k)) ps = pso_build_ex(pso_desc(&k, vs, fs, nil, 0), &e, 0);   // its base made or archived: no compile
             if (!ps) {
                 // Demand first (main's order): the draw's own pipeline is queued before the prediction admits speculative builds; with a stand-in nothing waits for it
                 __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs);
                 if (h) {
-                    if (st == 0) pso_pend_demand(&k, vs, fs);
+                    if (st == 0) pso_pend_ask(&k, vs, fs);
                     g_pso_pull = 1; g_hy_ns += bp_now() - bt;
                     if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; uint64_t t0 = bp_now(); pso_predict_rest(); g_bp_pso_ns += bp_now() - t0; }
                     return h;
