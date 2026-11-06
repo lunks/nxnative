@@ -2683,7 +2683,11 @@ static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> asked, MTLTextu
         }
     } else upgraded = backing ? [backing newTextureWithDescriptor:d offset:base.bufferOffset bytesPerRow:base.bufferBytesPerRow] : [g_dev newTextureWithDescriptor:d];
     if (!upgraded) { RED_ONCE(45, "texture upgrade failed ser=%llu format %lu → %lu usage %#lx", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, (unsigned long)d.usage); return base; }
-    if (!reinterpret) res_add(upgraded);
+    if (!reinterpret) {
+        res_add(upgraded);
+        NvImageHeap *owner = objc_getAssociatedObject(base, &g_image_heap_owner_key);   // a family's next image finds its heap through any of its textures
+        if (owner) objc_setAssociatedObject(upgraded, &g_image_heap_owner_key, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     id<MTLTexture> upgraded_view = nil;
     id<MTL4ComputeCommandEncoder> b = backing ? nil : blit();   // shared backing already contains the pixels; copying it onto itself would overlap
     NSUInteger slices = base.textureType == MTLTextureType3D ? 1 : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
@@ -2716,7 +2720,7 @@ static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> asked, MTLTextu
         if (shared) { CFSetRemoveValue(g_alias_set, (__bridge const void *)base); CFSetAddValue(g_alias_set, (__bridge const void *)upgraded); }
         g_ser_gen++;
         pthread_mutex_unlock(&g_smu);
-        if (view) {
+        if (view && view.pixelFormat != upgraded.pixelFormat) {
             id<MTLTexture> nv = [upgraded newTextureViewWithPixelFormat:view.pixelFormat textureType:view.textureType levels:NSMakeRange(0, upgraded.mipmapLevelCount) slices:NSMakeRange(0, upgraded.arrayLength) swizzle:view.swizzle];
             static int nview; if (nview++ < 4) MLOG("sRGB / linear view ser=%llu made again on its upgraded parent (%d so far)", (unsigned long long)t->serial, nview);
             if (nv) { tex_put(t->serial, nv); upgraded_view = nv; } else RED_ONCE(151, "cannot make the sRGB / linear view ser=%llu again on its upgraded parent: it keeps the old storage", (unsigned long long)t->serial);
@@ -2726,7 +2730,9 @@ static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> asked, MTLTextu
     MLOG("texture upgraded to allow %s ser=%llu base format %lu → view format %lu (upgrades=%llu)", add & MTLTextureUsageShaderWrite ? "image writes" : add & MTLTextureUsageRenderTarget ? "render-target use" : "format views", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, ++g_pfv_upgrades);
     return upgraded_view ? upgraded_view : upgraded;
 }
-static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPixelFormat view_pf) { return tex_upgrade(t, base, MTLTextureUsagePixelFormatView, view_pf); }
+static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPixelFormat view_pf) {
+    return tex_upgrade(t, base, MTLTextureUsagePixelFormatView | (t && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) ? MTLTextureUsageShaderWrite : 0), view_pf);   // an image stays writable through a later format view
+}
 // Packaged texture upload: first take the stamp, then set read-only, then read the pool memory and deswizzle into a staging buffer, and blit into a new private texture.
 // The stamp comes first: a write that faults while the pages are being protected gets a generation above it and leaves its page writable, and its bytes may land after
 // the read; a stamp taken after the protect covered that generation, so the write and every later one to that page went unseen and the texture stayed stale
@@ -6329,7 +6335,9 @@ static id<MTLTexture> img_fit(int tid, id<MTLTexture> t, int dpf, uint64_t *rid)
     if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf) { *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im; }
     if (r->im) { defer_obj_unref((__bridge id)r->im); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0; }
     NSUInteger ns = t.textureType == MTLTextureType3D ? 1 : t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1);
-    id<MTLTexture> v = [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns)];
+    NSUInteger bs = base.textureType == MTLTextureType3D ? 1 : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
+    id<MTLTexture> v = base.pixelFormat == pf && base.textureType == t.textureType && !l0 && !s0 && t.mipmapLevelCount == base.mipmapLevelCount && ns == bs
+                       ? base : [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns)];
     if (!v) { RED_ONCE(107, "cannot create the image view of class %s (texture ID %d, Metal format %lu)", u ? "uint" : "int", tid, (unsigned long)t.pixelFormat); return nil; }
     { static int once; if (cls && !once++) MLOG("image read in another class than its texture: first case texture ID %d Metal format %lu → %lu", tid, (unsigned long)t.pixelFormat, (unsigned long)pf); }
     { static int once; if (!cls && pf != t.pixelFormat && !once++) MLOG("sRGB texture bound as an image: loaded and stored raw through a view of its linear format, first case texture ID %d Metal format %lu → %lu", tid, (unsigned long)t.pixelFormat, (unsigned long)pf); }
@@ -9071,37 +9079,46 @@ static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, in
 static uint32_t ubo_handle(int stage, int reg, int off); static int ubo_tex_id(uint32_t h);
 static void image_prepare(NvProg *pr, unsigned stages) {
     if (!pr) return;
-    if (!pr->c_img) { int any = 0;   // no written or atomic image slot in any stage: nothing to resolve, every draw
+    if (!pr->c_img) { int any = 0;   // no written, atomic or integer image slot in any stage: nothing to resolve, every draw
         for (int st = 0; st < 6 && !any; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
-            for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (((b->kind == NVN_RB_IMG && b->reg < 32) || b->kind == NVN_RB_IMGU) && (b->rw || b->atom)) { any = 1; break; } } }
+            for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (((b->kind == NVN_RB_IMG && b->reg < 32) || b->kind == NVN_RB_IMGU) && (b->rw || b->atom || b->dpf != NVN_DPF_FLOAT)) { any = 1; break; } } }
         pr->c_img = (int8_t)(any + 1); }
     if (pr->c_img == 1) return;
     for (int st = 0; st < 6; st++) {
         if (!(stages & (1u << st))) continue;
         NvShader *sh = pr->sh[st]; if (!sh) continue;
         for (int i = 0; i < sh->rf.nb; i++) {
-            const nvn_rbind *b = &sh->rf.b[i]; if ((b->kind != NVN_RB_IMGU && (b->kind != NVN_RB_IMG || b->reg >= 32)) || (!b->rw && !b->atom)) continue;
+            const nvn_rbind *b = &sh->rf.b[i]; if ((b->kind != NVN_RB_IMGU && (b->kind != NVN_RB_IMG || b->reg >= 32)) || (!b->rw && !b->atom && b->dpf == NVN_DPF_FLOAT)) continue;
             int tid = b->kind == NVN_RB_IMGU ? ubo_tex_id(ubo_handle(st, b->reg, b->off)) : (int)(S.img[st][b->reg] & 0xfffff); if (tid <= 0) continue;
             os_unfair_lock_lock(&g_rmu);
             if (tid >= g_ntreg || !g_treg[tid].ok || g_treg[tid].gone) { os_unfair_lock_unlock(&g_rmu); continue; }
             // The actual image binding is image intent too: some engines write a descriptor with RegisterTexture and use its handle in an image slot.
-            tex_t image = g_treg[tid].t; image.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; mtl_tex_gpu_written(image.pool, image.mem, image.L.size);
-            id<MTLTexture> base = tex_mtl(&image); sparse_gpu_wrote(&image); while (base.parentTexture) base = base.parentTexture;
+            // The flag stays with the ID, so an upload or upgrade after this one keeps the usage. An integer read of a texture of another class needs the format view before this draw:
+            // img_fit alone gives it from the next pass, and the draw reads the texture as is, which came out as blocks (PR #1444: lava and rocks on Death Mountain, cutscenes at dynamic resolution)
+            g_treg[tid].t.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+            tex_t image = g_treg[tid].t; int written = b->rw || b->atom;
+            if (written) mtl_tex_gpu_written(image.pool, image.mem, image.L.size);
+            id<MTLTexture> base = tex_mtl(&image); if (written) sparse_gpu_wrote(&image);
+            while (base.parentTexture) base = base.parentTexture;
             int reinterpret = b->atom && b->dpf != NVN_DPF_FLOAT && tex_rgba_atomic_alias(base);
-            int upgrade = base && (!(base.usage & MTLTextureUsageShaderWrite) || reinterpret);
+            int need_pfv = b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(base.pixelFormat) != b->dpf && !(base.usage & MTLTextureUsagePixelFormatView);
+            int upgrade = base && ((written && !(base.usage & MTLTextureUsageShaderWrite)) || reinterpret || need_pfv);
             os_unfair_lock_unlock(&g_rmu);
             if (!upgrade) continue;
             rp_end();
             os_unfair_lock_lock(&g_rmu);
             // A guest registration can change while the pass ends; resolve its current snapshot again under the descriptor lock.
             if (tid < g_ntreg && g_treg[tid].ok && !g_treg[tid].gone) {
-                image = g_treg[tid].t; image.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+                g_treg[tid].t.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+                image = g_treg[tid].t;
                 base = tex_mtl(&image); while (base.parentTexture) base = base.parentTexture;
                 reinterpret = b->atom && b->dpf != NVN_DPF_FLOAT && tex_rgba_atomic_alias(base);
-                if (base && (!(base.usage & MTLTextureUsageShaderWrite) || reinterpret)) {
+                need_pfv = b->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(base.pixelFormat) != b->dpf && !(base.usage & MTLTextureUsagePixelFormatView);
+                if (base && ((written && !(base.usage & MTLTextureUsageShaderWrite)) || reinterpret || need_pfv)) {
                     MTLTextureUsage use = img_usage(&image, base.pixelFormat);
                     MTLPixelFormat format = base.pixelFormat;
-                    if (reinterpret) { use |= MTLTextureUsageShaderAtomic; format = b->dpf == NVN_DPF_UINT ? MTLPixelFormatR32Uint : MTLPixelFormatR32Sint; }
+                    if (reinterpret) { use |= MTLTextureUsageShaderAtomic | MTLTextureUsagePixelFormatView; format = b->dpf == NVN_DPF_UINT ? MTLPixelFormatR32Uint : MTLPixelFormatR32Sint; }
+                    else if (need_pfv) use |= MTLTextureUsagePixelFormatView;
                     tex_upgrade(&image, base, use, format);
                     args_dirty_all();
                 }
@@ -12421,9 +12438,9 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     // which ends the render pass: en is then an ended encoder, and drawing on it crashed in the driver (AGX reads its released context: Need for Speed: Hot Pursuit Remastered,
     // a 4096x1024 texture sampled through another format's view at its first loading screen). The texture is upgraded now, so the draw is encoded again in a new pass
     if (g_enc != en) {
-        static int again; if (again) { RED_ONCE(130, "binding a draw's arguments ended its render pass twice; draw skipped"); return; }
+        static int again; if (again >= 8) { RED_ONCE(130, "binding a draw's arguments ended its render pass repeatedly; draw skipped"); return; }   // one upgrade each: two textures in a draw lost the draw
         PD("M %llu binding the draw's arguments ended the render pass (texture upgrade); encoded again", g_stat_pass);
-        again = 1; draw(dw, di); again = 0; return;
+        again++; draw(dw, di); again--; return;
     }
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
