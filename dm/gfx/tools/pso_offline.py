@@ -287,7 +287,7 @@ def archive_key(configuration, libraries, arch, platform, osmin, toolchain):
     once; runtime stamps are rewritten even when the compiled archive is reused.
     """
     config = dict(configuration, libraries=[dict(lib, path=lib['label'] + '.metallib') for lib in configuration['libraries']])
-    inputs = {'format': 1, 'configuration': config, 'libraries': libraries,
+    inputs = {'format': 2, 'configuration': config, 'libraries': libraries,
               'arch': arch, 'platform': platform, 'os_min': osmin, 'toolchain': toolchain}
     digest = hashlib.sha256()
     for chunk in json.JSONEncoder(sort_keys=True, separators=(',', ':')).iterencode(inputs):
@@ -329,13 +329,43 @@ def compile_archive(js, part, work, arch, platform, osmin, count):
         raise (Refused if 'cannot emit pipeline' in text else SystemExit)(f'[RED] pso_offline: metal-tt failed for {arch} (exit {r.returncode}){full}: {text[-2000:]}')
 
 
+# The archive keeps a copy of each library metal-tt read, 3.1 GB of 5.9 in Ocarina of Time, and Metal reads it through to open the archive: a copy cut to the pipeline's one function
+# leaves 1.7 GB and opens in about half the time. Lookups match a function's hash, not the library, so the host's two-function libraries still find them (1,000 of 1,000 pipelines)
+def thin_library(b, entry):
+    """A .metallib cut to one function: its list record (OFFT zeroed, HASH verbatim), public and private metadata and bitcode. Header: list at 0x18, public 0x28, private 0x38, bitcode 0x48, each (offset, size)"""
+    fo, fs, po, ps, qo, qs, bo, bs = struct.unpack_from('<8Q', b, 0x18)
+    q, rec = fo + 4, None
+    for _ in range(struct.unpack_from('<I', b, fo)[0]):
+        size, r, tags = struct.unpack_from('<I', b, q)[0], q + 4, {}
+        while (tag := b[r:r + 4]) != b'ENDT':
+            n = struct.unpack_from('<H', b, r + 4)[0]; tags[tag] = (r + 6, n); r += 6 + n
+        o, n = tags[b'NAME']
+        if b[o:o + n].rstrip(b'\0').decode() == entry: rec = (q, size, tags)
+        q += size
+    if not rec: raise ValueError(f'no function {entry}')
+    start, size, tags = rec; tail = b[q:po]; e = bytearray(b[start:start + size]); off = tags[b'OFFT'][0]
+    pub_o, pri_o, bc_o = struct.unpack_from('<3Q', b, off); e[off - start:off - start + 24] = bytes(24)
+    bc_n = struct.unpack_from('<Q', b, tags[b'MDSZ'][0])[0]
+    entry_of = lambda base, o: b[base + o:base + o + 4 + struct.unpack_from('<I', b, base + o)[0]]
+    pub, pri, bc = entry_of(po, pub_o), entry_of(qo, pri_o), b[bo + bc_o:bo + bc_o + bc_n]
+    lst = struct.pack('<I', 1) + bytes(e) + tail; npo = 0x58 + len(lst); nqo = npo + len(pub); nbo = nqo + len(pri); total = nbo + len(bc)
+    h = bytearray(b[:0x58]); struct.pack_into('<Q', h, 0x10, struct.unpack_from('<Q', b, 0x10)[0] - (len(b) - total))
+    struct.pack_into('<8Q', h, 0x18, 0x58, len(e), npo, len(pub), nqo, len(pri), nbo, len(bc))
+    return bytes(h) + lst + pub + pri + bc
+
+
 def real_libraries(lib_dir, bases, work, computes=(), meshes=()):
     """Where metal-tt finds the bases' libraries: it takes file paths, so the libraries of one file get a temporary folder of what this compile reads, which clear_real_libraries removes after it.
     An archive whose key still holds compiles nothing and gets none"""
-    if os.path.isdir(lib_dir): return lib_dir
     real = Path(work) / 'libraries'; shutil.rmtree(real, ignore_errors=True); real.mkdir(parents=True)
-    for name in sorted({lib for vl, _, fl, _ in bases for lib in (vl, fl)} | {lib for lib, _ in computes} | {lib for m in meshes for lib in (m[0], m[4], m[7]) if lib}):
-        with romfs.open(os.path.join(lib_dir, f'{name}.metallib'), 'rb') as f, open(real / f'{name}.metallib', 'wb') as o: shutil.copyfileobj(f, o)
+    used = {}
+    for lib, entry in [p for vl, ve, fl, fe in bases for p in ((vl, ve), (fl, fe))] + list(computes) + [p for m in meshes for p in ((m[0], m[1]), (m[4], m[5]), (m[7], m[8])) if p[0]]:
+        used.setdefault(lib, set()).add(entry)
+    for name, entries in sorted(used.items()):
+        with romfs.open(os.path.join(lib_dir, f'{name}.metallib'), 'rb') as f: b = f.read()
+        try: b = thin_library(b, next(iter(entries))) if len(entries) == 1 else b   # a library two pipelines read differently stays whole, as does one of another form
+        except (KeyError, ValueError, struct.error, IndexError): pass
+        (real / f'{name}.metallib').write_bytes(b)
     return real
 
 
@@ -492,8 +522,8 @@ def main(argv=None):
             compile_batches(lib_dir, bases, work, part, arch, a.platform, osmin, tv, a.batch_size, computes, a.jobs, meshes=meshes)
         else:
             write_script(js, script(real_libraries(lib_dir, bases, work, computes), bases, computes))
-            compile_archive(js, part, work, arch, a.platform, osmin, len(bases) + len(computes))
-            clear_real_libraries(work)
+            try: compile_archive(js, part, work, arch, a.platform, osmin, len(bases) + len(computes))
+            finally: clear_real_libraries(work)
         os.replace(part, dst); kf.write_text(key + '\n')
         print(f'pso_offline: {arch}: {dst.stat().st_size / 2**20:.0f} MB in {time.time() - t1:.0f} s')
     for f in out.glob('*.mtl4a'):   # architectures no longer asked for

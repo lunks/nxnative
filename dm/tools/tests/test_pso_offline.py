@@ -277,7 +277,7 @@ class Build(unittest.TestCase):
         # Keys from earlier builds must continue to hit. Only library locations are normalized.
         for lib in config['libraries']:
             lib['path'] = lib['label'] + '.metallib'
-        inputs = dict(format=1, configuration=config, libraries=po.library_digest(self.lib, bases),
+        inputs = dict(format=2, configuration=config, libraries=po.library_digest(self.lib, bases),
                       arch='applegpu_g18p', platform='ios', os_min='27.0', toolchain=self.compiler)
         expected = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         self.assertEqual((self.work / 'key.applegpu_g18p').read_text().strip(), expected)
