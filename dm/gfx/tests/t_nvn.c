@@ -167,6 +167,19 @@ int main(void) {
         EXPECT("ring buffer initializes", 1, P(nvnBufferInitialize)(buffer, &bb));
         EXPECT("initial buffer address", (uintptr_t)poolmem + 0x100, P(nvnBufferGetAddress)(buffer));
         EXPECT("initial buffer size", 0x200, P(nvnBufferGetSize)(buffer));
+        {   // a buffer whose initialization failed (a game's allocation that came back empty) and no object at all: queries answer nothing instead of faulting on the render thread
+            NVNbuffer failed; memset(&failed, 0, sizeof failed);
+            EXPECT("failed buffer: address", 0, P(nvnBufferGetAddress)(&failed));
+            EXPECT("failed buffer: map", 0, (uintptr_t)P(nvnBufferMap)(&failed));
+            EXPECT("no buffer: address", 0, P(nvnBufferGetAddress)(NULL));
+            EXPECT("no buffer: map", 0, (uintptr_t)P(nvnBufferMap)(NULL));
+            EXPECT("no buffer: size", 0, P(nvnBufferGetSize)(NULL));
+            EXPECT("no buffer: pool", 0, (uintptr_t)P(nvnBufferGetMemoryPool)(NULL));
+            EXPECT("no buffer: offset", 0, P(nvnBufferGetMemoryOffset)(NULL));
+            EXPECT("no pool: flags", 0, P(nvnMemoryPoolGetFlags)(NULL));
+            EXPECT("no pool: map", 0, (uintptr_t)P(nvnMemoryPoolMap)(NULL));
+            EXPECT("no pool: size", 0, P(nvnMemoryPoolGetSize)(NULL));
+        }
         uint64_t initial_offset, initial_size;
         memcpy(&initial_offset, (uint8_t *)buffer + 0x18, 8);
         memcpy(&initial_size, (uint8_t *)buffer + 0x20, 8);
