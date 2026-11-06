@@ -23,6 +23,13 @@ modules	main subsdk0 sdk
 romfs_marker	Event/Movie/Dm_StaffCredit_0000.webm
 zip_store	.zs:.bwav:.webm:.metallib
 
+# In the NUP at hand three RomFS files begin with 12 KB of zeros (the container's SHA-256 of them matches, so they were so when it was packed; whether a retail copy has them is not known), so they cannot be decompressed. Served as stored, the fairy
+# fountain model that uses the first never loaded and the OptimizeChangeBanc thread (main+0xf7a0) asked for it again ~22 times a second all session: one core, plus ~0.75 core of
+# ParallelDecompThread decompressing the 2.4 MB model each time (Mac CPU 365%, iPad 400-460%). "Not found" fails the model the same way. Served as the game's own 1x1 flat normal map, the
+# model loads once and both threads go idle (Mac CPU 412% -> 180%, frame p95 21.9 -> 18.8 ms). The Ganon stage bake is served as its neighbour cell's (not checked in game). A copy without the damage
+# needs none of this: the host substitutes only a .zs file that is not a zstd stream (hle_fs.c img_serve)
+romfs_substitute	Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs=Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs Tex/Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs=Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs Tex/RBake_Scene_GanonStage_G_2_1_d0_t0.bntx.zs=Tex/RBake_Scene_GanonStage_G_2_2_d0_t0.bntx.zs
+
 # ---- Memory ----
 # The NPDM declares 48 MiB of system resources. Startup requests a 6.20 GiB heap.
 # The alias region holds the game's streaming allocator (main+0x7ed630): in Kokiri Forest about 5,100 address regions with 3.0-3.3 GB mapped, reaching +4.95 GB (DM_REGIONS).
