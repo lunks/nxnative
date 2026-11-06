@@ -4353,6 +4353,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     tex_put(t->serial, mt);
     return mt;
 }
+static uint64_t g_gptr_sites, g_gptr_filled, g_gptr_draws, g_gptr_short;   // bind-time pointer sites encoded, those whose word named a pool, shader bindings with sites, and those with a site left empty or no site at all (NVN_RB_GPTR in encode_args; logged with the frame's memory line)
 // Memory readout line (always on, low frequency, capped): resident memory, GPU allocated, deferred-release queue, residency set object count, registered memory pools / peak / tracking table capacity, cumulative texture re-uploads.
 // Purpose: pin down "crashes with no log". The system gives no notice before killing a process for memory, so only readouts left beforehand can show which number kept climbing.
 // Called by the frame hook every 300 frames; printed only when resident or GPU allocated changed by ≥ 64 MB since the last line, otherwise one line every 3000 frames; capped at 400 lines per game. All integers (the frame hook runs on the guest thread's small stack, so no floating-point formatting)
@@ -4385,6 +4386,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     if (g_pkg_alias.n) MLOG("packaged textures kept past their objects: %u, %llu MB (found again %llu times, let go %llu)", g_pkg_alias.n, (unsigned long long)(g_pkg_kept_bytes >> 20), (unsigned long long)g_pkg_kept_hits, (unsigned long long)g_pkg_kept_gone);
     { void mtl_gmem_words(uint64_t *, uint64_t *, uint64_t *); uint64_t gw, go, gb; mtl_gmem_words(&gw, &go, &gb);
       if (gw) MLOG("raw pool table words at commit: %llu, of them %llu held an older table than the current one and %llu the current one behind the pools", (unsigned long long)gw, (unsigned long long)go, (unsigned long long)gb); }
+    if (g_gptr_draws) MLOG("bind-time pointers up to frame %llu: %llu sites encoded, %llu of them named a pool (%llu per mille); %llu raw-load shader bindings, %llu of them with a site empty or no site (they rely on the table)", frame, (unsigned long long)g_gptr_sites, (unsigned long long)g_gptr_filled, (unsigned long long)(g_gptr_sites ? g_gptr_filled * 1000 / g_gptr_sites : 0), (unsigned long long)g_gptr_draws, (unsigned long long)g_gptr_short);
     { void mtl_vc_stats(unsigned *, uint64_t *, uint64_t *), mtl_tb2_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *, uint64_t *); uint64_t mtl_tex_mis_count(void); unsigned vn; uint64_t vh, vm, tb, tm, tf, tc, tcb;
       mtl_vc_stats(&vn, &vh, &vm); mtl_tb2_stats(&tb, &tm, &tf, &tc, &tcb);
       MLOG("texture views by texture (vc_get): %u textures hold cached views; %llu views reused, %llu made in total; texture buffers bound as 2D rows for wrapped 1D fetches %llu times, %llu made, %llu failed, %llu copied into aligned rows (%llu MB) "
@@ -10197,6 +10199,33 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             id<MTLBuffer> cb = sh->c1buf ? sh->c1buf : zero_bank();   // c1 has length 0 (600 of them in the whole library) yet the shader still declares it: reads 0
             slots[aid] = (sh->c1buf ? sh->c1_gpu : zero_bank_gpu()) + (sh->c1buf ? sh->c1off : 0);
             USE(cb, MTLResourceUsageRead);
+        } else if (b->kind == NVN_RB_GPTR) {
+            // Bind-time pointers (dmsh_abi.h DMSH_GPTR_*): each site's pointer word, read now from the storage buffer it lies in, names the pool or chunk the shader's load will
+            // reach; its entry {start, end, delta} lets the load skip the table, and the pool is made resident here as a storage buffer binding's is (mtl_gpu_addr). The word is the
+            // CPU's view: one the GPU rewrites later (FoliageShader's culling) gives an entry the address falls outside, and the load searches the table as before
+            int n = sh->rf.ngptr;
+            g_gptr_draws++;
+            if (!n) { g_gptr_short++; slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); }
+            else {
+                id<MTLBuffer> db; size_t doff = arena_alloc((size_t)n * DMSH_GMEM_MAP_ENTRY, &db);
+                uint64_t *ent = (uint64_t *)(g_cur_arena->cpu + doff); memset(ent, 0, (size_t)n * DMSH_GMEM_MAP_ENTRY);
+                int filled = 0;
+                for (int q = 0; q < n; q++) {
+                    int sreg = sh->rf.gptr[q].reg; const p_bind_buf *u = sreg >= 0 && sreg < 16 ? &S.ssbo[nvn_stage][sreg] : NULL;
+                    uint64_t at = u && u->addr ? u->addr + sh->rf.gptr[q].off : 0, ptr = 0;
+                    if (!at || (u->size && sh->rf.gptr[q].off + 8u > u->size)) continue;
+                    memcpy(&ptr, (const void *)(uintptr_t)at, 8);
+                    void *mb; uint64_t mo, gpu;
+                    if (!ptr || !mtl_gpu_addr(ptr, 1, &mb, &mo, &gpu)) continue;
+                    __unsafe_unretained id<MTLBuffer> pb = (__bridge id<MTLBuffer>)mb;
+                    uint64_t *e = ent + (size_t)q * (DMSH_GMEM_MAP_ENTRY / 8);
+                    e[0] = ptr - mo; e[1] = ptr - mo + pb.length; e[2] = gpu - ptr; filled++;
+                    USE(pb, MTLResourceUsageRead);
+                }
+                slots[aid] = g_cur_arena->gpu + doff; USE(db, MTLResourceUsageRead);
+                g_gptr_sites += (uint64_t)n; g_gptr_filled += (uint64_t)filled; if (filled < n) g_gptr_short++;
+                if (bl) PD("B %llu st%d gptr %d sites %d filled", g_stat_pass, nvn_stage, n, filled);
+            }
         } else if (b->kind == NVN_RB_GMEM || b->kind == NVN_RB_GMEML) {   // B: the memory pool table for addresses traced to no storage buffer (gmem_map), and the write log of those stores (gml_take)
             if (!raw_map) raw_map = gmem_map();   // the log and the shader use the same table even if a pool comes in during the encode
             slots[aid] = b->kind == NVN_RB_GMEM ? raw_map.gpuAddress : gml_take(raw_map);
