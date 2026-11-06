@@ -3635,12 +3635,14 @@ static int tex_from_storage(const tex_t *t) {
 // the 3D textures it renders into carry IMAGE | COMPRESSIBLE. That is what Xenoblade Chronicles 3, Breath of the Wild and Tears of the Kingdom do, not an NVN rule: a 3D render target
 // with neither flag and data in its storage at first use would still be drawn into (attach gives it render-target use), but a ReadTexels of it, or a second texture object over the
 // same storage, would read the storage rather than what the GPU drew. DM_NVN_STORAGE_FIRST_USE=0 turns this off (to measure it)
+static int gpu_holds(const tex_t *t);
 static int tex_cpu_content(const tex_t *t) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
     if (!on || !t->mem || !t->pool || t->has_layout || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return 0;
-    int unc = !fmt_compressed(t->d.format) && t->d.target != NVN_TEXTURE_TARGET_3D;
-    if (unc) {   // not over storage the GPU writes; not what only the GPU or the decoder fills (a display or video-decode texture, depth or stencil)
-        if ((atomic_load_explicit(&t->pool->gpu_written, memory_order_relaxed) && gpuw_overlaps((uint64_t)(uintptr_t)t->mem, (uint64_t)(uintptr_t)t->mem + t->L.size)) || fmt_depth(t->d.format) || (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE))) return 0;
+    int unc = !fmt_compressed(t->d.format) && t->d.target != NVN_TEXTURE_TARGET_3D, over = 0;
+    if (unc) {   // not over storage whose GPU content a host texture holds for it; not what only the GPU or the decoder fills (a display or video-decode texture, depth or stencil)
+        over = atomic_load_explicit(&t->pool->gpu_written, memory_order_relaxed) && gpuw_overlaps((uint64_t)(uintptr_t)t->mem, (uint64_t)(uintptr_t)t->mem + t->L.size);
+        if ((over && gpu_holds(t)) || fmt_depth(t->d.format) || (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE))) return 0;
     }
     if (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;   // the CPU cannot write it (tex_init_fill fills it once) / sparse (tex_from_storage)
     // IMAGE only matters for an uncompressed texture: shaders cannot write a block-compressed one. Pokopia gives nearly every texture IMAGE (flags 0x4), its icons BC1 / BC7 in a
@@ -3648,6 +3650,10 @@ static int tex_cpu_content(const tex_t *t) {
     if ((t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))
         || ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && !fmt_compressed(t->d.format))) return 0;
     if (!mem_any(t->mem, t->L.size)) return 0;
+    if (over) {   // a range from a texture that is gone: this texture's storage is the CPU's now, and a later pass of cpu_unc_drop must not take it back
+        gpuw_drop((uint64_t)(uintptr_t)t->mem, (uint64_t)(uintptr_t)t->mem + t->L.size);
+        static uint64_t n; if (n++ < 8) MLOG("texture over storage the GPU wrote earlier ser=%llu %ux%u format %#x: no host texture holds that for it, so its storage is what the CPU wrote since (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)n);
+    }
     if (unc) { uint64_t s = t->serial; pthread_mutex_lock(&g_cpu_tex_mu); nvn_hm_put(&g_cpu_unc, &s, (void *)t->pool); nvn_hm_put(&g_cpu_unc_lo, &s, (void *)t->mem); nvn_hm_put(&g_cpu_unc_sz, &s, (void *)(uintptr_t)t->L.size); pthread_mutex_unlock(&g_cpu_tex_mu); }
     static uint64_t n[2]; if (n[unc]++ < 4) MLOG("texture written by the CPU before its first use ser=%llu %ux%ux%u format %#x%s pool flags %#x: uploaded from its storage, re-uploaded when it changes (%llu so far)",
                                          (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, unc ? " (uncompressed, storage the GPU has not written)" : "", t->pool->flags, (unsigned long long)n[unc]);
@@ -3656,7 +3662,10 @@ static int tex_cpu_content(const tex_t *t) {
 void mtl_tex_gpu_written(const void *pool, const void *mem, uint64_t size) {
     pool_t *p = (pool_t *)pool;
     if (!p) return;
-    if (!mem || !size) { mem = p->mem; size = p->size; }
+    if (!mem || !size) {   // no storage named: nothing recorded, as the whole pool would turn every texture the CPU wrote in it into a GPU texture
+        static const void *seen[64]; static int ns; int known = 0; for (int i = 0; i < ns; i++) known |= seen[i] == pool;
+        if (!known && ns < 64) { seen[ns++] = pool; MLOG("a GPU write with no storage (%p, %#llx bytes, from %p) in pool %p of %#llx bytes, flags %#x: not recorded", mem, (unsigned long long)size, __builtin_return_address(0), pool, (unsigned long long)p->size, p->flags); }
+    }
     int fresh = mem && size && gpuw_add((uint64_t)(uintptr_t)mem, (uint64_t)(uintptr_t)mem + size);
     if (!atomic_load_explicit(&p->gpu_written, memory_order_relaxed)) { atomic_store(&p->gpu_written, 1); fresh = 1; }
     if (fresh) atomic_store(&g_pool_gpuw_new, 1);
@@ -3682,7 +3691,7 @@ static void cpu_unc_drop(void) {
         if ([o isKindOfClass:[NvPkg class]]) { NvPkg *pk = o; id<MTLTexture> mt = pk->view ? pk->view : pk->tex; if (mt) tex_put(ser[i], mt); }
         ser_note(ser[i]);
     }
-    if (n) { static int nl; if (nl++ < 8) MLOG("the GPU's first write over their storage: %u uncompressed textures taken from it are GPU textures from now on", n); }
+    if (n) { static int nl; if (nl++ < 64) MLOG("the GPU's first write over their storage: %u uncompressed textures taken from it are GPU textures from now on (frame %llu)", n, (unsigned long long)atomic_load(&g_cur_frame)); }
     free(ser);
 }
 static id<MTLTexture> tex_mtl_(const tex_t *ct);
@@ -3799,6 +3808,9 @@ static _Atomic uint64_t g_tex_walk_empty;   // IDs walks left empty, in total
 // new entry started a new epoch once any walk had left an ID empty, and with it a whole table build: 2,000 to 4,000 builds against 1,000 in Ocarina of Time's first minutes outdoors. Under g_smu
 typedef struct { uint32_t n; uint64_t serial[WALK_EMPTY_N]; } walk_empty_t;
 static inline void tex_alias_key(const tex_t *t, alias_key *k) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~NVN_TEXTURE_FLAGS_IMAGE; }
+// Whether a host texture holds what the GPU wrote into this texture's storage. What the GPU writes stays in Metal textures and does not reach guest memory, so a range is news only for a texture
+// that would find that Metal texture: a new object over the same key. Any other object over the range has in its storage what the CPU wrote there since the GPU's texture went.
+static int gpu_holds(const tex_t *t) { alias_key k; tex_alias_key(t, &k); pthread_mutex_lock(&g_smu); int r = nvn_hm_get(&g_alias, &k) != NULL; pthread_mutex_unlock(&g_smu); return r; }
 static void walk_empty_put(const tex_t *t) {
     alias_key k; tex_alias_key(t, &k);
     pthread_mutex_lock(&g_smu);

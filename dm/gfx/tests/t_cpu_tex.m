@@ -38,7 +38,7 @@ static void retired_classification(void) {
     mtl_alias_drop_pool(&pools[1]);
     CHECK(!tex_cpu_written(b.serial) && !tex_cpu_written(late.serial) && !g_cpu_tex_retired.n, "pool cleanup removes all retired classifications");
 }
-// A pool that holds both kinds: an uncompressed texture is kept from its storage only where the GPU wrote that storage (Ocarina of Time's height tiles beside textures the GPU writes)
+// A pool that holds both kinds: an uncompressed texture is kept from its storage except where a host texture holds what the GPU wrote there (Ocarina of Time's height tiles beside textures the GPU writes)
 static void gpu_written_ranges(void) {
     enum { LEN = 4 << 20, FAR = 2 << 20 };
     uint8_t *mem = mmap(NULL, LEN, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (mem == MAP_FAILED) abort();
@@ -49,7 +49,9 @@ static void gpu_written_ranges(void) {
     nvn_tex_layout(&a.d, &a.L); b.L = a.L;
     mtl_tex_gpu_written(&pool, mem + FAR, a.L.size);
     CHECK(tex_cpu_content(&a), "a texture beside what the GPU wrote is taken from its storage, in a pool the GPU writes");
-    CHECK(!tex_cpu_content(&b), "the one over it is not");
+    alias_key k; tex_alias_key(&b, &k); nvn_hm_put(&g_alias, &k, &pool);
+    CHECK(!tex_cpu_content(&b), "the one over it is not, while the sharing table holds the GPU's texture");
+    nvn_hm_del(&g_alias, &k);
     atomic_store(&g_pool_gpuw_new, 1); cpu_unc_drop();
     CHECK(nvn_hm_get(&g_cpu_unc, &a.serial) != NULL, "a write elsewhere in the pool leaves it taken");
     mtl_tex_gpu_written(&pool, mem + 16, 16); cpu_unc_drop();
@@ -59,10 +61,13 @@ static void gpu_written_ranges(void) {
     CHECK(gpuw_add(base + 8, base + 40) && g_ngpuw == n && !gpuw_add(base + 20, base + 30), "ranges merge, and one inside another is nothing new");
     gpuw_add(base + 100, base + 200); gpuw_drop(base + 120, base + 130);
     CHECK(gpuw_overlaps(base + 110, base + 111) && gpuw_overlaps(base + 150, base + 151) && !gpuw_overlaps(base + 125, base + 126), "dropping the middle of a range leaves both ends");
+    CHECK(gpuw_overlaps(base + FAR, base + FAR + 1) && tex_cpu_content(&b) && !gpuw_overlaps(base + FAR, base + FAR + b.L.size), "over a range no host texture holds for it: taken, and the range is cut");
+    atomic_store(&g_pool_gpuw_new, 1); cpu_unc_drop();
+    CHECK(nvn_hm_get(&g_cpu_unc, &b.serial) != NULL, "so it stays taken");
     cpu_tex_drop_pool(&pool);
     CHECK(!gpuw_overlaps(base, base + LEN), "a pool that goes takes its ranges along");
     mtl_tex_gpu_written(&pool, NULL, 0);
-    CHECK(gpuw_overlaps(base + LEN - 1, base + LEN), "no range given: the whole pool");
+    CHECK(!gpuw_overlaps(base, base + LEN), "no storage given: nothing recorded");
     cpu_tex_drop_pool(&pool); munmap(mem, LEN);
 }
 static void descriptor_replacement(void) {

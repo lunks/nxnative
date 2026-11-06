@@ -50,17 +50,17 @@ int main(void) {
         CHECK("at first use the storage is the content", first_red(resolve(&f.t)) == 40);
         dm_guest_write_prepare(f.mem, f.t.L.size); fill(&f.t, f.mem, 80);
         CHECK("a later CPU write is uploaded", first_red(resolve(&f.t)) == 80);
-        mtl_tex_gpu_written(&f.pool, NULL, 0);
-        CHECK("at the pool's first GPU write it keeps the content it has", first_red(resolve(&f.t)) == 80);
+        mtl_tex_gpu_written(&f.pool, f.mem, f.t.L.size);
+        CHECK("at the GPU's first write over it it keeps the content it has", first_red(resolve(&f.t)) == 80);
         CHECK("and is no longer CPU-written", !tex_cpu_written(f.t.serial));
         dm_guest_write_prepare(f.mem, f.t.L.size); fill(&f.t, f.mem, 120);
         CHECK("and a CPU write is no longer uploaded", first_red(resolve(&f.t)) == 80);
         teardown(&f);
 
         setup(&f, 7002, CACHED, NVN_FORMAT_RGBA8, 0);
-        mtl_tex_gpu_written(&f.pool, NULL, 0);
+        mtl_tex_gpu_written(&f.pool, f.mem, f.t.L.size);
         fill(&f.t, f.mem, 40);
-        CHECK("in a pool the GPU writes it is not taken from storage", !tex_cpu_content(&f.t));
+        CHECK("over a range no host texture holds for it, the storage is what the CPU wrote since", tex_cpu_content(&f.t));
         teardown(&f);
 
         setup(&f, 7003, CACHED, NVN_FORMAT_RGBA8, 0);

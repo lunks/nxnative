@@ -517,6 +517,14 @@ Games read this count as a position in their own command memory and size their h
 - **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md): terrain tiles (260x260 R16 height, RG8 with 9 levels, RGBA8, R11G11B10F, and 68x68 RGBA16) in a `CPU_CACHED | GPU_CACHED` pool (flags 0x24), 50 to 90% of their bytes non-zero at first use and all zero on Metal, so every tile was a flat plane at its base height. Pull request #1109 found this on update 1.8.0. [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): ten 260x260 R32F height tiles in a 202 MB pool (flags 0x24) that also holds textures the GPU writes, all zeros while the pool rule stood: each terrain tile lay flat far below the player and the sky showed through the ground in Kokiri Forest.
 - **Check:** `make -C dm/gfx/tests GAME=<id> check_t_cpu_storage`.
 
+### Height tiles over storage the GPU wrote earlier
+
+- **Symptom:** rectangular patches of ground are gone in a long session: rocks float over a flat plane, deep colour shows below the floor along a stair-stepped edge, and vertical streaks stand at the edges of a tile. A fresh load of the same place is clean.
+- **Cause:** a GPU-written range outlives the texture that made it. The game reuses a terrain pool's storage for new tiles, and `tex_cpu_content` refused any uncompressed texture over a range, so a tile the CPU wrote over an old render target became a GPU texture of zeros, a flat plane at its base height.
+- **Fix:** what the GPU writes stays in Metal textures and does not reach guest memory, so a range counts only for a new object over the key of the GPU's texture (`gpu_holds`, the sharing table). Any other object is taken from its storage and its range is cut. A GPU write that names no storage records nothing, where it used to mark the whole pool, as pull request [#1447](https://github.com/seedds/nxnative/pull/1447) does.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): a host that marks every second height tile over a range gives the picture of a 47-minute session, with 20 of 40 tiles zero on the host and full in storage; with this fix, 0 of 40. `tex_flush_upload` and `tex_dirty_upload` do not help: 18 of 39 stay zero. **Open:** that session's tiles were not dumped, so a stale range is the likely trigger, not a seen one. `texture over storage the GPU wrote earlier` in a log says so.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_cpu_tex check_t_cpu_storage`.
+
 ### CPU writes with no flush, caught by page protection (`tex_dirty_upload`)
 
 - **Symptom:** magenta surfaces (Metal decodes an all-zero ASTC block as the error colour (1, 0, 1)); a zero BC block decodes black, which looks like missing light; black screen while the UI (or a dialog box) draws in the right places under `HILITE` or in the pass dump; `packaged textures: first uploads 0`.
