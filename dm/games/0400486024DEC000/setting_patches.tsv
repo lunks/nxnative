@@ -122,27 +122,24 @@ DM_UPSCALE_SOFTEST	3.0	Ultra performance (3.0)	main	e0f3ccfaf50065ae4ea01eb5aeb1
 # Shadows and ambient occlusion (README.md, Shadow settings): the values are in RomFS parameter files the game reads into per-scene structs (agl / gsys ParamIO), not in code, so
 # these rows are module romfs: build = the file's path in the RomFS, offset = a byte offset in that file (a BYML v7 value stored inline), original / new = the 32-bit word (a float's bits, or an
 # integer). The host checks each original in the file at launch and puts a changed copy in an overlay folder (hle_cheats.c, DM_ROMFS_OVERLAY). Files: ModelSceneConfigParam/Main (the depth shadow:
-# cascade splits DepthShadowNear01..03 at 32 / 64 / 200, map size DepthShadowTexWidth / Height 1024, SsaoIsDepthFull), ShadowPrePassParam/MainField (the screen-space shadow mask: fade
+# SsaoIsDepthFull; its cascade splits DepthShadowNear01..03 (32 / 64 / 200) and map size DepthShadowTexWidth / Height (1024) were tried and change nothing: no row), ShadowPrePassParam/MainField (the screen-space shadow mask: fade
 # distance 80 -> 200, PCF taps and width; every outdoor and dungeon scene, the title and viewer scenes have their own), ModelSceneShadowParam/MainField (SSAO: SamplePairNum 3, AlchemySamplePairNum 5,
 # BlurNum 2; Kokiri Forest and Kakariko inherit it), LocalDepthShadowParam/Default (the character shadow: ResolustionMaginify 0.3, BlurWidth 3.5)
 #
 DM_SHADOW_DISTANCE	game	Game default	-
-DM_SHADOW_DISTANCE	1.5	Far (1.5x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f74	42000000	42400000
-DM_SHADOW_DISTANCE	1.5	Far (1.5x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f7c	42800000	42C00000
-DM_SHADOW_DISTANCE	1.5	Far (1.5x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f84	43480000	43960000
 DM_SHADOW_DISTANCE	1.5	Far (1.5x)	romfs	agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	0x2d8	42A00000	42F00000
 DM_SHADOW_DISTANCE	1.5	Far (1.5x)	romfs	agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	0x2d0	43480000	43960000
-DM_SHADOW_DISTANCE	2	Farther (2x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f74	42000000	42800000
-DM_SHADOW_DISTANCE	2	Farther (2x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f7c	42800000	43000000
-DM_SHADOW_DISTANCE	2	Farther (2x)	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1f84	43480000	43C80000
 DM_SHADOW_DISTANCE	2	Farther (2x)	romfs	agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	0x2d8	42A00000	43200000
 DM_SHADOW_DISTANCE	2	Farther (2x)	romfs	agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	0x2d0	43480000	43C80000
 #
-DM_SHADOW_CASCADE_SIZE	game	Game default	-
-DM_SHADOW_CASCADE_SIZE	1536	1536	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1fe4	00000400	00000600
-DM_SHADOW_CASCADE_SIZE	1536	1536	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1fdc	00000400	00000600
-DM_SHADOW_CASCADE_SIZE	2048	2048	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1fe4	00000400	00000800
-DM_SHADOW_CASCADE_SIZE	2048	2048	romfs	gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml	0x1fdc	00000400	00000800
+# The cascades' size is not the file's DepthShadowTexWidth (1024: changing it changes nothing, measured): the three 1600x1600 depth passes take their size from a table of 16-bit sizes
+# {1600, 1600, 2000, 2200} that an object's initializer writes in one 64-bit constant (main+0xe824f4: mov x8,#0x640 / movk #0x640,lsl 16 / movk #0x7d0,lsl 32 / movk #0x898,lsl 48, stored at +0x7c);
+# the first two words are the sizes in use (the neighbouring 0xc00 fields look like a 3072 limit). movz / movk of x8 with the size
+DM_SHADOW_CASCADE_SIZE	game	Game default (1600)	-
+DM_SHADOW_CASCADE_SIZE	2048	2048	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0xe824f4	D280C808	D2810008
+DM_SHADOW_CASCADE_SIZE	2048	2048	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0xe824f8	F2A0C808	F2A10008
+DM_SHADOW_CASCADE_SIZE	3072	3072	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0xe824f4	D280C808	D2818008
+DM_SHADOW_CASCADE_SIZE	3072	3072	main	e0f3ccfaf50065ae4ea01eb5aeb13b1a	0xe824f8	F2A0C808	F2A18008
 #
 DM_SHADOW_FILTER	game	Game default	-
 DM_SHADOW_FILTER	smooth	Smooth (more filter taps)	romfs	agl/ShadowPrePassParam/MainField.agl__ShadowPrePassParam.bgyml	0x2f8	00000000	00000002

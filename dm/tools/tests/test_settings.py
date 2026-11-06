@@ -79,13 +79,19 @@ class SettingPatchRows(unittest.TestCase):   # patches:<VAR> and values patches:
         self.assertIn('crash',r['DM_SHADOW_MAP_SIZE']['note'])
         self.assertNotIn('level',r['DM_SHADOW_RES'])   # advanced settings
     def test_ocarina_shadow_rows(self):   # module romfs rows hold on any build: the shadow and ambient occlusion rows are offered, the game's value first
-        r=self.rows('0400486024DEC000','# BUILD_ID\t'+'0'*32+'\n')
+        OOT='e0f3ccfaf50065ae4ea01eb5aeb13b1a'
+        r=self.rows('0400486024DEC000','# BUILD_ID\t'+OOT+'\n')
         self.assertNotIn('DM_SHADOW_MAP_SIZE',r,'Bananza\'s shadow map size is not Ocarina\'s')
-        want={'DM_SHADOW_DISTANCE':['game','1.5','2'],'DM_SHADOW_CASCADE_SIZE':['game','1536','2048'],'DM_SHADOW_FILTER':['game','smooth','smoother'],'DM_LOCAL_SHADOW':['game','sharp'],
+        want={'DM_SHADOW_DISTANCE':['game','1.5','2'],'DM_SHADOW_CASCADE_SIZE':['game','2048','3072'],'DM_SHADOW_FILTER':['game','smooth','smoother'],'DM_LOCAL_SHADOW':['game','sharp'],
               'DM_SSAO_QUALITY':['game','high','higher'],'DM_SSAO_RES':['game','full']}
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':'mac'}):
-            (Path(tmp)/'main.fixups.tsv').write_text('# BUILD_ID\t'+'0'*32+'\n')
+            (Path(tmp)/'main.fixups.tsv').write_text('# BUILD_ID\t'+OOT+'\n')
             listed={s['env']:s for s in settings.build('0400486024DEC000',tmp,'unused')['settings']}
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']),patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':'mac'}):
+            (Path(tmp)/'main.fixups.tsv').write_text('# BUILD_ID\t'+'0'*32+'\n')
+            other={s['env'] for s in settings.build('0400486024DEC000',tmp,'unused')['settings']}
+        self.assertNotIn('DM_SHADOW_CASCADE_SIZE',other,'the cascade size is a code word: only on the build it was found in')
+        self.assertIn('DM_SSAO_QUALITY',other,'the RomFS rows hold on any build')
         for var,values in want.items():
             self.assertEqual((listed[var]['section'],listed[var]['default'],[o[0] for o in listed[var]['options']]),('Effects','game',values),var)
     def test_star_fox_render_resolution(self):   # argument rows (any build): Render resolution's rates, without the values Star Fox lacks in the row's conflicts and rates, no Dynamic resolution
