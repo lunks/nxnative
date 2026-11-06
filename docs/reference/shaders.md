@@ -2083,6 +2083,15 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#found-on-this-game).
 - **Check:** `t_pso_warm` checks the flag, that the tool's default follows Metal's count, and that the prepare step's workers follow it and `DM_PSO_PREPARE_THREADS`.
 
+### A full table of background builds asks the archives on every draw
+
+- **Symptom:** a scene with many pipelines not built yet runs at 12-20 fps for a minute or more though the GPU has time to spare: `submit CPU` around 50-70 ms a frame, and the `pipelines up to frame` lines show tens of thousands of `archive lookups ... found none` with `in flight 384`.
+- **Cause:** a hybrid draw's build takes one of the 384 slots of the table of background builds (`PSO_PEND_MAX`). A pipeline with a slot asks for nothing until its build ends; a pipeline the full table refused was forgotten, so each of its draws made a descriptor and asked every archive again (`pso_build_ex(..., 0)`), about 0.2 ms each inside Metal. The table stays full for as long as the queue takes: two workers on an M5 Pro, 1-2 s a base.
+- **Fix** (`nvn_mtl.m`): the archives are fixed once opened, so a lookup that found none is final for the run: `g_pbase_none` remembers it by base key, and the compile does not repeat it. A pipeline the table refused goes into `g_pso_asked`; its draws go on with their stand-in and only ask for a slot, which `pso_pend_demand` answers at once until a build ends.
+- **Measurement:** M5 Pro, [Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game)'s Hyrule Market from one save and one pipeline state, the first three windows of 300 frames: frame p50 55 / 44 / 27 ms before, 16.6 / 17.2 / 16.8 ms after; submit CPU 56 / 41 / 27 ms before, 12.8 / 12.3 / 11.2 ms after; failed lookups 57,432 / 29,516 / 15,635 before, 569 / 1 / 0 after. In a `sample` of the slow window `pso_build_ex` was 62% of the submit thread, the table's linear search 0.6%. More workers do not pay: 7 queues built 1.5 times as many bases as 2, each taking 3 s instead of 1-2 s, and frame p95 went from 20 ms to 28-57 ms in a third of the windows.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game).
+- **Check:** `t_pso_archive` (the archives are asked once per base, and not by the compile) and `t_pso_pending` (a demand the full table refused is remembered, and taken once a build ended).
+
 ### Function constants specialized at load
 
 - **Symptom:** `fragmentFunction main0 cannot be used to build a pipeline state` (a Metal validation assertion).

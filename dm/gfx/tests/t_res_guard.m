@@ -38,10 +38,10 @@ static void commits(void) {
     res_add(a); res_commit();
     uint64_t set = g_res.allocatedSize;
     CHECK(atomic_load(&g_guard_set) == set, "after a commit the guard has the set's size");
-    uint64_t before = guard_used(); id<MTLBuffer> outside = [g_dev newBufferWithLength:256 << 20 options:MTLResourceStorageModePrivate];
-    CHECK(atomic_load(&g_guard_set) == set && guard_used() >= before + (256 << 20) && outside, "the device's size counts what no set holds");
+    uint64_t before = g_dev.currentAllocatedSize; id<MTLBuffer> outside = [g_dev newBufferWithLength:256 << 20 options:MTLResourceStorageModePrivate];
+    CHECK(atomic_load(&g_guard_set) == set && g_dev.currentAllocatedSize >= before + (256 << 20) && outside, "the device's size counts what no set holds");
     g_guard.evict = set + (128 << 20); g_guard.stop = set + (192 << 20); g_guard.wall = set + (256 << 20);   // the device's size is past all three, the set's under them
-    CHECK(guard_level(guard_set(), guard_used()) == GUARD_EVICT, "what no set holds evicts early but does not stop");
+    CHECK(guard_level(guard_set()) == GUARD_OK, "what no set holds neither evicts nor stops");
     memset(&g_guard, 0, sizeof g_guard);
     res_add(b);
     CHECK(g_res.allocatedSize == set, "an addition is not in the set's size before its commit");

@@ -337,6 +337,30 @@ static void test_nil_prediction_falls_back_then_predicts(void) {
     g_exec_next = NULL; reset_queue(); reset_pso_cache();
 }
 
+// A draw's build the full table refuses is remembered (the draw looks nothing up), and taken as soon as a build ends
+static void test_full_table_remembers_a_refused_demand(void) {
+    reset_queue();
+    GateDevice *dev = [[GateDevice alloc] initBlockingThrough:PSO_PEND_MAX nilCall:0]; g_dev = (id<MTLDevice>)(id)dev;
+    int admitted = 0;
+    for (int i = 0; i < PSO_PEND_MAX; i++) { pso_key k = make_key((unsigned)(5000 + i)); admitted += pso_pend_demand(&k, test_vs, test_fs); }
+    EXPECT_EQ("demands fill the table", PSO_PEND_MAX, admitted);
+    pso_key extra = make_key(9000), other = make_key(9001);
+    pso_pend_ask(&extra, test_vs, test_fs); pso_pend_ask(&other, test_vs, test_fs);
+    EXPECT_TRUE("a refused demand is remembered", nvn_hm_get(&g_pso_asked, &extra) != NULL);
+    EXPECT_EQ("refused demands take no slot", -1, queue_index(&extra));
+    uint64_t kicked = g_pp_kicked;
+    pso_pend_ask(&extra, test_vs, test_fs);
+    EXPECT_EQ("asked again while nothing ended: still refused", kicked, g_pp_kicked);
+    EXPECT_EQ("remembered once", 2, g_pso_asked.n);
+    [dev releaseAll]; drain_queue(30000);
+    pso_pend_ask(&extra, test_vs, test_fs);
+    EXPECT_TRUE("a build ended: the table takes it", queue_index(&extra) >= 0);
+    EXPECT_TRUE("and it is no longer remembered", nvn_hm_get(&g_pso_asked, &extra) == NULL);
+    EXPECT_TRUE("the other still is, until it asks", nvn_hm_get(&g_pso_asked, &other) != NULL);
+    drain_queue(5000);
+    nvn_hm_del(&g_pso_asked, &other); reset_queue();
+}
+
 static void test_prediction_restores_scissor(void) {
     state_reset();
     uint8_t stream[64] = {0}; size_t used = 0;
@@ -361,6 +385,7 @@ int main(void) {
         test_two_active_exact_take_and_release();
         test_full_table_reclaims_done_not_running();
         test_nil_prediction_falls_back_then_predicts();
+        test_full_table_remembers_a_refused_demand();
         test_prediction_restores_scissor();
         printf("== %d PSO pending checks, %d failed ==\n", g_checks, g_failed);
         return g_failed != 0;

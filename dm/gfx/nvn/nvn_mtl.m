@@ -327,7 +327,7 @@ static void res_check(id r, const char *what, int reg) {
 // GPU memory guard. GPU memory is wired, and the driver refuses to wire past Metal's working set (recommendedMaxWorkingSetSize: IOGPUScheduler freeToWireMemory fails there). The submit thread
 // then waits in the kernel, where nothing can kill the process: GitHub issue #1326 ended with a Mac frozen until the power button, PR #1319's 8 GB Mac with WindowServer's watchdog. So every commit
 // of the residency set looks first. The stop reads what the commit would leave (the set's allocatedSize, which counts only what was committed, and what was added since: a large burst is seen one commit
-// later, and the timer only knows the size at the last commit); the eviction reads the larger of that and the device's currentAllocatedSize (guard_level). From about 80% of the working set the submit thread lets go of what can go (guard_evict); from about 95% of the set, if that was not enough, the game stops: a [RED] line says
+// later, and the timer only knows the size at the last commit), and so does the eviction (guard_level). From about 80% of the working set the submit thread lets go of what can go (guard_evict); from about 95% of the set, if that was not enough, the game stops: a [RED] line says
 // what the set holds and the front end leaves full screen and quits (front_gpu_memory_stop). A commit that adds to the set past the working set itself is not made at all. Callers of res_commit
 // can hold g_mu, so it only reads the sizes and leaves a level for the submit thread (guard_act). A stuck submit thread never comes back to look, so a 100 ms timer reads them too (guard_tick).
 // DM_NVN_RES_LIMIT_MB: =<MB> stops at that size instead (a low one tests this), =0 turns the guard off. On iOS the system ends a process for its footprint long before this, and no front end has
@@ -335,17 +335,17 @@ static void res_check(id r, const char *what, int reg) {
 enum { GUARD_OK, GUARD_EVICT, GUARD_STOP, GUARD_WALL, GUARD_EVERY = 30, GUARD_TICKS = 10 };   // the evictions are at least GUARD_EVERY frames apart; the timer stops the game after GUARD_TICKS ticks over the stop level
 static struct { uint64_t evict, stop, wall; } g_guard;   // bytes, all 0 with the guard off: the eviction level, the stop level, the size no commit grows past
 static _Atomic int g_guard_lv;   // the highest level met since the submit thread last looked (guard_act)
-// The stop and the wall read the set's size, the eviction the larger of that and the device's: currentAllocatedSize counts each no-copy buffer in full however many cover the same pages, so it can
-// read far over what the driver wires (17.3 GB against a residency set of 6.5 GB on a 24 GB Mac) and a stop on it ends a session that was fine; an early eviction only lets go sooner
+// Every level reads the set's size, never the device's: currentAllocatedSize counts each no-copy buffer in full however many cover the same pages, so it reads far over what the driver wires (17.3 GB
+// against a residency set of 6.5 GB on a 24 GB Mac). A stop on it ended sessions that were fine, and an eviction on it is not free either: Ocarina of Time's GPU allocated swung around the eviction level
+// with 8 GB in the set, and 27 evictions in a minute let go of 8,620 kept packaged textures, which came straight back as uploads and residency commits
 static uint64_t guard_set(void) { return atomic_load_explicit(&g_guard_set, memory_order_relaxed); }
-static uint64_t guard_used(void) { return MAX(guard_set(), (uint64_t)g_dev.currentAllocatedSize); }
-static int guard_level(uint64_t set, uint64_t used) { return !g_guard.stop ? GUARD_OK : set >= g_guard.wall ? GUARD_WALL : set >= g_guard.stop ? GUARD_STOP : MAX(set, used) >= g_guard.evict ? GUARD_EVICT : GUARD_OK; }
+static int guard_level(uint64_t set) { return !g_guard.stop ? GUARD_OK : set >= g_guard.wall ? GUARD_WALL : set >= g_guard.stop ? GUARD_STOP : set >= g_guard.evict ? GUARD_EVICT : GUARD_OK; }
 static void guard_raise(int lv) { int cur = atomic_load(&g_guard_lv); while (lv > cur && !atomic_compare_exchange_weak(&g_guard_lv, &cur, lv)) {} }
 static void guard_act(uint64_t fence);
 static void res_commit(void) {
     pthread_mutex_lock(&g_res_mu);
     if (g_res_dirty) {
-        uint64_t used = guard_set(); int lv = guard_level(used, guard_used());
+        uint64_t used = guard_set(); int lv = guard_level(used);
         if (lv) guard_raise(lv);
         if (lv == GUARD_WALL && g_res_grew) {   // removals alone always go through: they are what brings the set down
             static uint64_t refused; if (!refused++) MLOG("[RED] GPU memory guard: %llu MB at Metal's working set of %llu MB: this residency commit and any after it that add to the set are not made", (unsigned long long)(used >> 20), (unsigned long long)(g_guard.wall >> 20));
@@ -533,7 +533,7 @@ static void guard_stop(uint64_t used) {
 static void guard_tick(void) {
     static unsigned over;
     defer_idle();
-    uint64_t used = guard_set(); int lv = guard_level(used, guard_used());
+    uint64_t used = guard_set(); int lv = guard_level(used);
     if (lv) guard_raise(lv);
     over = lv >= GUARD_STOP ? over + 1 : 0;
     if (lv == GUARD_WALL || over >= GUARD_TICKS) guard_stop(used);
@@ -6036,7 +6036,7 @@ static void guard_evict(int force) { @autoreleasepool {
     defer_drain(); res_commit();
     if (kept) MLOG("GPU memory guard: %u kept packaged textures let go", kept);
     static uint64_t lines; if (entries + spares + staging && lines++ < 16)
-        MLOG("GPU memory guard: %llu MB (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks let go", (unsigned long long)(guard_used() >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging);
+        MLOG("GPU memory guard: %llu MB (it lets go from %llu MB): %u idle sharing entries, %u spare textures, %u staging blocks let go", (unsigned long long)(guard_set() >> 20), (unsigned long long)(g_guard.evict >> 20), entries, spares, staging);
 } }
 // On the submit thread, after a submission, with no lock held. The stop level gives the eviction its chance first: this submission's fence, then the sizes again
 static void guard_act(uint64_t fence) {
@@ -6047,7 +6047,7 @@ static void guard_act(uint64_t fence) {
     mtl_wait_at(fence, 2000000000ull, WS_DRAIN);
     defer_drain(); res_commit();
     uint64_t set = guard_set();
-    if (guard_level(set, set) >= GUARD_STOP) guard_stop(set);
+    if (guard_level(set) >= GUARD_STOP) guard_stop(set);
 }
 // Texture views by texture serial and view parameters, beside the per-ID view: KTGL (Age of Calamity) registers a texture into the next ID of a ring before every bind (about 21,000
 // registrations a frame in battle after the first cutscene, 5 in 6 of them a different texture than the ID held), so the per-ID view was rebuilt for nearly every bind: half the
@@ -7835,6 +7835,9 @@ static nvn_hmap g_pbase = {.klen = sizeof(pbase_key)};
 @interface PbaseBuild : NSObject { @public dispatch_group_t done; id<MTLRenderPipelineState> ps; NSError *error; int compiled; } @end
 @implementation PbaseBuild @end
 static nvn_hmap g_pbase_pending = {.klen = sizeof(pbase_key)};
+// Bases the archives do not hold. The archives are fixed once pso4_init has opened them (a run's own bases go to g_pbase and to a file the next run reads), so a lookup that found none finds none
+// for the rest of the run, and each one costs about 0.2 ms of hashing inside Metal
+static nvn_hmap g_pbase_none = {.klen = sizeof(pbase_key)};
 static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
 static NSString *pso_user_path(void);
 // The pipeline archive made offline (dm/gfx/tools/pso_offline.py, metal-tt) and bundled with the app: DM_PSO_BUNDLE=<folder> (the iOS app sets it to its pso/ folder when it has one;
@@ -8222,12 +8225,13 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
     MTL4RenderPipelineDescriptor *b = g_comp4 ? pso_desc4(d, rast) : nil;   // with rasterization off there is no colour state to leave open: the base is the pipeline
     if (!b) { if (!compile) return nil; g_pb_legacy++; return pso_build_dev(d, e); }
     pbase_key bk; pbase_key_of(d, &bk);
-    id<MTLRenderPipelineState> base = nil; PbaseBuild *job = nil; int owner = 0;
+    id<MTLRenderPipelineState> base = nil; PbaseBuild *job = nil; int owner = 0, none = 0;
     for (;;) {
         os_unfair_lock_lock(&g_pbase_lock);
         base = hm_get_id(&g_pbase, &bk); job = nil; owner = 0;
         if (!base) {
-            job = hm_get_id(&g_pbase_pending, &bk);
+            job = hm_get_id(&g_pbase_pending, &bk); none = nvn_hm_get(&g_pbase_none, &bk) != NULL;
+            if (!job && none && !compile) { os_unfair_lock_unlock(&g_pbase_lock); return nil; }
             if (!job) { job = [PbaseBuild new]; job->done = dispatch_group_create(); dispatch_group_enter(job->done); hm_put_id(&g_pbase_pending, &bk, job); owner = 1; }
         }
         os_unfair_lock_unlock(&g_pbase_lock);
@@ -8242,9 +8246,9 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
     else {
         uint64_t t0 = bp_now();
         int vd = 0; for (int i = 0; i < 31 && !vd; i++) vd = bk.va[i][0] != 0;   // a vertex layout (MTLVertexFormatInvalid is 0)
-        if (!vd) for (id<MTL4Archive> a in g_arch4p) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) break;
+        if (!vd && !none) for (id<MTL4Archive> a in g_arch4p) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) break;
         int from_run = 0;
-        if (!base) for (id<MTL4Archive> a in g_arch4) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) { from_run = 1; break; }
+        if (!base && !none) for (id<MTL4Archive> a in g_arch4) if ((base = [a newRenderPipelineStateWithDescriptor:b error:nil])) { from_run = 1; break; }
         uint64_t t1 = bp_now();
         if (base) { g_pb_archived++; g_pt_hit_n++; g_pt_hit_ns += t1 - t0; }
         if (base && from_run && g_compact_enabled && atomic_load(&g_warm_running)) {
@@ -8254,7 +8258,7 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
             if (cb) { base = cb; g_compacted++; }
         }
         if (!base) {
-            if (g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
+            if (!none && g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
             if (compile) {
                 NSError *be = nil; base = arch_capture(b, &be, vd); job->error = be; job->compiled = 1;
                 g_pt_comp_ns += bp_now() - t1;
@@ -8265,6 +8269,7 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, N
         os_unfair_lock_lock(&g_pbase_lock);
         job->ps = base;
         if (base) hm_put_id(&g_pbase, &bk, base);
+        else nvn_hm_put(&g_pbase_none, &bk, (void *)1);
         hm_rel(nvn_hm_del(&g_pbase_pending, &bk)); dispatch_group_leave(job->done);
         os_unfair_lock_unlock(&g_pbase_lock);
         if (!base) { if (compile && e) *e = job->error; return nil; }   // NOLINT(clang-analyzer-osx.cocoa.RetainCount): job stays in g_pbase_pending (hm_put_id's CFBridgingRetain) until hm_rel releases it, not a leak
@@ -8370,13 +8375,24 @@ static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // No
     pso_pend_start(slot, gen, pso_desc(k, vs, fs, nil, 0), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
     return 1;
 }
-// The build a hybrid draw asked for while it draws with its stand-in: outside the speculative limit, on pp_bg_queue
+// The build a hybrid draw asked for while it draws with its stand-in: outside the speculative limit, on pp_bg_queue. Returns 0 when the table is full; that stays so until a build ends
 static int pso_pend_demand(const pso_key *k, NvShader *vs, NvShader *fs) {
     if (hm_get_id(&g_pso, k)) return 0;
+    static uint64_t full_at; uint64_t ended = atomic_load(&g_pp_done_n) + 1;   // submit thread
+    if (full_at == ended) return 0;
     pthread_mutex_lock(&g_pp_mu); uint32_t gen = 0; int slot = pso_pend_slot(k, 0, &gen); pthread_mutex_unlock(&g_pp_mu);
-    if (slot < 0) return 0;
+    if (slot < 0) { full_at = ended; return 0; }
     pso_pend_start(slot, gen, pso_desc(k, vs, fs, nil, 0), pp_bg_queue());
     return 1;
+}
+// Pipelines whose build the full table refused (submit thread): they have no base and a stand-in, so nothing is looked up for them until the table takes them. Hyrule Market's first entry in
+// Ocarina of Time asked for more builds than the table holds, and every draw of the ones it refused made a descriptor and asked the archives again: 240 failed lookups a frame, 48 of the 73 ms of
+// submit CPU, for over a minute
+static nvn_hmap g_pso_asked = {.klen = sizeof(pso_key)};
+static void pso_pend_ask(const pso_key *k, NvShader *vs, NvShader *fs) {
+    int asked = nvn_hm_get(&g_pso_asked, k) != NULL;
+    if (pso_pend_demand(k, vs, fs)) { if (asked) nvn_hm_del(&g_pso_asked, k); }
+    else if (!asked) nvn_hm_put(&g_pso_asked, k, (void *)1);
 }
 // Called by the submit thread: a build in the table is taken (waited for while its worker runs it; made here at once while it is still queued, so a draw that waits waits for its
 // own pipeline alone, not for the builds queued before it: Breath of the Wild's cold start waited 0.5-0.9 s for one pipeline behind a burst); nil when it is not in the table
@@ -8734,12 +8750,12 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
         int st = pso_pend_try(&k, &ps);
         if (st == 2) took = 1;   // built in the background (nil: it failed, and is built again below for its message)
         else {
-            if (st == 0) ps = pso_build_ex(pso_desc(&k, vs, fs, nil, 0), &e, 0);   // its base made or archived: no compile
+            if (st == 0 && !nvn_hm_get(&g_pso_asked, &k)) ps = pso_build_ex(pso_desc(&k, vs, fs, nil, 0), &e, 0);   // its base made or archived: no compile
             if (!ps) {
                 // Demand first (main's order): the draw's own pipeline is queued before the prediction admits speculative builds; with a stand-in nothing waits for it
                 __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs);
                 if (h) {
-                    if (st == 0) pso_pend_demand(&k, vs, fs);
+                    if (st == 0) pso_pend_ask(&k, vs, fs);
                     g_pso_pull = 1; g_hy_ns += bp_now() - bt;
                     if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; uint64_t t0 = bp_now(); pso_predict_rest(); g_bp_pso_ns += bp_now() - t0; }
                     return h;
