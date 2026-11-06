@@ -46,9 +46,10 @@ shader_note	Ocarina of Time shaders
 render_cond	on
 gpu_timestamps	segment
 draw_barriers	game
-# As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
-tex_flush_upload	on
-tex_dirty_upload	on
+# Off here, on in main's profile: unproven on this host. Tested, they do not fix the terrain (its height tiles have their own fix, nvn-objects.md, height tiles over storage the GPU wrote earlier), a 49-minute
+# session into Hyrule Field ran without them, and with them on every registered texture's pages are write-protected and listed. Stale or black textures past Hyrule Field are the sign to try them: a host build, no shader rebuild
+tex_flush_upload	off
+tex_dirty_upload	off
 # The scene camera for MetalFX's motion vectors (DM_UPSCALER=metalfx-temporal, DM_MFX_INTERP; nvn_mfx.inc): gsys's Context uniform block at vertex uniform 0 of the scene passes, the view
 # (3x4 rows) at +0x0 and the view-projection at +0x30, as on Donkey Kong Bananza. Read in a run (DM_MFX_PROBE, v131072): the opening's 3D cutscenes and Link's house give a GL perspective
 # camera (50 degrees, 16:9, near 0.1, far 25037, no projection offset) in the 1920x1080 D32F depth pass that matches the upscaler's input; 15,000 upscaler frames, none without a camera
