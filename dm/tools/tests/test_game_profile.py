@@ -147,6 +147,22 @@ class SettingPatches(unittest.TestCase):   # setting_patches.tsv: memory writes 
                            ('DM_X\tq\tQ\targs\t-\t-\t-\t-render_scale=1\nDM_X\tq\tQ\targs\t-\t-\t-\t-render_scale=2\n', 'given twice')]:
             self.assertIn(why, with_patches(table), table)
 
+    def test_romfs_rows(self):   # module romfs: a word of a RomFS file (build = its path), on any build of the game (hle_cheats.c sp_rom_read)
+        p = 'gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml'
+        rows = with_patches('DM_X\tgame\tGame\t-\n'
+                            f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000800\n'
+                            f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fdc\t00000400\t00000800\n')
+        self.assertEqual(rows, ['#define DM_GAME_SETTING_PATCHES_N 2',
+                                f'#define DM_GAME_SETTING_PATCHES {{{{"DM_X", "big", "Big", "romfs", "{p}", 0x1fe4, 0x00000400u, 0x00000800u, ""}}, '
+                                f'{{"DM_X", "big", "Big", "romfs", "{p}", 0x1fdc, 0x00000400u, 0x00000800u, ""}}}}'])
+        for table, why in [(f'DM_X\tbig\tBig\tromfs\t/{p}\t0x1fe4\t00000400\t00000800\n', 'no leading /'),
+                           ('DM_X\tbig\tBig\tromfs\ta/../b.bin\t0x1fe4\t00000400\t00000800\n', 'no . or ..'),
+                           (f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fe5\t00000400\t00000800\n', '4-aligned'),
+                           (f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000400\n', 'two different 32-bit words'),
+                           (f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000800\nDM_Y\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000600\n', 'one word, one variable'),
+                           (f'DM_X\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000800\nDM_X\tbig\tBig\tromfs\t{p}\t0x1fe4\t00000400\t00000800\n', 'written twice')]:
+            self.assertIn(why, with_patches(table), table)
+
     def test_refused(self):
         w = f'main\t{BID}\t0x1000\t5281001A\t5282001A'
         for table, why in [(f'DM_X\tbig\tBig\tmain\t{"f" * 32}\t0x1000\t5281001A\t5282001A\n', 'is not one of the profile\'s build rows'),

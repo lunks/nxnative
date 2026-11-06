@@ -118,6 +118,29 @@ MetalFX temporal, headless, 3,000 frames after the load on an idle Mac, frame ti
 
 The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`: the outputs docked and handheld, the palette's rates, and level 0 as the start) gives the settings window each rate's render size and the launch line `resolution: docked, output 2560x1440; upscale rate the game's own: 1.3333 to 3, starts at 1.3333; scene 1920x1080 to 854x480; …`, as the runs drew it: docked 1920x1080 → 2560x1440, handheld (`DM_OPMODE=handheld`) 1440x810 → 1920x1080, which the final copy then stretches to the 2560x1440 window.
 
+## Shadow settings (measured headless, pictures not compared)
+
+A frame outdoors shows blocky shadow shapes on a distant tower, a dark band across stone slabs and a soft dark patch under Link. What the game draws for shadows (`DM_NVN_GPUPROF`; the sizes are the same at 1280x720, 1920x1080 and 2560x1440 scenes, so shadows do not follow the render size): three 1600x1600 D32 depth passes a frame (the cascades; about 87, 171 and 638 draws in Hyrule Field, 180, 245 and 225 us), one 2400x2400 (2 draws, 55 us), one 768x768 (26 draws, 65 us; 1920x1920 in some scenes) and small 384x384 ones: 0.76 ms of a 16.5 ms GPU frame (steady state, 1920x1080 scene).
+
+Two kinds of values, and the row type each needs:
+
+- **Code** (`DM_SHADOW_CASCADE_SIZE`): the cascades' size is not the parameter file's `DepthShadowTexWidth` and `Height` (1024; set to 2048 the passes stay 1600x1600). An object's initializer (`main+0xe82450`) stores a table of 16-bit sizes {1600, 1600, 2000, 2200} in one 64-bit constant (`main+0xe824f4`, four `mov` / `movk` of x8) and the first two are the sizes in use: the rows rewrite those two words to 2048 or 3072 (the fields beside them hold 0xc00, a 3072 limit as far as it looks). Measured with 2048: the three cascades are 2048x2048, shadow passes 765 to 845 us a frame (+80 us, +10 %), 16.8 MB of depth each instead of 10.2. 3072 was not run.
+- **Parameter files** (the other rows): BYML parameters in the RomFS (plain `.bgyml`; `gsys` / `agl` ParamIO reads them into per-scene structs, readers at `main+0x3566xxx`, `0x34dc7bc`, `0x34e24bc`), patched through setting patch rows with module `romfs` ([Setting patches](../README.md#setting-patches)): the host checks each original word in the file at launch (all of them held on the real RomFS) and serves a changed copy through `DM_ROMFS_OVERLAY`. Offsets are byte offsets in the file of a value stored inline.
+
+| File (RomFS) | Parameter (offset) | Game | Setting |
+|---|---|---|---|
+| `agl/ShadowPrePassParam/MainField` | `DynamicShadowFarFadeStart`, `End` (0x2d8, 0x2d0) | 80, 200 (Common, for the title and viewer, has 100 and 1000) | `DM_SHADOW_DISTANCE` |
+| same | `IsPcfSampleNum` (0x2f8), `PcfWidth` (0x390) | 0 (Kokiri Forest's file sets 2), 2.0 | `DM_SHADOW_FILTER` |
+| `gsys/ModelSceneShadowParam/MainField` (Kokiri Forest and Kakariko inherit it) | `SSAO/SamplePairNum` (0x4e8), `AlchemySamplePairNum` (0x4a0), `BlurNum` (0x4b0) | 3, 5, 2 | `DM_SSAO_QUALITY` |
+| `gsys/ModelSceneConfigParam/Main` | `SsaoIsDepthFull` (0x2484) | false | `DM_SSAO_RES` |
+| `System/GameGraphics/LocalDepthShadowParam/Default` | `LocalDepthShadowSetting[1,2]`: `ResolustionMaginify` (0x184), `BlurWidth` (0x174) | 0.3, 3.5 (setting 0: 2.0, no magnify) | `DM_LOCAL_SHADOW` |
+
+Rows (Advanced settings, the game's value first, nothing switched off): Shadow map size 2048 and 3072; Shadow distance 1.5x and 2x (the dynamic fade 80 to 200 moved to 120 to 300 and 160 to 400); Shadow filtering Smooth (`IsPcfSampleNum` 2, a value Kokiri Forest's own file uses) and Smoother (also `PcfWidth` 3.0); Character shadow Sharp (magnify 0.6, blur 2.0); Ambient occlusion quality High (3 to 5 pairs, Alchemy 5 to 8) and Higher (8, 12, one more blur); Ambient occlusion resolution Full-resolution depth.
+
+- Measured with every parameter row at its strongest, one at a time, same autosave (compute and copy time a frame, steady state, game 4165 us): Ambient occlusion quality Higher 4551 (+390 us), Ambient occlusion resolution Full 4342 (+180), Shadow distance 2x 4249 (+85), Shadow filtering Smoother 4191 (+25), Character shadow Sharp 4047 (-120); the render passes' times move by 0.5 ms with the game's dynamic resolution (1707x960 to 1920x1080 in these runs) and cannot be told apart. Only the ambient occlusion rows show a cost above that noise. The pictures were not compared: the autosave's frame differs between runs (time of day, Navi) and the screenshots of these runs, taken with the GPU profile on, show vertical stripes.
+- Not found: what sets the cascade splits. `DepthShadowNear01..03` (32, 64, 200 in `ModelSceneConfigParam/Main`) changed to 48, 96, 300 and 64, 128, 400 left every cascade's draw count as it was, so the file value is not what the cascades use (those rows are dropped), and the effect of the fade distance on what is seen was not checked. The baked far shadow (`StaticSdwWidth` 4096, `StaticShadowFarFadeStart` 100 and `End` 1000), the likely source of the blocky shapes on the tower, was not touched.
+- Not run: 3072, and a picture of any row against the game's own.
+
 ## Frame rate
 
 Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk.sh` in the work folder).
