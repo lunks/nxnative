@@ -2952,7 +2952,7 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
                         id<MTLTexture> dst, NSUInteger slice, NSUInteger level) { up_blit_add_at(src, off, row, image, size, dst, slice, level, MTLOriginMake(0, 0, 0)); }
 
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep);
-static int g_direct_upload_on = -1; static uint64_t g_direct_uploads, g_direct_dispatches;
+static int g_direct_upload_on = -1; static uint64_t g_direct_uploads, g_direct_dispatches, g_sparse_gpu_uploads;
 static int direct_upload_on(void) { if (g_direct_upload_on < 0) { const char *e=getenv("DM_NVN_DIRECT_UPLOAD"); g_direct_upload_on=!e||atoi(e); } return g_direct_upload_on; }
 int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
 int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
@@ -3055,7 +3055,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     if (!d) return nil;
     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
-    int direct = !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+    int direct = !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && nvn_deswz_gpu_direct_supported(&t->d);
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
                         && (reuse.usage & d.usage) == d.usage
@@ -3128,7 +3128,35 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         RED_ONCE(41, "GPU deswizzle does not support format %#x target %d; falling back to the CPU", t->d.format, t->d.target);
     }
 
-    // A sparse pool's texture is read through a copy gathered from its page table, unmapped pages as 0 (a mip tail at a 4 KB offset has no host alias; reading the alias stopped the host with SIGBUS)
+    // A sparse pool's texture is read through a copy gathered from its page table, unmapped pages as 0 (a mip tail at a 4 KB offset has no host alias; reading the alias stopped the host with SIGBUS).
+    // The copy goes into a buffer and the GPU deswizzles it with the batch, as for any other texture: on the CPU each one also flushed the batch (PR #1444: King Dodongo's outro, 352 flushes and 704 residency
+    // commits, 77.7 ms a frame). The staging comes first, as up_alloc may flush the batch that would retire the copy; if the GPU path fails, the CPU's below takes over with a copy of its own
+    if (sparse && !rb_shift && g_nvn_deswz_gpu && !zblock_on()) {
+        up_begin();
+        size_t stg_off = 0; id<MTLBuffer> stg = direct ? nil : up_alloc(total ? total : 16, &stg_off);
+        up_begin();
+        id<MTLBuffer> gathered = direct || stg ? [g_dev newBufferWithLength:t->L.size ? t->L.size : 16 options:MTLResourceStorageModeShared] : nil;
+        if (gathered && g_up_ce) {
+            nvn_sparse_copy(t->pool, gathered.contents, (uint64_t)(uintptr_t)t->mem, t->L.size);
+            res_add(gathered); [g_up_keep addObject:gathered];
+            id<MTLTexture> view = direct ? [mt newTextureViewWithPixelFormat:MTLPixelFormatRGBA16Uint textureType:MTLTextureType2DArray levels:NSMakeRange(0, mt.mipmapLevelCount) slices:NSMakeRange(0, mt.arrayLength)] : nil;
+            int ok = !direct || view != nil, nb0 = g_nup_blits; size_t off = 0;
+            if (view) { if (!g_up_views) g_up_views = [NSMutableArray array]; [g_up_views addObject:view]; }
+            for (unsigned l = 0; ok && l < d.mipmapLevelCount; l++) {
+                if (direct) { size_t poff; id<MTLBuffer> params = up_param_alloc(&poff); ok = !nvn_deswz_gpu_direct_m4(g_up_ce, g_up_ct, params, poff, gathered, 0, &t->d, l, view); g_direct_dispatches += ok; continue; }
+                uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+                size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
+                for (unsigned y = 0; ok && y < layers; y++) {
+                    size_t poff; id<MTLBuffer> params = up_param_alloc(&poff);
+                    ok = !nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, gathered, 0, &t->d, l, y, stg, stg_off + off, pitch);
+                    if (ok) { up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l); off += pitch * rows * z; }
+                }
+            }
+            if (ok) { [g_up_texs addObject:mt]; g_direct_uploads += direct; g_sparse_gpu_uploads++; if (!g_cb) up_flush(); return mt; }
+            g_nup_blits = nb0;
+            if (direct) [g_up_ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // as for the direct path above
+        }
+    }
     const uint8_t *src = t->mem; uint8_t *part = NULL;
     if (sparse) {
         if (!(part = malloc(t->L.size ? t->L.size : 1))) MDIE("sparse texture copy of %llu bytes failed", (unsigned long long)t->L.size);
