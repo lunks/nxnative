@@ -9165,12 +9165,37 @@ static uint64_t dummy_samp_rid(void) { static uint64_t rid; if (!rid) rid = dumm
 // as ubo_tex_id adds), the dummy where an ID holds nothing or a texture of another type, and the dummy at n for IDs past the table. Rebuilt when a registration or a texture's storage
 // changes (g_reg_gen, g_ser_gen); the old buffer is written again only when the submissions that used it have completed (pool_table_give). Every texture is in the residency set already (res_add at creation). Caller holds g_rmu
 #define POOL_SNAPS 16
-typedef struct { __strong id<MTLBuffer> buf; uint64_t gpu, reg, ser, sub; int samp, dtt, dpf, base; } pool_snap;
+// A table keeps the IDs whose entries are views of retired registrations (trans), which go at the end of the submission sub: the next submission takes only those again, instead of building
+// the table whole. n -1: more than POOL_IDS_MAX of them, and then it builds whole. Ocarina of Time, walking through Kokiri Forest: about 100 of its 33,025 IDs (PucaVaz, PR #1489)
+enum { POOL_IDS_MAX = 1024 };
+typedef struct { int *v, n, cap; } pool_ids;
+typedef struct { __strong id<MTLBuffer> buf; uint64_t gpu, reg, ser, sub; int samp, dtt, dpf, base; pool_ids trans; } pool_snap;
 static pool_snap g_psnap[POOL_SNAPS]; static unsigned g_psnap_next;
 static uint64_t g_psnap_gen = 1;   // bumped by each rebuild: an argument block holding a pool address is not reused past it (encode_args_)
 static uint64_t g_stat_pool_builds; static double g_stat_pool_ms;
 static uint64_t g_stat_pool_why[4];   // why a pool table was built: no snapshot of its kind, a registration changed (g_reg_gen), a texture's storage changed (g_ser_gen), retired IDs of an earlier submission
 static uint64_t g_stat_pool_tt_skip;   // IDs of another type passed over by their registration's type (treg_t.tt1)
+static void ids_push(pool_ids *l, int id_) {   // past POOL_IDS_MAX the list is dropped (n -1)
+    if (l->n < 0) return;
+    if (l->n == POOL_IDS_MAX) { free(l->v); *l = (pool_ids){NULL, -1, 0}; return; }
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 16; l->v = realloc_or_die(l->v, (size_t)l->cap * sizeof *l->v, "the pool tables' ID lists"); }
+    l->v[l->n++] = id_;
+}
+// A list being made: each ID once (a stamp per ID)
+static struct { uint32_t *stamp; int cap; uint32_t cur; } g_pids;
+static void ids_begin(void) { if (!++g_pids.cur) { if (g_pids.stamp) memset(g_pids.stamp, 0, (size_t)g_pids.cap * sizeof *g_pids.stamp); g_pids.cur = 1; } }
+static void ids_add(pool_ids *l, int id_) {
+    if (l->n < 0 || id_ < 0) return;
+    if (id_ >= g_pids.cap) { int c = id_ + 4096; g_pids.stamp = realloc_or_die(g_pids.stamp, (size_t)c * sizeof *g_pids.stamp, "the pool tables' ID lists");
+        memset(g_pids.stamp + g_pids.cap, 0, (size_t)(c - g_pids.cap) * sizeof *g_pids.stamp); g_pids.cap = c; }
+    if (g_pids.stamp[id_] == g_pids.cur) return;
+    g_pids.stamp[id_] = g_pids.cur;
+    ids_push(l, id_);
+}
+static void ids_keep(pool_ids *l, const pool_ids *old) {   // an earlier list carried over
+    if (old->n < 0) { free(l->v); *l = (pool_ids){NULL, -1, 0}; return; }
+    for (int i = 0; i < old->n; i++) ids_add(l, old->v[i]);
+}
 // Whether a registered texture's storage still exists, before pool_gpu makes a texture no draw has bound: a game leaves IDs registered after it is done with their textures, and the
 // first pool walk in Mario Party Superstars crashed once in nvn_sparse_protect (pkg_upload ← tex_by_id ← pool_gpu) on a garbage pool->vp, which ID it was was not caught, as FINAL
 // FANTASY RESONANCE did later (GitHub issue #934; treg_gone, tex_mtl_ now stop that on every route). So: its memory pool object is live (nvnMemoryPoolFinalize clears the magic; freed
@@ -9246,7 +9271,8 @@ static uint64_t pool_entry(int samp, int dtt, int id_, int *gone, int *transient
     *transient |= g_treg[id_].retired && g_treg[id_].transient_sub == g_sub_serial;
     return tr;
 }
-static uint64_t g_stat_pool_patched, g_stat_pool_kept, g_stat_pool_nopatch[4];   // tables patched or kept on registrations and noted storage changes alone; why not: [0] too many changes or a sparse texture, [2] resized, [3] a change without a note
+static uint64_t g_stat_pool_patched, g_stat_pool_kept, g_stat_pool_nopatch[5], g_stat_pool_schg;   // tables patched or kept on registrations and noted storage changes alone; why not: [0] too many changes or a sparse texture, [2] resized, [3] a change without a note, [4] a new submission over more than POOL_IDS_MAX retired IDs. schg: of those patched or kept, the ones over retired IDs of an earlier submission
+void mtl_pool_stats(uint64_t s[5]) { s[0] = g_stat_pool_builds; s[1] = (uint64_t)(g_stat_pool_ms * 1000); s[2] = g_stat_pool_patched; s[3] = g_stat_pool_kept; s[4] = g_stat_pool_schg; }   // the power line's pool table counts (hle_nvn.c)
 static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretained id<MTLBuffer> *out) {
     pool_seen_scan();
     uint64_t rg = atomic_load(&g_reg_gen), sg = atomic_load(&g_ser_gen);
@@ -9254,11 +9280,12 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
     for (int i = 0; i < POOL_SNAPS && !p; i++) { pool_snap *q = &g_psnap[i];
         if (!q->buf) { if (!free_) free_ = q; }
         else if (q->samp == samp && q->dtt == dtt && q->dpf == dpf && q->base == base) p = q; }
-    if (p && p->reg == rg && p->ser == sg && (!p->sub || p->sub == g_sub_serial)) { *out = p->buf; return p->gpu; }
-    // Only registrations and noted storage changes since the table was built (each generation in its log): take the IDs they name again. The table is kept when none of them changes
-    // an entry; otherwise the old one is copied and patched, as draws already encoded read the old one. A sparse texture's page table follows no note (ser_sync), so then it is built whole
+    int stale = p && p->sub && p->sub != g_sub_serial;   // its entries that are views of retired registrations named views that went at the end of submission p->sub
+    if (p && p->reg == rg && p->ser == sg && !stale) { *out = p->buf; return p->gpu; }
+    // Only registrations and noted storage changes since the table was built (each generation in its log), and in a new submission the retired IDs the table lists (trans): take those IDs
+    // again. The table is kept when none of them changes an entry; otherwise the old one is copied and patched, as draws already encoded read the old one. A sparse texture's page table follows no note (ser_sync), so then it is built whole
     int nn = (samp ? g_nsreg : g_ntreg) - base; if (nn < 1) nn = 1;
-    if (p && (p->reg != rg || p->ser != sg) && (!p->sub || p->sub == g_sub_serial)) do {
+    if (p && (p->reg != rg || p->ser != sg || stale)) do {
         if (rg - p->reg >= REG_LOG || sg - p->ser >= SER_LOG || (!samp && p->ser != sg && nvn_sparse_gen())) { g_stat_pool_nopatch[0]++; break; }
         if (*(const uint32_t *)p->buf.contents != (uint32_t)nn) { g_stat_pool_nopatch[2]++; break; }
         static int *ids; static size_t idcap; size_t nid = 0; int known = 1;
@@ -9275,22 +9302,30 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
             }
             os_unfair_lock_unlock(&g_snote_lk);
         }
+        if (known && stale) {   // a new submission: the views of retired registrations the table holds went at the end of the last one
+            if (p->trans.n < 0) { g_stat_pool_nopatch[4]++; break; }
+            for (int k = 0; k < p->trans.n; k++) POOL_ID(p->trans.v[k]);
+        }
         #undef POOL_ID
         if (!known) { g_stat_pool_nopatch[3]++; break; }
         if (nid >= 8192) { g_stat_pool_nopatch[0]++; break; }
         uint64_t *e = (uint64_t *)((uint8_t *)p->buf.contents + DMSH_POOL_HEAD), dummy = e[nn];
-        int gone = 0, transient = 0; size_t nch = 0; id<MTLBuffer> b = nil; uint64_t *be = NULL;
+        int gone = 0; size_t nch = 0; id<MTLBuffer> b = nil; uint64_t *be = NULL;
+        pool_ids nt = {0}; ids_begin();
+        if (!stale) ids_keep(&nt, &p->trans);   // this submission's views, still good
         for (size_t k = 0; k < nid; k++) {
             int i = ids[k] - base; if (i < 0 || i >= nn) continue;
-            uint64_t r = pool_entry(samp, dtt, ids[k], &gone, &transient); r = r ? r : dummy;
+            int t = 0; uint64_t r = pool_entry(samp, dtt, ids[k], &gone, &t); r = r ? r : dummy;
+            if (t) ids_add(&nt, ids[k]);
             if (r == (be ? be[i] : e[i])) continue;
             if (!b) { size_t len = DMSH_POOL_HEAD + 8 * ((size_t)nn + 1); b = pool_table_take(len); if (!b) MDIE("pool table allocation failed (%d IDs)", nn); memcpy(b.contents, p->buf.contents, len); be = (uint64_t *)((uint8_t *)b.contents + DMSH_POOL_HEAD); }
             be[i] = r; nch++;
         }
-        uint64_t sub = transient || p->sub ? g_sub_serial : 0;
+        uint64_t sub = nt.n ? g_sub_serial : 0;   // n -1 (a list past its limit) counts: those views go at this submission's end too
+        g_stat_pool_schg += stale; free(p->trans.v); p->trans = nt;
         if (!b) { p->reg = rg; p->ser = sg; p->sub = sub; g_stat_pool_kept++; *out = p->buf; return p->gpu; }
         pool_table_give(p->buf);
-        *p = (pool_snap){b, b.gpuAddress, rg, sg, sub, samp, dtt, dpf, base};
+        *p = (pool_snap){b, b.gpuAddress, rg, sg, sub, samp, dtt, dpf, base, p->trans};
         g_psnap_gen++; g_stat_pool_patched++;
         *out = b; return p->gpu;
     } while (0);
@@ -9302,15 +9337,17 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
     if (!b) MDIE("pool table allocation failed (%d IDs)", n);
     uint8_t *c = b.contents; *(uint32_t *)c = (uint32_t)n; if (!samp) *(uint64_t *)(c + 8) = pool_seen_gpu();
     uint64_t *e = (uint64_t *)(c + DMSH_POOL_HEAD), dummy = samp ? dummy_samp_rid() : (dummy_tex(dtt, dpf) ? g_dummy_tex_rid[dtt % DMY_NT][dpf & 3] : 0);
-    int real = 0, gone = 0, transient = 0;
+    int real = 0, gone = 0, transient = 0; pool_ids nt = {0}; ids_begin();
     for (int i = 0; i < n; i++) {
-        uint64_t r = pool_entry(samp, dtt, base + i, &gone, &transient);
+        int t = 0; uint64_t r = pool_entry(samp, dtt, base + i, &gone, &t);
         e[i] = r ? r : dummy; real += r != 0;
+        if (t) { transient = 1; ids_add(&nt, base + i); }
     }
     e[n] = dummy;
     pool_table_give(p->buf);
     // Retired registrations drop their views at submission end; their resource IDs cannot outlive that submission.
-    *p = (pool_snap){b, b.gpuAddress, rg, sg, transient ? g_sub_serial : 0, samp, dtt, dpf, base};
+    free(p->trans.v);
+    *p = (pool_snap){b, b.gpuAddress, rg, sg, transient ? g_sub_serial : 0, samp, dtt, dpf, base, nt};
     g_psnap_gen++;
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     double ms = (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6; g_stat_pool_ms += ms;
