@@ -363,6 +363,13 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Fix** (`hle_codec.c`): the whole single-stream manager API runs on the `sdk`'s software `OpusDecoder`, one per decoder resource, with the requests' lists and counts as host state. The model follows the SDK's implementation (addresses in the comment): waiting from Enqueue, executing inside Execute, completed after it; 0xd with no free decoder resource and 0xe with no free io buffer, as the public functions return; Reset applies to the next enqueued request only; the SDK's aborts (an incomplete packet, a dequeue with nothing completed, a PCM buffer too small) stay aborts. Execute decodes on the caller's thread, in enqueue order, then signals the event, which is bound to a host kernel event (auto-clear, as the SDK attaches the service's handle). The work buffer holds the software decoders' work buffers and the io buffers. `FinalizeHardwareOpusDecoder` and `ResetHardwareOpusDecoder`, which the C interface shares, tell the two kinds apart by the host block. `t_codec_opus` checks the model on a stand-in software decoder.
 - **Found on:** Xenoblade Chronicles 2, Nintendo Switch 2 Edition (`0400E95004038001`) (SDK 21.4.4, the same figures); [Star Fox](../../dm/games/0400E88025B1A000/README.md) (Switch 2, SDK 21.4.4): two managers at boot (48 kHz, mono and stereo, 20 ms frames, 128 and 72 decoders), Execute once per audio frame, polling the counts and never waiting on the events. **Open:** the multi-stream manager (`HardwareOpusMultiStreamDecoderManager`) is not served; no game decoded through the manager yet (Star Fox stops at later aborts first).
 
+### One key for the two forms of the Opus decoder
+
+- **Symptom:** `CRASH sig=11 addr=0` in `h_codec_HwOpusFini`, the first time the game finalizes a decoder.
+- **Cause:** the older interface keeps the software state in `objmap` under the game's decoder object, and SDK 21's manager form its own record under the same key. `opus_mgr_dec_fini` told them apart by a field at +0x10, 0 in the software state as far as Star Fox had shown, but the work buffer's size in this one. It read the state as a record, so a pointer in it became the manager.
+- **Fix:** a manager's decoder is kept under the object + 1 (`OPUS_MGR_KEY`), so the look-up itself says which form it is; `GetHardwareOpusDecoderSampleRate` and `ChannelCount` now also read a manager's decoder correctly.
+- **Found on:** [Kirby Air Riders](../../dm/games/040077201BE50000/README.md) (SDK 20.5.26, 48 kHz stereo, the older form).
+
 ## Timing and catch-up
 
 ### At least one rendered frame between two updates

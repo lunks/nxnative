@@ -912,10 +912,9 @@ HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_2
 HLE_FORCE("_ZN2nn3hid24IsVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "vibration: device mounted when the channel has an output", unsigned, h_hid_VibMounted, const uint32_t *h) {
     return h && vib_targets(*h);
 }
-// Whether a handle's device is a Switch 2 controller's actuator (SDK 22; the same shape as IsVibrationDeviceMounted, its detail call reaches the hid service, sdk+0x6cd5f0 in SDK 22.2.8;
-// The Legend of Zelda: Ocarina of Time imports it): no, as GetVibrationDeviceInfo reports every device as a Switch 1 linear resonant actuator
-HLE_FORCE("_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "vibration: no Switch 2 actuator (the host's are Switch 1 ones)", unsigned, h_hid_VibOunce, const uint32_t *h) {
-    (void)h; return 0;
+// The Switch 2's form of the same question (Kirby Air Riders asks soon after boot in a run with a window, main+0x10709b0; its SDK's call reads the same null service object)
+HLE_FORCE("_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "vibration (Switch 2): device mounted when the channel has an output", unsigned, h_hid_VibMountedOunce, const uint32_t *h) {
+    return h && vib_targets(*h);
 }
 // SDK 22's sensor fusion ends with DisableNpadImu (sdk+0x6d6880 in SDK 22.2.8), through the hid service; Ocarina of Time calls it when its input system ends (main+0x3469314). The host
 // keeps no IMU state to disable
