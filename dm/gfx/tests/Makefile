@@ -131,6 +131,11 @@ t_deferred_release: t_deferred_release.m $(MTL_T_DEP)
 t_alias_age: t_alias_age.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_alias_age.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 check_t_alias_age: RUN_ENV = MTL_DEBUG_LAYER=1
+t_defer_fence: t_defer_fence.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_defer_fence.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_defer_fence
+check_t_defer_fence: t_defer_fence
+	MTL_DEBUG_LAYER=1 ./t_defer_fence
 t_res_guard: t_res_guard.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_res_guard.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_res_guard
