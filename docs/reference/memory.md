@@ -386,6 +386,14 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Note:** read the probe log carefully: `tryAlloc` probes show *requests*, not successes, so a running total that already exceeds the heap means an earlier request failed.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md), [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (the two entries below).
 
+### Upload buffers kept over a large pool
+
+- **Symptom:** residency commits take milliseconds of every frame while textures stream from a pool of 512 MB or more.
+- **Cause:** each upload batch made a zero-copy buffer over the texture and took it out of the residency set again.
+- **Fix:** `up_big_kept` in `nvn_mtl.m` keeps them by 16 MB stride, at most 64 buffers and 1 GB, as more would wire the pool as uploads reach it. Only a buffer idle for 600 frames gives way; past the bound an upload makes its own, as a scattered load would otherwise wire 16 MB for each small texture. The GPU memory guard lets them go.
+- **Check:** `t_pool_chunks`.
+- **Found on:** The Legend of Zelda: Ocarina of Time, PR #1444 (21.5 ms a frame in the Market and Kakariko Village; not measured on this stack).
+
 ### Model heaps sized by the host's command record sizes
 
 - **Symptom:** a model load exhausts its resource heap: a null `operator new` at the world load, or `BufferInitialize: pool has no storage` followed by a null-pool crash. A display-list heap that runs out shows as `AddCommandMemory` with a null pool outside a recording, then host-lent segments growing until `FATAL NVN command memory` ([Host-lent command memory segments](nvn-objects.md#host-lent-command-memory-segments)).
