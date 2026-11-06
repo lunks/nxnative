@@ -218,8 +218,9 @@ static int mfx_jit_on(void) {
     const char *e = getenv("DM_MFX_JITTER"); int v = e && (!strcmp(e, "1") || !strcmp(e, "on"));
     if (e && *e && !v && strcmp(e, "0") && strcmp(e, "off")) MLOG("[RED] DM_MFX_JITTER=%s: 1 or 0; off", e);
     if (v && up_mfx_on() != 2) { MLOG("[mfx] DM_MFX_JITTER: the camera jitter is for MetalFX's temporal scaler (DM_UPSCALER=metalfx-temporal); off"); v = 0; }
-    if (v && !DM_GAME_CAM_JITTER_N) { MLOG("[mfx] DM_MFX_JITTER: this game's profile has no camera_jitter key (the uniform blocks holding its camera); off"); v = 0; }
-    if (v) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the frame's main camera is offset by a sub-pixel Halton (2, 3) sequence in %d kind(s) of uniform block, on the GPU only; MetalFX is given the offset", DM_GAME_CAM_JITTER_N);
+    if (v && !DM_GAME_CAM_JITTER_N && !DM_GAME_CAM_JITTER_VP) { MLOG("[mfx] DM_MFX_JITTER: this game's profile has no camera_jitter key (the uniform blocks holding its camera); off"); v = 0; }
+    if (v && DM_GAME_CAM_JITTER_VP) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the depth-tested draws of the scene's targets are offset by a sub-pixel Halton (2, 3) sequence in their viewports; MetalFX is given the offset");
+    else if (v) MLOG("[mfx] camera jitter (DM_MFX_JITTER=1): the frame's main camera is offset by a sub-pixel Halton (2, 3) sequence in %d kind(s) of uniform block, on the GPU only; MetalFX is given the offset", DM_GAME_CAM_JITTER_N);
     return g_jit.on = v;
 }
 // A new frame: the frame before's outcome, logged when it changed, and whether this one may jitter
@@ -262,11 +263,22 @@ static void mfx_jit_note(void) {
         MLOG("[mfx] jitter probe, frame %llu: main camera found at pass %llu, phase %u of %u, offset %.4f, %.4f px of %.0fx%.0f = %.6f, %.6f (normalized device units)", (unsigned long long)ep,
              (unsigned long long)g_stat_pass, g_jit.phase, g_jit.phases, g_jit.px, g_jit.py, g_jit.vw, g_jit.vh, g_jit.jx, g_jit.jy); }
 }
+// camera_jitter viewport: the same offset as a move of the viewport, for a game that writes its camera while the host replays the frame. Ocarina of Time's main thread lands the view rows of its
+// Context block during the replay in about one frame in ten: a copy of the block taken at a binding then held the camera of two frames before, the bindings after the write read the block itself, and
+// the shading passes (depth EQUAL against the prepass) drew nothing: a white scene, with an offset of 0 too. The GPU reads the block after the write, so reading it there needs no copy at all. A draw
+// that tests depth is a scene draw; the full-screen passes between them test nothing or test ALWAYS and stay, as does a target of another shape (a shadow or cube map camera's). In pixels of the
+// target: a half-sized target moves half as far; a viewport's height may be negative (the window's origin), which the sign of the y term follows
+static void mfx_jit_viewport(MTLViewport *v) {
+    if (!DM_GAME_CAM_JITTER_VP || !g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || !S.ds.dt || S.ds.df == NVN_DEPTH_FUNC_ALWAYS) return;
+    double sx = fabs(v->width) / g_jit.vw, sy = fabs(v->height) / g_jit.vh;
+    if (sx > 1.001 || fabs(sx - sy) > 0.01 * sx) return;
+    v->originX += g_jit.px * sx; v->originY -= g_jit.py * v->height / g_jit.vh;
+}
 // encode_args_: a uniform binding of one of the profile's block sizes whose view-projection is this frame's main camera's reads a jittered copy (its GPU address; 0: the block as it is)
 static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf) {
     *buf = nil;
     uint64_t fr = atomic_load(&g_cur_frame) + 1;
-    if (!g_jit.act || g_mfx_jit_frame != fr || !u->addr) return 0;
+    if (DM_GAME_CAM_JITTER_VP || !g_jit.act || g_mfx_jit_frame != fr || !u->addr) return 0;
     const mfx_jit_kind *k = NULL;
     for (int i = 0; i < DM_GAME_CAM_JITTER_N; i++) if (u->size == k_mfx_jit[i].size) { k = &k_mfx_jit[i]; break; }
     if (!k) return 0;
@@ -293,7 +305,7 @@ static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong i
 // The jitter of this frame's main camera, when cam is it (the camera the upscaler's depth pass had): in normalized device units
 static int mfx_jit_used(const mfx_cam *cam, double *jx, double *jy) {
     *jx = *jy = 0;
-    if (!g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || !mfx_jit_same(cam->vpr, g_jit.vp)) return 0;
+    if (!g_jit.act || g_mfx_jit_frame != atomic_load(&g_cur_frame) + 1 || (!DM_GAME_CAM_JITTER_VP && !mfx_jit_same(cam->vpr, g_jit.vp))) return 0;
     *jx = g_jit.jx; *jy = g_jit.jy; return 1;
 }
 

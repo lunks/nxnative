@@ -303,8 +303,9 @@ def header_one(g):
         sys.exit(f'{g.id}: res_chain takes <docked output WxH> <docked output with single upscale WxH> <handheld output WxH> <lowest rate> <highest rate> [<start rate>] (rates from 1.0): {" ".join(rc)}')
     # The uniform blocks a camera jitter offsets (nvn_mfx.inc, DM_MFX_JITTER): <block bytes>@<view-projection offset>[,<offset>...] per kind, at most 4 kinds of 4 matrices; a binding of that
     # size whose 4x4 at the first offset is the frame's main view-projection gets a copy with every listed 4x4 (rows) offset by the jitter
-    cj = []
-    for w in g.words('camera_jitter', ''):
+    # or the one word viewport: no block is touched, the draws' viewports move instead (a game that writes its camera while the host replays the frame: Ocarina of Time)
+    cj, cjv = [], g.words('camera_jitter', '') == ['viewport'] and bool(cm)
+    for w in [] if cjv else g.words('camera_jitter', ''):
         m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)@((?:0x[0-9a-fA-F]+|\d+)(?:,(?:0x[0-9a-fA-F]+|\d+)){0,3})', w)
         size, offs = (int(m[1], 0), [int(o, 0) for o in m[2].split(',')]) if m else (0, [])
         if not m or not cm or len(cj) == 4 or any(o % 16 or o + 64 > size for o in offs):
@@ -381,7 +382,7 @@ def header_one(g):
          f'#define DM_GAME_CAM_MATS_SLOT {int(cm[1]) if cm else 0}', f'#define DM_GAME_CAM_MATS_VIEW {int(cm[2], 0) if cm else 0:#x}', f'#define DM_GAME_CAM_MATS_VP {int(cm[3], 0) if cm else 0:#x}',
          f'#define DM_GAME_MFX_FRAMES {int(bool(cm) and bool(ups))}',   # the launcher's frame interpolation: an upscaler of the game's own to take the scene from, and the camera
          f'#define DM_GAME_RES_CHAIN {q(" ".join(rc))}',   # res_chain: docked output, docked with single upscale, handheld output, the game's lowest / highest upscale rate ("" = none)
-         f'#define DM_GAME_CAM_JITTER_N {len(cj)}', f'#define DM_GAME_MFX_JITTER {int(bool(cj) and bool(ups))}',   # the launcher's camera jitter for the temporal scaler
+         f'#define DM_GAME_CAM_JITTER_N {len(cj)}', f'#define DM_GAME_CAM_JITTER_VP {int(cjv)}', f'#define DM_GAME_MFX_JITTER {int((bool(cj) or cjv) and bool(ups))}',   # the launcher's camera jitter for the temporal scaler
          *([f'#define DM_GAME_CAM_JITTER {{{", ".join("{%d, %d, {%s}}" % (s, len(o), ", ".join(hex(x) for x in o + [0] * (4 - len(o)))) for s, o in cj)}}}'] if cj else []),
          f'#define DM_GAME_ROMFS_SUBST {q(rsub)}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)

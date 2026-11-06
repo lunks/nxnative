@@ -177,6 +177,23 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - The 3D scene's CPU cost (37–59 ms a frame, with pool walks of about 33,000 descriptors) is [resolved](../../../docs/reference/frame-rate.md#a-bindless-pool-table-rebuilt-for-every-registration). Open: the GPU's 14–21 ms a frame in Kokiri Forest, which still drops frames below 60 fps; TBDR optimizations are off for this bindless game (`DM_NVN_TBDR=1` turns them on), and attachments load and store about 330 MB a frame.
 - The Nov. 4 Lichii branches offered two shader leads. The first, opcode `0x243`, is resolved: both of this game's forms translate ([F2IP](../../../docs/reference/shaders.md#f2ip-two-floats-into-two-bytes), derived from the game's own encodings). The second, the `F32FtzRn` float reduction, is resolved too ([float add atomics](../../../docs/reference/shaders.md#float-add-atomics)). Neither of the two shaders in the sky lookup and draw uses those instructions or the gather opcodes from Lichii's [fog work](https://github.com/zortos293/Lichii/commit/375c4a472bd95fdfaae0de6e3f192499cd14f806).
 
+### Camera jitter (current, in a run)
+
+`camera_jitter viewport`: with **Anti-aliasing (jitter)** (`DM_MFX_JITTER=1`) the draws that test depth on targets of the scene's shape move their viewport by the offset. Block copies, the way Donkey Kong Bananza's jitter works, gave about one white frame in twenty, offset or not: the main thread writes the camera in gsys's Context during the host's replay of the frame ([a camera written while the host replays the frame](../../../docs/reference/rendering.md#a-camera-written-while-the-host-replays-the-frame)). Which blocks hold the camera, for the record: Context at `+0x30` and `+0x70` (13568 bytes), a list of view-projections at `+0x0` (1792), the effect system's at `+0x1b0` (704).
+
+Kokiri Forest at 720p, MetalFX temporal, 24 frames of a still camera, jitter on against off:
+
+| | Off | On |
+|---|---|---|
+| Frame p50 / p95, GPU p50 | 16.6 / 18.2, 14.6 | 16.6 / 18.4, 14.5 |
+| White frames in 2,400 (Hyrule Field) | 0 | 0 |
+| HUD | still | still: the prompt moves 0.001 pixels, hearts change by 0.33 of 255 at most |
+| Edges | stair-stepped | smooth |
+| Detail (mean absolute Laplacian of a frame; stair-steps count) | 8.7 | 5.3 |
+| Frame-to-frame change (mean of 255) | 0.13 | 2.8 |
+
+The output does not shake with the offset: between frames it stays within 0.03 pixels, the scaler takes the sign right. So jitter buys smooth edges for a softer, livelier picture at no frame time, and it stays off by default. Textures are sampled at the mips of 720p; a mip bias, which the game has no setting for, was not tried.
+
 ## Found on this game
 
 - [A damaged file in a NUP or a dump has no hash to fail](../../../docs/reference/packing.md#a-damaged-file-in-a-nup-or-a-dump-has-no-hash-to-fail): the NUP at hand holds three `.zs` textures beginning with zeros, and the background loader reloaded the fairy fountain model for ever (412% CPU): it builds with `--allow-damaged`, and `romfs_substitute` serves the three.

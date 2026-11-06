@@ -1170,7 +1170,7 @@ static void rp_end(void);
 // MetalFX temporal upscaling and frame interpolation at a game's own upscaler (nvn_mfx.inc): the scene's depth and camera, from each pass with a depth attachment
 static int mfx_cam_on(void); static void mfx_pass_begin(id<MTLTexture> depth, NSUInteger level); static void mfx_note_pass(void);
 // ... and the camera jitter (DM_MFX_JITTER): g_mfx_jit_frame is the frame + 1 whose main camera was found (0: none), and a binding of the blocks holding it reads a jittered copy (mfx_jit_bind)
-static uint64_t g_mfx_jit_frame; static int mfx_jit_on(void); static void mfx_jit_note(void); static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf);
+static uint64_t g_mfx_jit_frame; static int mfx_jit_on(void); static void mfx_jit_note(void); static uint64_t mfx_jit_bind(int stage, int reg, const p_bind_buf *u, __strong id<MTLBuffer> *buf); static void mfx_jit_viewport(MTLViewport *v);
 // ... and frame interpolation's UI point: an upscaler frame waits (g_mfi_pend) for the first pass into one of the game's window textures (mfx_ui_point, before a pass opens)
 static int g_mfi_pend; static void mfx_ui_point(void);
 static void geo_mesh_flush_pass(void);   // a waiting run of mesh draws is drawn before its pass ends (nvn_geometry.inc)
@@ -12885,6 +12885,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
       { uint32_t sw; memcpy(&sw, S.vp_sw[0], 4);
         if (sw == 0x100) { v.originY += v.height; v.height = -v.height; }
         else if (sw) RED_ONCE(108, "viewport swizzle %d,%d,%d,%d not implemented (drawn unswizzled)", S.vp_sw[0][0], S.vp_sw[0][1] ^ 2, S.vp_sw[0][2] ^ 4, S.vp_sw[0][3] ^ 6); }
+      if (g_mfx_jit_frame) mfx_jit_viewport(&v);   // camera_jitter viewport (nvn_mfx.inc)
       if (!(g_ed.ok & ED_VP) || memcmp(&g_ed.vp, &v, sizeof v)) { enc_r_viewport(en, v); g_ed.vp = v; g_ed.ok |= ED_VP; } }
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc && !S.rast_discard) {   // raster state cannot suppress vertex storage writes

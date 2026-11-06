@@ -60,6 +60,8 @@ tex_dirty_upload	off
 # (3x4 rows) at +0x0 and the view-projection at +0x30, as on Donkey Kong Bananza. Read in a run (DM_MFX_PROBE, v131072): the opening's 3D cutscenes and Link's house give a GL perspective
 # camera (50 degrees, 16:9, near 0.1, far 25037, no projection offset) in the 1920x1080 D32F depth pass that matches the upscaler's input; 15,000 upscaler frames, none without a camera
 camera_mats	vertex 0 0x0 0x30
+# The camera jitter as a viewport offset, not in copies of the blocks: the main thread writes the camera in gsys's Context while the host replays the frame (README.md, Camera jitter)
+camera_jitter	viewport
 # Dynamic resolution reads the GPU time between two timestamp reports of the frame (main+0x5a8f0): with one time for the whole submission it is 0 and the rate never moves. At fixed 720p
 # in Hyrule Field the frame time is the same (README.md, Render resolution)
 # Metal encoding on its own thread: in Link's house at rate 3.0 it takes MetalFX's temporal scaler from 30.7 to 25.4 ms a frame (GPU p50 24.2 to 17.9), and the game's own upscaler stays at 18.7
