@@ -55,6 +55,8 @@
 //   DM_CHEATS_DEBUG=1       log every applied write (cheat name, where, value)
 #include "dm.h"
 #include "dm_input.h"   // dm_cheats_keys, the key mask the type-8 conditional reads
+#include "romfs_image.h"   // setting patches of RomFS files read the rom mount's image
+#include <ftw.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -1791,6 +1793,10 @@ static void sources_scan(void) {
 // (main_write_check), so a cheat's on / off pair can never undo the setting or fight it. Only main's code is written (the
 // one module with a writable alias); on the iPhone no code page is writable, so a group with code words is refused there.
 // The settings are chosen before Play and hold for the whole session: there is no change while the game runs
+// A RomFS row (module "romfs": build = the file's path in the RomFS, offset = a byte offset in the file) patches a parameter file the game reads (BYML values the
+// code reads into per-scene structs, which no code word reaches): the file is read from the rom mount (DM_ROMFS: an image or a folder), the word checked against its
+// original, and the changed copy written under <DM_TEMP>_romfs_overlay/, which is put first in DM_ROMFS_OVERLAY before the game mounts the rom (hle_fs.c). The
+// folder is emptied at each launch; a value without rows leaves the mount as it is. Works on any build of the game (a changed file fails the original check)
 // An argument row (module "args") writes nothing: its arg is a program argument the host gives the game (dm_setting_args → hle_oe.c nn::os::GetHostArgv), on any build
 typedef struct { const char *var, *value, *label, *module, *build; uint64_t off; uint32_t orig, new_; const char *when, *arg; } setting_patch_t;
 enum { SP_ARGS_MAX = 16 };
@@ -1903,6 +1909,84 @@ const char *dm_setting_patch_applied(const char *var, const char **value) {
 }
 static const char *sp_applied_value(const char *var) { const char *v = NULL; return dm_setting_patch_applied(var, &v) ? v : NULL; }
 
+// ---- RomFS rows (module "romfs") ----
+// The overlay folder of this launch: <DM_TEMP>_romfs_overlay (DM_TEMP as hle_fs.c envdir has it)
+static const char *sp_overlay_dir(char *out, size_t n) {
+    const char *t = getenv("DM_TEMP");
+    if (t) snprintf(out, n, "%s_romfs_overlay", t);
+    else snprintf(out, n, "%s%s/run/platform/temp_romfs_overlay", getenv("DM_ROOT") ?: getenv("HOME"), getenv("DM_ROOT") ? "" : "/dm-work");
+    return out;
+}
+static int sp_rm_cb(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)st; (void)flag; (void)w; return remove(p); }
+static void sp_overlay_clear(void) { char d[1024]; if (sp_overlay_dir(d, sizeof d)[0]) nftw(d, sp_rm_cb, 16, FTW_DEPTH | FTW_PHYS); }
+static uint8_t *sp_read_host(const char *p, size_t *n) {
+    FILE *f = fopen(p, "rb"); if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = sz >= 0 ? malloc((size_t)sz + 1) : NULL;
+    if (b && fread(b, 1, (size_t)sz, f) != (size_t)sz) { free(b); b = NULL; }
+    fclose(f); if (b) *n = (size_t)sz;
+    return b;
+}
+// The entry a path names in an image (hle_fs.c img_find: a binary search of each directory's children by name), -1 when there is none
+static int64_t sp_img_find(const romfs_img *m, const char *rest) {
+    uint64_t k = 0;
+    while (*rest) {
+        while (*rest == '/') rest++;
+        if (!*rest) break;
+        const char *end = strchr(rest, '/'); if (!end) end = rest + strlen(rest);
+        size_t len = (size_t)(end - rest);
+        if (m->e[k].type) return -1;
+        uint64_t lo = m->e[k].a, hi = lo + m->e[k].b; int found = 0;
+        while (lo < hi) {
+            uint64_t mid = lo + (hi - lo) / 2; const img_ent *x = &m->e[mid];
+            int c = memcmp(m->names + x->name, rest, x->nlen < len ? x->nlen : len);
+            if (!c) c = (x->nlen > len) - (x->nlen < len);
+            if (!c) { k = mid; found = 1; break; }
+            if (c < 0) lo = mid + 1; else hi = mid;
+        }
+        if (!found) return -1;
+        rest = end;
+    }
+    return (int64_t)k;
+}
+// A RomFS file as the game will see it at this point of the launch: the copy an earlier setting wrote to the overlay, else the rom mount's (DM_ROMFS: an image or a folder). Malloc'd, NULL when there is none
+static uint8_t *sp_rom_read(const char *path, size_t *n) {
+    char p[1536], d[1024], b[1024];
+    snprintf(p, sizeof p, "%s/%s", sp_overlay_dir(d, sizeof d), path);
+    uint8_t *r = sp_read_host(p, n); if (r) return r;
+    const char *rom = getenv("DM_ROMFS");
+    if (!rom) { snprintf(b, sizeof b, "%s%s/romfs", getenv("DM_ROOT") ?: getenv("HOME"), getenv("DM_ROOT") ? "" : "/dm-work"); rom = b; }
+    struct stat st;
+    if (stat(rom, &st)) return NULL;
+    if (!S_ISREG(st.st_mode)) { snprintf(p, sizeof p, "%s/%s", rom, path); return sp_read_host(p, n); }
+    romfs_img *m = romfs_image_open(rom); if (!m) return NULL;
+    int64_t k = sp_img_find(m, path);
+    if (k >= 0 && m->e[k].type && m->e[k].b < (1u << 28) && (r = malloc((size_t)m->e[k].b + 1)) && romfs_image_read(m->fd, r, (size_t)m->e[k].b, (off_t)m->e[k].a)) *n = (size_t)m->e[k].b;
+    else { free(r); r = NULL; }
+    romfs_image_close(m);
+    return r;
+}
+// Write the patched copy of a RomFS file into the overlay folder (parents made); 0 when it fails
+static int sp_overlay_write(const char *path, const uint8_t *buf, size_t n) {
+    char d[1024], p[1536]; sp_overlay_dir(d, sizeof d);
+    snprintf(p, sizeof p, "%s/%s", d, path);
+    for (char *q = p + strlen(d) + 1; (q = strchr(q, '/')); q++) { *q = 0; mkdir(p, 0755); *q = '/'; }
+    mkdir(d, 0755);
+    char t[1560]; snprintf(t, sizeof t, "%s.part", p);
+    FILE *f = fopen(t, "wb"); if (!f) return 0;
+    int ok = fwrite(buf, 1, n, f) == n; ok = fclose(f) == 0 && ok;
+    return ok && !rename(t, p);
+}
+// DM_ROMFS_OVERLAY names the folders whose files stand in for the rom mount's, first match wins (hle_fs.c): the setting patches' folder goes first
+static void sp_overlay_enable(void) {
+    char d[1024], nv[4200]; const char *cur = getenv("DM_ROMFS_OVERLAY"); sp_overlay_dir(d, sizeof d);
+    if (cur && strstr(cur, d)) return;
+    snprintf(nv, sizeof nv, "%s%s%s", d, cur && *cur ? ":" : "", cur ? cur : "");
+    setenv("DM_ROMFS_OVERLAY", nv, 1);
+}
+typedef struct { char path[256]; uint8_t *buf; size_t n; } sp_rfile_t;
+enum { SP_RFILES_MAX = 16 };
+
 // One variable's value: its rows of the module's build, verified whole, then written whole. Returns the words written. dflt: the variable is unset
 // and val is its value game, so no row's condition holding needs no line (the game's own code, as for any unset variable)
 static int sp_apply_group(const setting_patch_t *t, int n, const char *var, const char *val, int dflt) {
@@ -1911,8 +1995,9 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         if (strcmp(t[i].var, var) || strcmp(t[i].value, val)) continue;
         if (!first) first = &t[i];
         if (!t[i].arg && !word) word = &t[i];
-        module_t *m = t[i].arg ? NULL : sp_module(t[i].module);
-        if (!t[i].arg && (!m || strcasecmp(m->build_id, t[i].build))) continue;
+        int rom = !t[i].arg && !strcmp(t[i].module, "romfs");   // a RomFS file's row: any build of the game (the original word is checked in the file)
+        module_t *m = t[i].arg || rom ? NULL : sp_module(t[i].module);
+        if (!t[i].arg && !rom && (!m || strcasecmp(m->build_id, t[i].build))) continue;
         nbuild++; nwbuild += !t[i].arg;
         if (t[i].when && *t[i].when) conds = 1;
         if (sp_when(t[i].when, cond, sizeof cond) && ng < SP_HELD_MAX) g[ng++] = &t[i];   // rows whose condition does not hold now are not this launch's
@@ -1934,13 +2019,13 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         return 0;
     }
     const char *label = g[0]->label;   // the chosen row's (a value with conditions: the one whose condition holds)
-    for (int i = 0; i < ng; i++) for (int k = 0; k < i; k++) if (!g[i]->arg && !g[k]->arg && g[i]->off == g[k]->off) {
-        LOG("[RED] setting %s=%s: not applied, nothing written: two rows for main+0x%llX hold together (%s; %s): their conditions overlap", var, val, (unsigned long long)g[i]->off, g[k]->label, g[i]->label);
+    for (int i = 0; i < ng; i++) for (int k = 0; k < i; k++) if (!g[i]->arg && !g[k]->arg && g[i]->off == g[k]->off && !strcmp(g[i]->module, g[k]->module) && !strcmp(g[i]->build, g[k]->build)) {
+        LOG("[RED] setting %s=%s: not applied, nothing written: two rows for %s+0x%llX hold together (%s; %s): their conditions overlap", var, val, g[i]->module, (unsigned long long)g[i]->off, g[k]->label, g[i]->label);
         return 0;
     }
-    int nw = 0, na = 0; for (int i = 0; i < ng; i++) { if (g[i]->arg) na++; else nw++; }
+    int nw = 0, na = 0, nr = 0; for (int i = 0; i < ng; i++) { if (g[i]->arg) na++; else if (!strcmp(g[i]->module, "romfs")) nr++; else nw++; }   // nw: main's words, nr: RomFS files' words
     if (g_sp_nargs + na > SP_ARGS_MAX) { LOG("[RED] setting %s=%s (%s): not applied, nothing written: more than %d program arguments", var, val, label, SP_ARGS_MAX); return 0; }
-    for (int i = 0; i < ng; i++) if (!g[i]->arg && (strcmp(g[i]->module, "main") || !g_main_mod)) {
+    for (int i = 0; i < ng; i++) if (!g[i]->arg && strcmp(g[i]->module, "romfs") && (strcmp(g[i]->module, "main") || !g_main_mod)) {
         LOG("[RED] setting %s=%s (%s): not applied: it writes module %s, and setting patches write only main's code", var, val, label, g[i]->module);
         return 0;
     }
@@ -1949,15 +2034,40 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         if (g_alias) LOG("setting patches: writable alias of main mapped");
     }
     if (nw && g_alias) changed_load();
-    char why[160]; int bad = 0;
+    char why[260]; int bad = 0;
+    sp_rfile_t rf[SP_RFILES_MAX]; int nrf = 0;   // the RomFS files this value patches, read and checked before anything is written
+    memset(rf, 0, sizeof rf);
+    for (int i = 0; i < ng && !bad; i++) {
+        if (g[i]->arg || strcmp(g[i]->module, "romfs")) continue;
+        int f = 0; while (f < nrf && strcmp(rf[f].path, g[i]->build)) f++;
+        if (f == nrf) {
+            if (nrf == SP_RFILES_MAX || strlen(g[i]->build) >= sizeof rf[0].path) { snprintf(why, sizeof why, "too many RomFS files, or a path too long: %s", g[i]->build); bad = 1; break; }
+            rf[nrf].buf = sp_rom_read(g[i]->build, &rf[nrf].n);
+            snprintf(rf[nrf].path, sizeof rf[0].path, "%s", g[i]->build); nrf++;
+            if (!rf[f].buf) { snprintf(why, sizeof why, "RomFS file %s is not in the rom mount (DM_ROMFS)", g[i]->build); bad = 1; break; }
+        }
+        uint32_t now; uint64_t off = g[i]->off;
+        if (off + 4 > rf[f].n) { snprintf(why, sizeof why, "%s+0x%llX is past the file's %zu bytes", g[i]->build, (unsigned long long)off, rf[f].n); bad = 1; break; }
+        memcpy(&now, rf[f].buf + off, 4);
+        if (now != g[i]->orig) { snprintf(why, sizeof why, "%s+0x%llX holds %08X, not the original %08X the patch was made for (another version of the file)", g[i]->build, (unsigned long long)off, now, g[i]->orig); bad = 1; }
+    }
     for (int i = 0; i < ng && !bad; i++) {   // verify every word before writing any
-        if (g[i]->arg) continue;
+        if (g[i]->arg || !strcmp(g[i]->module, "romfs")) continue;
         uint64_t off = g[i]->off; uint32_t now;
         if (main_refusal(off, 4, why, sizeof why)) { bad = 1; break; }
         memcpy(&now, (uint8_t *)g_main_mod->base + off, 4);
         if (now != g[i]->orig) { snprintf(why, sizeof why, "main+0x%llX holds %08X, not the original %08X the patch was made for", (unsigned long long)off, now, g[i]->orig); bad = 1; }
         else if (sp_held_hit(off, 4) >= 0) { snprintf(why, sizeof why, "main+0x%llX is already written by %s", (unsigned long long)off, g_sp_held[sp_held_hit(off, 4)].who); bad = 1; }
     }
+    if (!bad && g_sp_nheld + nw <= SP_HELD_MAX && nrf) {   // the changed copies of the RomFS files, into the overlay folder, before main's words: a failure here writes nothing
+        for (int i = 0; i < ng; i++) if (!g[i]->arg && !strcmp(g[i]->module, "romfs")) {
+            int f = 0; while (strcmp(rf[f].path, g[i]->build)) f++;
+            memcpy(rf[f].buf + g[i]->off, &g[i]->new_, 4);
+        }
+        for (int f = 0; f < nrf && !bad; f++) if (!sp_overlay_write(rf[f].path, rf[f].buf, rf[f].n)) { snprintf(why, sizeof why, "cannot write %s into the overlay folder (errno %d)", rf[f].path, errno); bad = 1; }
+        if (!bad) sp_overlay_enable();
+    }
+    for (int f = 0; f < nrf; f++) free(rf[f].buf);
     if (bad || g_sp_nheld + nw > SP_HELD_MAX) {
         LOG("[RED] setting %s=%s (%s): not applied, nothing written: %s", var, val, label, bad ? why : "too many held words");
         return 0;
@@ -1970,6 +2080,11 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
             if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
             continue;
         }
+        if (!strcmp(g[i]->module, "romfs")) {   // written above, as a file
+            int k = snprintf(list + used, sizeof list - used, "%s%s+0x%llX %08X -> %08X", i ? ", " : "", g[i]->build, (unsigned long long)g[i]->off, g[i]->orig, g[i]->new_);
+            if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
+            continue;
+        }
         uint64_t off = g[i]->off; uint32_t w = g[i]->new_;
         main_write_pages((uint64_t)(uintptr_t)g_main_mod->base + off, 4, &w);
         g_sp_held[g_sp_nheld].off = off;
@@ -1978,7 +2093,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
         int k = snprintf(list + used, sizeof list - used, "%smain+0x%llX %08X -> %08X", i ? ", " : "", (unsigned long long)off, g[i]->orig, w);
         if (k > 0) used += (size_t)k < sizeof list - used ? (size_t)k : sizeof list - used - 1;
     }
-    LOG("setting %s=%s%s (%s): %d word%s written, %d argument%s given: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, nw, nw == 1 ? "" : "s", na, na == 1 ? "" : "s", list,
+    LOG("setting %s=%s%s (%s): %d word%s written, %d in RomFS files, %d argument%s given: %s%s%s%s", var, val, dflt ? ", unset: its default" : "", label, nw, nw == 1 ? "" : "s", nr, na, na == 1 ? "" : "s", list,
         conds ? " [" : "", conds ? cond : "", conds ? "]" : "");
     if (g_sp_napplied < SP_APPLIED_MAX) {
         snprintf(g_sp_applied[g_sp_napplied].var, sizeof g_sp_applied[0].var, "%s", var); snprintf(g_sp_applied[g_sp_napplied].value, sizeof g_sp_applied[0].value, "%s", val);
@@ -1992,6 +2107,7 @@ static int sp_apply_group(const setting_patch_t *t, int n, const char *var, cons
 static int sp_apply(const setting_patch_t *t, int n) {
     int done = 0;
     g_sp_tab = t; g_sp_ntab = n;
+    for (int i = 0; i < n; i++) if (!t[i].arg && t[i].module && !strcmp(t[i].module, "romfs")) { sp_overlay_clear(); break; }   // files of an earlier launch are not this one's
     for (int i = 0; i < n; i++) {
         int first = 1;
         for (int k = 0; k < i; k++) if (!strcmp(t[k].var, t[i].var)) { first = 0; break; }

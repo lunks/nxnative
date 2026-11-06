@@ -281,14 +281,16 @@ def page():
     summary, sections = [], []
     for g in gs:
         m = mods.get(g.id)
-        sp = [r for r in game.setting_patches(g) if 'module' in r and 'arg' not in r]   # the write rows of its setting patches (argument rows write no code)
-        if not m and g.id not in host_games and not sp: continue
+        spall = [r for r in game.setting_patches(g) if 'module' in r and 'arg' not in r]   # the write rows of its setting patches (argument rows write no code)
+        sp = [r for r in spall if r['module'] != 'romfs']   # the code words, by build; the rows of RomFS files (any build) are listed after the builds
+        rom = [r for r in spall if r['module'] == 'romfs']
+        if not m and g.id not in host_games and not spall: continue
         text = files[g.id].read_text() if m else ''
         cuts, obs, fs, mc, caps = (getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP', 'MATCH_CUTS', 'CAPABILITIES'))
         bids = list(dict.fromkeys([*cuts, *obs, *fs, *caps, *(r['build'] for r in sp), *sorted(host_games.get(g.id, ()))]))
         n_fs = 0; lines = [f'### {name(g)}', '', f'{note(g)}, `{g.id}`' + (f', {link(files[g.id])}' if m else '') + '.', '']
         es = list(bound(m, rel(files[g.id]), own=True)) if m else []
-        if sp: es.append(SETTING_BINDING)
+        if spall: es.append(SETTING_BINDING)
         for b in sorted(host_games.get(g.id, ())):
             for _, _, _, e in host.get(b, []):
                 if not any(same(x) == same(e) for x in es): es.append(e)
@@ -313,6 +315,10 @@ def page():
             for r in (r for r in sp if r['build'] == bid):
                 lines.append(f'  - setting patch `{r["module"]}+{r["offset"]:#x}` (`{r["var"]}={r["value"]}`, {r["label"]}): `{r["orig"]:08X}` → `{r["new"]:08X}` ({link(g.table(game.SETTING_PATCHES))})')
             for p, n, what, _ in host.get(bid, []): lines.append(f'  - host {link(p, n)}: {what}')
+        for f in dict.fromkeys(r['build'] for r in rom):
+            rs = [r for r in rom if r['build'] == f]
+            lines.append(f'- **RomFS file** `{f}` (any build): {len(rs)} setting patch{"es" * (len(rs) > 1)} ({link(g.table(game.SETTING_PATCHES))})')
+            for r in rs: lines.append(f'  - setting patch `+{r["offset"]:#x}` (`{r["var"]}={r["value"]}`, {r["label"]}): `{r["orig"]:08X}` → `{r["new"]:08X}`')
         for module, rules in mc.items():
             for r in rules:
                 fns = r.get('functions', [r]); ncut = sum(len(f['cuts']) for f in fns)
@@ -322,7 +328,7 @@ def page():
         kinds = {}
         for e in es: kinds[arrow(e)] = kinds.get(arrow(e), 0) + 1
         summary.append(f'| [{name(g)}](#{slug(name(g))}) | {sum(map(len, cuts.values()))} | {sum(map(len, obs.values()))} | {n_fs} | '
-                       f'{sum(len(v) for v in mc.values())} | {n_host} | {len(sp)} | {", ".join(k + (f" ×{n}" if n > 1 else "") for k, n in kinds.items())} |')
+                       f'{sum(len(v) for v in mc.values())} | {n_host} | {len(spall)} | {", ".join(k + (f" ×{n}" if n > 1 else "") for k, n in kinds.items())} |')
 
     orphans = [f'- {short(bid)}: {link(p, n)}: {what}' for bid, rows in host.items() if bid not in builds for p, n, what, _ in rows]
     sdk_bind = bound(sdk, rel(SDK))

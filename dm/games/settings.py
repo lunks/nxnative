@@ -106,8 +106,9 @@ def patch_options(g, patched):
             if (r['var'], r['value']) in worded: continue
             writes.add(r['var'])
         elif 'module' in r:
-            if r['module'] not in builds: builds[r['module']] = fixups_build(Path(patched) / f'{r["module"]}.fixups.tsv')
-            if builds[r['module']] != r['build']: continue
+            if r['module'] != 'romfs':   # a RomFS file's word holds on any build (the host checks its original in the file)
+                if r['module'] not in builds: builds[r['module']] = fixups_build(Path(patched) / f'{r["module"]}.fixups.tsv')
+                if builds[r['module']] != r['build']: continue
             writes.add(r['var'])
         opts = out.setdefault(r['var'], [])
         if r['value'] not in [o[0] for o in opts]: opts.append([r['value'], r['label']])

@@ -149,7 +149,8 @@ def setting_patches(g):
     """The profile's setting patches (setting_patches.tsv; dm/games/README.md, Setting patches): memory writes the host makes at launch when an
     environment variable has a value, each verified against its original word on the module build it was found in. A list of dicts, in table order:
     var, value, label and, for a write row, module, build (32 hex digits, lower case), offset, orig, new (ints) and when (a condition on a quantity the
-    host knows at launch or on another setting's value, '' for none); a label row (module "-") has no write. An argument row (module "args", build, offset and
+    host knows at launch or on another setting's value, '' for none); a label row (module "-") has no write. A RomFS row (module "romfs") has the file's path in the RomFS as
+    build and a byte offset in the file as offset: the host checks the original word in the file at launch (hle_cheats.c), so it holds on any build of the game. An argument row (module "args", build, offset and
     original "-") has the program argument the host gives the game (nn::os::GetHostArgv) in new, as arg: a game that reads its settings from its arguments
     (Star Fox's cvars, -render_resolution_scale_console=0.75), on any build; one argument name belongs to one variable, as a word does. Every write row's build must be one of the profile's build rows for that
     module, so no fixed address reaches a build it was not found in; one word is written by one variable only (two values of one variable may write the
@@ -191,11 +192,15 @@ def setting_patches(g):
             if prev is not None and (not prev or not when or prev == when): sys.exit(f'{where}: argument {name[1]} is given twice by {var}={value} (only rows with different conditions may share one)')
             seen[(var, value) + name] = when
         elif mod != '-':
-            if mod not in g.words('modules'): sys.exit(f'{where}: module {mod} is not one of the profile\'s modules ({g.get("modules")})')
-            if (mod, build.lower()) not in builds: sys.exit(f'{where}: {mod} build {build} is not one of the profile\'s build rows: fixed addresses only run on a build they were found in')
+            if mod == 'romfs':   # a word of a RomFS file (a BYML parameter file): build is the file's path, offset a byte offset in it, checked against the file at launch
+                if not re.fullmatch(r'[A-Za-z0-9_.+/-]{1,240}', build) or build.startswith('/') or any(p in ('', '.', '..') for p in build.split('/')): sys.exit(f'{where}: a romfs row\'s build is the file\'s path in the RomFS (no leading /, no . or ..): {build}')
+            else:
+                if mod not in g.words('modules'): sys.exit(f'{where}: module {mod} is not one of the profile\'s modules ({g.get("modules")})')
+                if (mod, build.lower()) not in builds: sys.exit(f'{where}: {mod} build {build} is not one of the profile\'s build rows: fixed addresses only run on a build they were found in')
+                build = build.lower()
             if not re.fullmatch(r'0x[0-9a-fA-F]+', off) or int(off, 16) % 4: sys.exit(f'{where}: the offset is a 4-aligned hex image offset (0x...): {off}')
             if not all(re.fullmatch(r'[0-9a-fA-F]{8}', w) for w in (orig, new)) or orig.upper() == new.upper(): sys.exit(f'{where}: original and new are two different 32-bit words, 8 hex digits each: {orig} {new}')
-            r.update(module=mod, build=build.lower(), offset=int(off, 16), orig=int(orig, 16), new=int(new, 16), when=when)
+            r.update(module=mod, build=build, offset=int(off, 16), orig=int(orig, 16), new=int(new, 16), when=when)
             word = (mod, r['build'], r['offset'])
             if owner.setdefault(word, var) != var: sys.exit(f'{where}: {mod}+{off} is already written by {owner[word]}: one word, one variable (the two would fight)')
             prev = seen.get((var, value) + word)

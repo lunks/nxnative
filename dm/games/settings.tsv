@@ -41,6 +41,12 @@ DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game|Resolutio
 DM_EFFECTS_RES	choice	patches	game	patches:DM_EFFECTS_RES&platform:mac	Effects	Effects resolution	Full draws ambient occlusion, refraction and soft particles at the render size instead of half: sharper, for more GPU time and memory. Untested.
 DM_SHADOW_RES	choice	patches	game	patches:DM_SHADOW_RES&platform:mac	Effects	Shadow resolution	Full keeps shadows sharp when the game lowers its resolution, for a little more GPU time.
 DM_SHADOW_MAP_SIZE	choice	patches	game	patches:DM_SHADOW_MAP_SIZE&platform:mac	Effects	Shadow map size	Sharper shadows for more GPU time and memory (the app gives the game's render targets more at launch). Larger sizes are untested: if the game crashes, set it back.
+DM_SHADOW_DISTANCE	choice	patches	game	patches:DM_SHADOW_DISTANCE&platform:mac	Effects	Shadow distance	Dynamic shadows reach farther. The same shadow map covers more ground, so far shadows get softer unless the shadow map size is raised.
+DM_SHADOW_CASCADE_SIZE	choice	patches	game	patches:DM_SHADOW_CASCADE_SIZE&platform:mac	Effects	Shadow map size	Sharper shadows for more GPU time and memory. Larger sizes are untested: if the game crashes, set it back.
+DM_SHADOW_FILTER	choice	patches	game	patches:DM_SHADOW_FILTER&platform:mac	Effects	Shadow filtering	Softer, less blocky shadow edges with more filter taps, for a little more GPU time.
+DM_LOCAL_SHADOW	choice	patches	game	patches:DM_LOCAL_SHADOW&platform:mac	Effects	Character shadow	The soft shadow under Link and other characters at double the resolution and with less blur, for a little more GPU time.
+DM_SSAO_QUALITY	choice	patches	game	patches:DM_SSAO_QUALITY&platform:mac	Effects	Ambient occlusion quality	More ambient occlusion samples: cleaner contact shadows, for more GPU time.
+DM_SSAO_RES	choice	patches	game	patches:DM_SSAO_RES&platform:mac	Effects	Ambient occlusion resolution	Ambient occlusion from the full-resolution depth instead of the reduced one: sharper, for more GPU time and memory.
 DM_ANISO	choice	0=Off,2=2x,4=4x,8=8x,16=16x	0	gfxapi:nvn	Game|Effects	Anisotropic filtering	Uses a little more GPU time.
 DM_TRILINEAR	toggle	-	0	gfxapi:nvn	Game|Effects	Trilinear filtering
 DM_FPS_LOCK	choice	patches	game	patches:DM_FPS_LOCK&platform:mac	Frame rate	Frame rate mode	Prefer 60 drops to 30 only while frames are too slow for 60 and tries 60 again every few seconds, so the game keeps its real speed; a scene that cannot hold 60 stutters briefly at each try. Hold 30 stays at 30.
