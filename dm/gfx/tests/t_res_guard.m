@@ -24,8 +24,10 @@ static void settle(void) { mtl_sub_begin(); mtl_sub_commit(); mtl_drain(); defer
 
 static void levels(void) {
     g_guard.evict = 800; g_guard.stop = 950; g_guard.wall = 1000;
-    CHECK(guard_level(799) == GUARD_OK && guard_level(800) == GUARD_EVICT && guard_level(950) == GUARD_STOP && guard_level(1000) == GUARD_WALL, "the levels");
-    memset(&g_guard, 0, sizeof g_guard); CHECK(guard_level(UINT64_MAX) == GUARD_OK, "off: no level");
+    CHECK(guard_level(799, 799) == GUARD_OK && guard_level(800, 800) == GUARD_EVICT && guard_level(950, 950) == GUARD_STOP && guard_level(1000, 1000) == GUARD_WALL, "the levels");
+    CHECK(guard_level(100, 799) == GUARD_OK && guard_level(100, 800) == GUARD_EVICT && guard_level(100, UINT64_MAX) == GUARD_EVICT, "the device's size, however large, evicts and never stops");
+    CHECK(guard_level(950, 100) == GUARD_STOP && guard_level(1000, 100) == GUARD_WALL, "the set's size stops");
+    memset(&g_guard, 0, sizeof g_guard); CHECK(guard_level(UINT64_MAX, UINT64_MAX) == GUARD_OK, "off: no level");
     setenv("DM_NVN_RES_LIMIT_MB", "950", 1); guard_init();
     CHECK(g_guard.stop == 950ull << 20 && g_guard.evict == 800ull << 20 && g_guard.wall == g_dev.recommendedMaxWorkingSetSize, "DM_NVN_RES_LIMIT_MB sets the stop and the eviction level under it");
     setenv("DM_NVN_RES_LIMIT_MB", "0", 1); memset(&g_guard, 0, sizeof g_guard);
@@ -38,6 +40,9 @@ static void commits(void) {
     CHECK(atomic_load(&g_guard_set) == set, "after a commit the guard has the set's size");
     uint64_t before = guard_used(); id<MTLBuffer> outside = [g_dev newBufferWithLength:256 << 20 options:MTLResourceStorageModePrivate];
     CHECK(atomic_load(&g_guard_set) == set && guard_used() >= before + (256 << 20) && outside, "the device's size counts what no set holds");
+    g_guard.evict = set + (128 << 20); g_guard.stop = set + (192 << 20); g_guard.wall = set + (256 << 20);   // the device's size is past all three, the set's under them
+    CHECK(guard_level(guard_set(), guard_used()) == GUARD_EVICT, "what no set holds evicts early but does not stop");
+    memset(&g_guard, 0, sizeof g_guard);
     res_add(b);
     CHECK(g_res.allocatedSize == set, "an addition is not in the set's size before its commit");
     CHECK(atomic_load(&g_guard_set) >= set + (64 << 20), "the guard has it already");
@@ -109,6 +114,7 @@ static void idle_pool_buffers(void) {
 // A submit thread stuck in the driver holds the residency lock: the timer takes the game down without it. Run in a process of its own, as the stop happens once
 static void stuck(void) {
     g_guard.evict = 1; g_guard.stop = 2; g_guard.wall = UINT64_MAX;
+    atomic_store(&g_guard_set, 3);
     pthread_mutex_lock(&g_res_mu);
     for (int i = 0; i < GUARD_TICKS - 1; i++) guard_tick();
     CHECK(!stops, "the submit thread gets its time");

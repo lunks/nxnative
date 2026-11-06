@@ -326,8 +326,8 @@ static void res_check(id r, const char *what, int reg) {
 }
 // GPU memory guard. GPU memory is wired, and the driver refuses to wire past Metal's working set (recommendedMaxWorkingSetSize: IOGPUScheduler freeToWireMemory fails there). The submit thread
 // then waits in the kernel, where nothing can kill the process: GitHub issue #1326 ended with a Mac frozen until the power button, PR #1319's 8 GB Mac with WindowServer's watchdog. So every commit
-// of the residency set looks first, at the larger of what the commit would leave (the set's allocatedSize, which counts only what was committed, and what was added since) and the device's
-// currentAllocatedSize, which counts a resource from its creation, in a set or not. From about 80% of the working set the submit thread lets go of what can go (guard_evict); from about 95%, if that was not enough, the game stops: a [RED] line says
+// of the residency set looks first. The stop reads what the commit would leave (the set's allocatedSize, which counts only what was committed, and what was added since: a large burst is seen one commit
+// later, and the timer only knows the size at the last commit); the eviction reads the larger of that and the device's currentAllocatedSize (guard_level). From about 80% of the working set the submit thread lets go of what can go (guard_evict); from about 95% of the set, if that was not enough, the game stops: a [RED] line says
 // what the set holds and the front end leaves full screen and quits (front_gpu_memory_stop). A commit that adds to the set past the working set itself is not made at all. Callers of res_commit
 // can hold g_mu, so it only reads the sizes and leaves a level for the submit thread (guard_act). A stuck submit thread never comes back to look, so a 100 ms timer reads them too (guard_tick).
 // DM_NVN_RES_LIMIT_MB: =<MB> stops at that size instead (a low one tests this), =0 turns the guard off. On iOS the system ends a process for its footprint long before this, and no front end has
@@ -335,14 +335,17 @@ static void res_check(id r, const char *what, int reg) {
 enum { GUARD_OK, GUARD_EVICT, GUARD_STOP, GUARD_WALL, GUARD_EVERY = 30, GUARD_TICKS = 10 };   // the evictions are at least GUARD_EVERY frames apart; the timer stops the game after GUARD_TICKS ticks over the stop level
 static struct { uint64_t evict, stop, wall; } g_guard;   // bytes, all 0 with the guard off: the eviction level, the stop level, the size no commit grows past
 static _Atomic int g_guard_lv;   // the highest level met since the submit thread last looked (guard_act)
-static int guard_level(uint64_t used) { return !g_guard.stop ? GUARD_OK : used >= g_guard.wall ? GUARD_WALL : used >= g_guard.stop ? GUARD_STOP : used >= g_guard.evict ? GUARD_EVICT : GUARD_OK; }
-static uint64_t guard_used(void) { return MAX(atomic_load_explicit(&g_guard_set, memory_order_relaxed), (uint64_t)g_dev.currentAllocatedSize); }
+// The stop and the wall read the set's size, the eviction the larger of that and the device's: currentAllocatedSize counts each no-copy buffer in full however many cover the same pages, so it can
+// read far over what the driver wires (17.3 GB against a residency set of 6.5 GB on a 24 GB Mac) and a stop on it ends a session that was fine; an early eviction only lets go sooner
+static uint64_t guard_set(void) { return atomic_load_explicit(&g_guard_set, memory_order_relaxed); }
+static uint64_t guard_used(void) { return MAX(guard_set(), (uint64_t)g_dev.currentAllocatedSize); }
+static int guard_level(uint64_t set, uint64_t used) { return !g_guard.stop ? GUARD_OK : set >= g_guard.wall ? GUARD_WALL : set >= g_guard.stop ? GUARD_STOP : MAX(set, used) >= g_guard.evict ? GUARD_EVICT : GUARD_OK; }
 static void guard_raise(int lv) { int cur = atomic_load(&g_guard_lv); while (lv > cur && !atomic_compare_exchange_weak(&g_guard_lv, &cur, lv)) {} }
 static void guard_act(uint64_t fence);
 static void res_commit(void) {
     pthread_mutex_lock(&g_res_mu);
     if (g_res_dirty) {
-        uint64_t used = guard_used(); int lv = guard_level(used);
+        uint64_t used = guard_set(); int lv = guard_level(used, guard_used());
         if (lv) guard_raise(lv);
         if (lv == GUARD_WALL && g_res_grew) {   // removals alone always go through: they are what brings the set down
             static uint64_t refused; if (!refused++) MLOG("[RED] GPU memory guard: %llu MB at Metal's working set of %llu MB: this residency commit and any after it that add to the set are not made", (unsigned long long)(used >> 20), (unsigned long long)(g_guard.wall >> 20));
@@ -530,7 +533,7 @@ static void guard_stop(uint64_t used) {
 static void guard_tick(void) {
     static unsigned over;
     defer_idle();
-    uint64_t used = guard_used(); int lv = guard_level(used);
+    uint64_t used = guard_set(); int lv = guard_level(used, guard_used());
     if (lv) guard_raise(lv);
     over = lv >= GUARD_STOP ? over + 1 : 0;
     if (lv == GUARD_WALL || over >= GUARD_TICKS) guard_stop(used);
@@ -6040,8 +6043,8 @@ static void guard_act(uint64_t fence) {
     if (lv < GUARD_STOP) return;
     mtl_wait_at(fence, 2000000000ull, WS_DRAIN);
     defer_drain(); res_commit();
-    uint64_t used = guard_used();
-    if (guard_level(used) >= GUARD_STOP) guard_stop(used);
+    uint64_t set = guard_set();
+    if (guard_level(set, set) >= GUARD_STOP) guard_stop(set);
 }
 // Texture views by texture serial and view parameters, beside the per-ID view: KTGL (Age of Calamity) registers a texture into the next ID of a ring before every bind (about 21,000
 // registrations a frame in battle after the first cutscene, 5 in 6 of them a different texture than the ID held), so the per-ID view was rebuilt for nearly every bind: half the
