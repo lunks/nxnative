@@ -248,6 +248,14 @@ static void native_mesh(NSString *dir) {
     pso_key_fill(&state, live, fragment, g_pass.cfmt, 0, 0, 1, 0);
     pso_skey key; char hex[sizeof key * 2 + 1];
     pso_skey_from(&state, live, fragment, 0, NULL, &key); pso_skey_hex(&key, hex);
+    // A function of the wrong type: Metal would abort, or its compiler service crash
+    NSError *wrong = nil; id<MTLLibrary> library = lib_from_file([dir stringByAppendingPathComponent:@"warm-ms.metallib"], &wrong);
+    EXPECT("a mesh entry is no vertex function", 1, library && !pre_fn(library, @"ms", MTLFunctionTypeVertex) && pre_fn(library, @"ms", MTLFunctionTypeMesh) && pre_fn(library, @"vs", MTLFunctionTypeVertex));
+    for (NSString *stage in @[@"ms", @"fs"])
+        [NSFileManager.defaultManager copyItemAtPath:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"warm-%@.json", stage]] toPath:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"warm-%@_b.json", stage]] error:nil];
+    EXPECT("a mesh shader in a pair table gets no base", 1, pre_json(@"warm-ms") && !pre_desc(@"warm-ms", @"warm-fs", 0));
+    wrong = nil;
+    EXPECT("a pixel shader as the mesh function is refused", 1, !mtk_build(&state, nil, fragment, fragment, &wrong) && wrong);
     NSString *valid = [NSString stringWithFormat:@"M\t-\t%s\n", hex];
     NSString *wrong_stage = [NSString stringWithFormat:@"M\twarm-fs\t%s\n", hex];
     NSString *manifest = [dir stringByAppendingPathComponent:@"mesh.tsv"];
