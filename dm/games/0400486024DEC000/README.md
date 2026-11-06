@@ -73,6 +73,7 @@ The profile's `res_chain` (`2560x1440 2560x1440 1920x1080 1.333334 3.0 1.333334`
 
 ## Found on this game
 
+- Its foliage and emitters search the raw pool table at every word they read: [a raw lookup that searches for the range the last one found](../../../docs/reference/shaders.md#a-raw-lookup-that-searches-for-the-range-the-last-one-found).
 - Its indirect mesh draws split the scene's largest passes 6 times a frame: [conversions of indirect draws made ahead of their pass](../../../docs/reference/rendering.md#conversions-of-indirect-draws-made-ahead-of-their-pass).
 - Its frame-start compute block runs 124 dispatches one at a time: [dispatches that touch different memory keep no barrier between them](../../../docs/reference/rendering.md#dispatches-that-touch-different-memory-keep-no-barrier-between-them).
 - Loading a save, 5,729 of 154,107 raw pool table words were older than the current table at commit and 2,582 behind the pools: [a pool made after a raw shader's arguments were encoded](../../../docs/reference/shaders.md#a-pool-made-after-a-raw-shaders-arguments-were-encoded).

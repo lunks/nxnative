@@ -1598,7 +1598,7 @@ def geometry_finish(key, w, j, c1):
         if r.returncode: return 'geometry MSL failed', r.stderr.strip()[:160], None
         plain = dmsh_geometry.topology_pointer(pool_arrays(precise(dmsh_atomic.check_msl(r.stdout))))
         res = json.load(open(os.path.join(w, k + '.res.json')))
-        plain = raw_log_opt(key, 'gs', plain, res)
+        plain = dmsh_atomic.raw_range_cache(raw_log_opt(key, 'gs', plain, res))
         src = dmsh_geometry.capture_input(plain)
         refl = {'key': key + '_bg' + str(t), 'route': 'B', 'chain': CHAIN, 'dm_ctl': key,
                 'source': f'{loc[key][0]}#{loc[key][1]}', 'pc_paired': pc_of[key], 'stage': 'gs',
@@ -1676,6 +1676,7 @@ def finish(key, w, j, c1):
     res = json.load(open(os.path.join(w, key + '.res.json')))
     try: src = raw_log_opt(key, j['stage'], src, res)
     except ValueError as e: return 'reflection failed', str(e)[:160], None
+    src = dmsh_atomic.raw_range_cache(src)   # a raw lookup inside the range of the last one needs no search (see raw_range_cache)
     src = dmsh_wide.wide_loads(src)   # storage words the translator split, read whole again (see dmsh_wide.py)
     src = border_emu(src); open(msl, 'w').write(src)   # border colours Metal lacks (see border_emu)
     if j['stage'] == 'ps': src = fs_unwritten(key, src); open(msl, 'w').write(src)   # inputs no mesh shader has room for (see fs_unwritten)

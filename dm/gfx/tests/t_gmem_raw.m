@@ -1,7 +1,9 @@
 // A translated load at an address the shader read from memory (GlobalToStorage.TryGenerateRawStorageOp), run on the GPU against the host's own pool table (nvn_mtl.m gmem_map) with more
 // pools than its least count: each probe must read its pool's word, whether the lookup takes the chunk hint (a large pool) or the binary search (small pools past entry 4,096), and an address in
 // no pool reads 0. The shader is test_dmsh_ampere_mem.py's RawGlobal one: it loads the address from words 0 and 1 of storage slot 0 and stores what it read at word 2.
-// Usage: t_gmem_raw <metallib>
+// Then the range cache (dmsh_atomic.raw_range_cache) with many lookups an invocation: lanes that walk a list in different orders, some skipping steps, so that they hit and miss apart, read what each
+// address holds; stores through it land at their addresses and set the log bit of each pool they reach, and of no other.
+// Usage: t_gmem_raw <metallib> <walk metallib> <store metallib>
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -11,7 +13,7 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(label, c) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__); } } while (0)
 int main(int argc, const char **argv) { @autoreleasepool {
-    if (argc != 2) { fprintf(stderr, "usage: t_gmem_raw <metallib>\n"); return 2; }
+    if (argc != 4) { fprintf(stderr, "usage: t_gmem_raw <metallib> <walk metallib> <store metallib>\n"); return 2; }
     mtl_init();
     enum { MANY = 5000, PG = 16384 };
     const uint64_t MB = 1ull << 20;
@@ -45,6 +47,47 @@ int main(int argc, const char **argv) { @autoreleasepool {
       CHECK("the last small pool lies past the least table", e >= DMSH_GMEM_MAP_ENTRIES); }
     CHECK("a large pool, the hint", probe((uint64_t)(uintptr_t)large + 40 * MB + 12) == 0xb16b00b5u);
     CHECK("an address in no pool reads 0", probe((uint64_t)(uintptr_t)many + PG + 8) == 0);
+    // The range cache: each lane walks the list its own way through one cache
+    enum { LANES = 64, STEPS = 48 };
+    uint64_t p0 = (uint64_t)(uintptr_t)(many + (size_t)10 * 2 * PG), p1 = (uint64_t)(uintptr_t)(many + (size_t)11 * 2 * PG), hole = p0 + PG + 8, big = (uint64_t)(uintptr_t)large;
+    for (int k = 0; k < 256; k++) { uint32_t a = 0xa0000 + (unsigned)k, b = 0xb0000 + (unsigned)k, c = 0xc0000 + (unsigned)k; memcpy((void *)(p0 + 4096 + 4 * (unsigned)k), &a, 4); memcpy((void *)(p1 + 4096 + 4 * (unsigned)k), &b, 4); memcpy((void *)(big + 32 * MB + 4 * (unsigned)k), &c, 4); }
+    id<MTLBuffer> list = [g_dev newBufferWithLength:STEPS * 8 options:MTLResourceStorageModeShared], outs = [g_dev newBufferWithLength:LANES * STEPS * 4 options:MTLResourceStorageModeShared], cnt = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared];
+    uint64_t *L = list.contents; *(uint32_t *)cnt.contents = STEPS;
+    for (int k = 0; k < STEPS; k++) { int w = k % 12, off = 4 * k;   // runs in one range, a hole in no pool, ranges that follow one another, a return to the first
+        L[k] = w < 4 ? p0 + 4096 + (uint64_t)off : w == 4 ? hole : w < 7 ? p0 + 4096 + (uint64_t)off : w < 9 ? p1 + 4096 + (uint64_t)off : w == 9 ? big + 32 * MB + (uint64_t)off : w == 10 ? 8 : p1 + 4096 + (uint64_t)off; }
+    id<MTLLibrary> wlib = [g_dev newLibraryWithURL:[NSURL fileURLWithPath:@(argv[2])] error:&error]; if (!wlib) { fprintf(stderr, "library: %s\n", error.description.UTF8String); return 1; }
+    id<MTLComputePipelineState> wpso = [g_dev newComputePipelineStateWithFunction:[wlib newFunctionWithName:@"walk"] error:&error]; if (!wpso) { fprintf(stderr, "pipeline: %s\n", error.description.UTF8String); return 1; }
+    { memset(outs.contents, 0xee, outs.length);
+      id<MTLCommandBuffer> cb = q_cb(); id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder]; [ce setComputePipelineState:wpso];
+      [ce setBuffer:map offset:0 atIndex:0]; [ce setBuffer:list offset:0 atIndex:1]; [ce setBuffer:outs offset:0 atIndex:2]; [ce setBuffer:cnt offset:0 atIndex:3];
+      [ce dispatchThreads:MTLSizeMake(LANES, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+      CHECK("the walk completes", cb.status == MTLCommandBufferStatusCompleted);
+      const uint32_t *o = outs.contents; int wrong = 0, ran = 0, skipped = 0;
+      for (unsigned lane = 0; lane < LANES; lane++) for (unsigned k = 0; k < STEPS; k++) {
+          uint32_t got = o[lane * STEPS + k];
+          if ((lane & 3) == 2 && k % 3 == 1) { skipped += got == 0xeeeeeeeeu; continue; }
+          uint64_t a = L[lane & 1 ? STEPS - 1 - k : k]; uint32_t want = 0;
+          if (a != hole && a != 8) memcpy(&want, (const void *)a, 4);
+          ran++; wrong += got != want; }
+      CHECK("each lane read what each address holds, with hits and misses apart", !wrong && ran > 2000 && skipped > 100);
+      printf("t_gmem_raw: %d lookups in a walk, %d wrong\n", ran, wrong); }
+    // The stores: lanes in both orders over two pools, a hole and a large pool; each address written, the log's bits those pools' entries only
+    { enum { SN = 12 }; id<MTLLibrary> slib = [g_dev newLibraryWithURL:[NSURL fileURLWithPath:@(argv[3])] error:&error]; if (!slib) { fprintf(stderr, "library: %s\n", error.description.UTF8String); return 1; }
+      id<MTLComputePipelineState> spso = [g_dev newComputePipelineStateWithFunction:[slib newFunctionWithName:@"walk"] error:&error]; if (!spso) { fprintf(stderr, "pipeline: %s\n", error.description.UTF8String); return 1; }
+      id<MTLBuffer> log = [g_dev newBufferWithLength:gmem_entries(map) / 8 options:MTLResourceStorageModeShared]; memset(log.contents, 0, log.length);
+      const uint64_t base[3] = {p0 + 8192, p1 + 8192, big + 40 * MB + 4096}; uint64_t S[SN];
+      for (int k = 0; k < SN; k++) { S[k] = k % 4 == 3 ? hole : base[k % 4] + (uint64_t)(k / 4) * 1024; L[k] = S[k]; }
+      *(uint32_t *)cnt.contents = SN;
+      id<MTLCommandBuffer> cb = q_cb(); id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder]; [ce setComputePipelineState:spso];
+      [ce setBuffer:map offset:0 atIndex:0]; [ce setBuffer:log offset:0 atIndex:1]; [ce setBuffer:list offset:0 atIndex:2]; [ce setBuffer:cnt offset:0 atIndex:3];
+      [ce dispatchThreads:MTLSizeMake(LANES, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+      CHECK("the stores complete", cb.status == MTLCommandBufferStatusCompleted);
+      int wrong = 0; for (unsigned lane = 0; lane < LANES; lane++) for (unsigned k = 0; k < SN; k++) if (S[k] != hole) { uint32_t got; memcpy(&got, (const void *)(S[k] + 4 * lane), 4); wrong += got != 0x5000 + lane * 64 + k; }
+      CHECK("each store landed at its address", !wrong);
+      const uint64_t *tab = map.contents; const uint32_t *bits = log.contents; unsigned set = 0, want = 0, entries = gmem_entries(map);
+      for (unsigned e = 1; e < entries; e++) { int on = bits[e >> 5] >> (e & 31) & 1; uint64_t lo = tab[e * (DMSH_GMEM_MAP_ENTRY / 8)], hi = tab[e * (DMSH_GMEM_MAP_ENTRY / 8) + 1]; int hit = 0; for (int k = 0; k < 3; k++) hit |= base[k] >= lo && base[k] < hi;
+          set += (unsigned)on; want += (unsigned)hit; if (on != hit) wrong++; }
+      CHECK("the log has each pool's bit and no other", !wrong && want == 3 && set == 3); }
     // A pool made after a raw shader's arguments were encoded: at commit the word is pointed at a table that has it, and it reads its word, where the older table reads 0
     { mtl_sub_begin(); id<MTLBuffer> before = gmem_map(); a[1] = before.gpuAddress; gmem_slot_note(&a[1], NULL, NULL);
       uint8_t *late = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); if (late == MAP_FAILED) abort(); uint32_t v = 0x1a7e0001u; memcpy(late + 64, &v, 4); mtl_pool_add(late, PG); mtl_pool_buffer_addr(late, PG);
