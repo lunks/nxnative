@@ -716,6 +716,13 @@ static void pool_res(int i) {
 enum { BIG_MIN = 512u << 20, BIG_S = 16u << 20, BIG_UNKNOWN = 64u << 20, BIG_MAX = 32 };
 typedef struct { uintptr_t lo, hi, a, b; const void *mem; int *chunk, full; NSMutableArray *old; } big_pool;   // chunk: stride → g_pools index + 1; full: the whole pool's entry + 1; old: buffers a longer chunk replaced, alive with the pool
 static big_pool g_big[BIG_MAX]; static int g_nbig;
+// Zero-copy buffers of a large pool kept for uploads (up_big_src), under g_mu. BIG_S strides, so uploads near each other share one; nothing past UPK_MAX bytes stays wired
+enum { UPK_N = 64, UPK_MAX = 1u << 30, UPK_IDLE = 600 };
+static struct { uintptr_t a, b; uint64_t used; __strong id<MTLBuffer> buf; } g_upk[UPK_N]; static int g_upk_n; static uint64_t g_upk_bytes;
+static void upk_drop(int i, uint64_t fence) {   // caller holds g_mu
+    defer_obj_at(g_upk[i].buf, 0, fence); g_upk_bytes -= g_upk[i].b - g_upk[i].a;
+    g_upk[i] = g_upk[--g_upk_n]; g_upk[g_upk_n].buf = nil;
+}
 static int big_of(uint64_t addr) { for (int i = 0; i < g_nbig; i++) if (addr >= g_big[i].lo && addr < g_big[i].hi) return i; return -1; }
 static void treg_pool_changed(int added);
 static void pool_add_(const void *mem, uint64_t size);
@@ -783,6 +790,7 @@ void mtl_pool_del(const void *mem) {
             i--; }
     if (bg >= 0) {
         for (id<MTLBuffer> b in g_big[bg].old) defer_obj_release(b);
+        for (int i = g_upk_n - 1; i >= 0; i--) if (g_upk[i].a >= g_big[bg].a && g_upk[i].b <= g_big[bg].b) upk_drop(i, g_fence + sub_open());
         free(g_big[bg].chunk); g_big[bg] = g_big[--g_nbig]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); atomic_fetch_sub(&g_big_n, 1);
     }
     }
@@ -3010,11 +3018,32 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
     }
 }
 static int gmem_all(void); static int bm_has(uint64_t lo);
-// A zero-copy buffer over [addr, addr + len) of a large pool for the open upload batch, which retires it with its staging; nil outside a large pool (or if it is refused: the caller looks the address up as usual).
-// The same for a texture in a pool the game took no buffer address in (texture_only set, see mtl_pool_buffer_addr): such a pool is in no pool table, and an upload must not wire it whole for good
+// A large pool's kept buffer holding [addr, addr + len), made if there is room, or nil. A new buffer each upload batch went into the residency set and out again: PR #1444 measured 21.5 ms of residency
+// commits a frame in Ocarina of Time's Market and Kakariko Village. Its kept them all until the pool went, which wires the pool as uploads reach it, what a pool in chunks is there to avoid (Mario Kart World's
+// 2,427 MB on a 16 GB Mac). Here room is bounded, and only a long-idle buffer gives way: uploads past that keep their own buffers as before, so a scattered load cannot thrash 16 MB wirings. Caller holds g_mu
+static id<MTLBuffer> up_big_kept(int bi, uint64_t addr, uint64_t len, uint64_t *off) {
+    uint64_t f = atomic_load(&g_cur_frame) + 1;
+    for (int i = 0; i < g_upk_n; i++) if (addr >= g_upk[i].a && addr + len <= g_upk[i].b) { g_upk[i].used = f; *off = addr - g_upk[i].a; return g_upk[i].buf; }
+    uintptr_t p = g_big[bi].a, a = p + (((uintptr_t)addr - p) & ~((uintptr_t)BIG_S - 1)), b = p + (((uintptr_t)(addr + len) - p + BIG_S - 1) & ~((uintptr_t)BIG_S - 1));
+    if (b > g_big[bi].b) b = g_big[bi].b;
+    if (addr + len > b || b - a > 4 * (uintptr_t)BIG_S) return nil;   // a long texture keeps a buffer of its own
+    for (int i = g_upk_n - 1; i >= 0 && (g_upk_n == UPK_N || g_upk_bytes + (b - a) > UPK_MAX); i--) if (f - g_upk[i].used >= UPK_IDLE) upk_drop(i, g_fence + 1);
+    if (g_upk_n == UPK_N || g_upk_bytes + (b - a) > UPK_MAX) return nil;
+    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    if (!buf) return nil;
+    res_add(buf);
+    g_upk[g_upk_n].a = a; g_upk[g_upk_n].b = b; g_upk[g_upk_n].used = f; g_upk[g_upk_n].buf = buf; g_upk_n++; g_upk_bytes += b - a;
+    *off = addr - a;
+    return buf;
+}
+// A zero-copy buffer over [addr, addr + len) of a large pool for uploads: a kept one if there is room (up_big_kept), else one for the open upload batch, which retires it with its staging; nil outside a large pool
+// (or if it is refused: the caller looks the address up as usual). The batch's kind too for a texture in a pool the game took no buffer address in (texture_only set, see mtl_pool_buffer_addr): such a pool is in
+// no pool table, and an upload must not wire it whole for good
 static id<MTLBuffer> up_big_src(uint64_t addr, uint64_t len, uint64_t *off, int texture_only) {
-    int in = texture_only; if (!in) { pthread_mutex_lock(&g_mu); in = big_of(addr) >= 0; pthread_mutex_unlock(&g_mu); }
-    if (!in || !len) return nil;
+    if (!len) return nil;
+    pthread_mutex_lock(&g_mu); int bi = big_of(addr), in = texture_only || bi >= 0; id<MTLBuffer> kept = bi >= 0 ? up_big_kept(bi, addr, len, off) : nil; pthread_mutex_unlock(&g_mu);
+    if (kept) return kept;
+    if (!in) return nil;
     uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)addr + len + pg - 1) & ~(pg - 1);
     id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
     if (!buf) return nil;
@@ -3077,7 +3106,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         }
         size_t stg_off;
         id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
-        if (upsrc) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2, tex_only); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc may have flushed the batch that held the first one
+        if (upsrc && ![g_up_keep containsObject:upsrc]) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2, tex_only); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc may have flushed the batch that held the first one
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -5730,6 +5759,7 @@ static void alias_age_tick(void) {
 // What the upload slots keep for their next batch (at most 192 MB): the next batch makes it again. Only the submit thread uploads, and a slot's block is free once its batch came back
 static unsigned up_trim(void) {
     unsigned n = 0; if (!on_sub_thread() || g_up_cb) return 0;
+    pthread_mutex_lock(&g_mu); for (int i = g_upk_n - 1; i >= 0; i--) { upk_drop(i, g_fence + 1); n++; } pthread_mutex_unlock(&g_mu);
     for (int s = 0; s < 3; s++) if (!atomic_load(&g_up_alloc_busy[s])) {
         if (g_up_slot_blk[s]) { defer_obj_release(g_up_slot_blk[s]); g_up_slot_blk[s] = nil; n++; }
         if (g_up_slot_over[s]) { defer_obj_release(g_up_slot_over[s]); g_up_slot_over[s] = nil; n++; }
